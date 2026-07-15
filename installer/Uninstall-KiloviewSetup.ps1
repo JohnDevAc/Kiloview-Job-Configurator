@@ -12,6 +12,7 @@ if ($PSCmdlet.ShouldProcess($installRoot, 'Remove Kiloview Setup application fil
     Remove-Item -LiteralPath $startupLink -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $desktopLink -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $startMenu -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\KiloviewSetup' -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Host 'Kiloview Setup was removed. Monitoring data in LocalAppData\Kiloview Setup was preserved.'

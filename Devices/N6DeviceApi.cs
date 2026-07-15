@@ -44,6 +44,48 @@ internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credential
         };
     }
 
+    public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct)
+    {
+        using var original = await AuthorizedAsync(ct);
+        var accepted = await TryAcceptLicenseAsync(original, ct);
+        if (!string.Equals(Credentials.Username, targetCredentials.Username, StringComparison.Ordinal) ||
+            !string.Equals(Credentials.Password, targetCredentials.Password, StringComparison.Ordinal))
+        {
+            using var changed = await PostAsync(original, "/api/users/modify.json", new
+            {
+                id = targetCredentials.Username,
+                alias = "Admin",
+                api = true,
+                web = true,
+                password = targetCredentials.Password
+            }, "set N6 onboarding credentials", ct);
+        }
+
+        var replacement = new N6DeviceApi(IpAddress, targetCredentials);
+        using var verified = await replacement.AuthorizedAsync(ct);
+        accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
+        if (!accepted)
+            throw new DeviceApiException("The N6 accepted its new login, but its firmware did not expose a recognized EULA acceptance endpoint. Open the device UI once or provide its Web UI bundle for API matching.");
+    }
+
+    private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)
+    {
+        var known = new[]
+        {
+            "/api/sys/accept_eula.json",
+            "/api/sys/eula/accept.json",
+            "/api/device/accept_eula.json",
+            "/api/device/set_eula.json",
+            "/api/license/accept.json"
+        };
+        var discovered = await FindFirstLoginApiPathsAsync(client, ct);
+        foreach (var path in known.Concat(discovered).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (await TryMutationAsync(client, path, new { accept = true, accepted = true, agree = true }, ct)) return true;
+        }
+        return false;
+    }
+
     public async Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

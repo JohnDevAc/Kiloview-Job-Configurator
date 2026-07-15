@@ -49,6 +49,8 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
         s with { Devices = s.Devices.Select(d => d.Id == id ? update(d) : d).ToArray() });
 
     public Task<ManagedDevice> ReadAsync(CancellationToken ct) => Device();
+    public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct) =>
+        await Change(d => d with { Credentials = targetCredentials, LicenseAccepted = true });
     public async Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct) =>
         await Change(d => d with { IpAddress = address, IsStatic = true, LastSeenUtc = DateTimeOffset.UtcNow });
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct) =>

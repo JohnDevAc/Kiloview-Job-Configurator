@@ -49,6 +49,58 @@ internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentia
         };
     }
 
+    public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct)
+    {
+        using var original = await AuthorizedAsync(ct);
+        var accepted = await TryAcceptLicenseAsync(original, ct);
+        if (!string.Equals(Credentials.Username, targetCredentials.Username, StringComparison.Ordinal) ||
+            !string.Equals(Credentials.Password, targetCredentials.Password, StringComparison.Ordinal))
+        {
+            DeviceApiException? last = null;
+            var body = new
+            {
+                username = targetCredentials.Username,
+                id = targetCredentials.Username,
+                alias = "Admin",
+                password = targetCredentials.Password,
+                confirmNewPassword = targetCredentials.Password,
+                enable_web = true,
+                enable_api = true
+            };
+            foreach (var path in new[] { "/api/systemctrl/users/modify", "/api/systemctrl/users/changePassword", "/api/systemctrl/users/initPassword" })
+            {
+                try { using var changed = await PostAsync(original, path, body, "set N60 onboarding credentials", ct); last = null; break; }
+                catch (DeviceApiException ex) { last = ex; }
+            }
+            if (last is not null) throw new DeviceApiException("The N60 did not accept the required initial password change.", last);
+        }
+
+        var replacement = new N60DeviceApi(IpAddress, targetCredentials);
+        using var verified = await replacement.AuthorizedAsync(ct);
+        accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
+        if (!accepted)
+            throw new DeviceApiException("The N60 accepted its new login, but its firmware did not expose a recognized EULA acceptance endpoint. Open the device UI once or provide its Web UI bundle for API matching.");
+    }
+
+    private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)
+    {
+        var known = new[]
+        {
+            "/api/systemctrl/system/acceptEula",
+            "/api/systemctrl/system/setEula",
+            "/api/systemctrl/eula/accept",
+            "/api/systemctrl/license/accept",
+            "/api/systemctrl/system/acceptAgreement",
+            "/api/systemctrl/system/setAgreement"
+        };
+        var discovered = await FindFirstLoginApiPathsAsync(client, ct);
+        foreach (var path in known.Concat(discovered).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (await TryMutationAsync(client, path, new { accept = true, accepted = true, agree = true }, ct)) return true;
+        }
+        return false;
+    }
+
     public async Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

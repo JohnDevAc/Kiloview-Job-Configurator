@@ -12,6 +12,7 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 });
 builder.Services.AddSingleton<AppStateStore>();
 builder.Services.AddSingleton<KiloLinkCredentialStore>();
+builder.Services.AddSingleton<KiloLinkServerClient>();
 builder.Services.AddSingleton<FirmwareService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
@@ -22,7 +23,7 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok", version = "0.2.0" }));
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok", version = "0.4.0" }));
 app.MapGet("/api/network/subnets", () => Results.Ok(NetworkAddressing.GetLocalScanCidrs()));
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));
 app.MapGet("/api/devices", async (AppStateStore store) => Results.Ok((await store.ReadAsync()).Devices));
@@ -30,6 +31,22 @@ app.MapGet("/api/kilolink/credentials", (string serverIp, KiloLinkCredentialStor
 {
     try { return Results.Ok(credentials.GetStatus(serverIp)); }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+app.MapGet("/api/kilolink/discover", async (int? webPort, KiloLinkServerClient client, CancellationToken ct) =>
+{
+    try { return Results.Ok(await client.DiscoverAsync(webPort ?? 8081, ct)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+app.MapPost("/api/kilolink/test", async (KiloLinkConnectionRequest request, KiloLinkCredentialStore credentials, KiloLinkServerClient client, CancellationToken ct) =>
+{
+    try
+    {
+        var credential = credentials.ResolveAndStore(request.ServerIp, request.Username, request.Password);
+        return Results.Ok(await client.TestAsync(request.ServerIp, request.WebPort, credential, ct));
+    }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
 app.MapPost("/api/discovery", async (DiscoveryRequest request, NetworkDiscovery discovery, CancellationToken ct) =>

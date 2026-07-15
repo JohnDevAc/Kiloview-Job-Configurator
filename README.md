@@ -4,14 +4,16 @@ Kiloview Setup is a local Windows web application for discovering, onboarding, i
 
 ## Current workflow
 
-1. Enter the KiloLink server IP/code and server login, static IP pool, Job Name, NDI Discovery Server IP, and scan network. The KiloLink username/password are retained locally for that server IP.
+1. The application scans active local networks for KiloLink Server Pro. Confirm the detected server, enter its login, then enter the static IP pool, Job Name, NDI Discovery Server IP, and scan network. The KiloLink username/password are retained locally for that server IP.
 2. Review discovered N6/N60 devices. Units already in the static pool are preserved and excluded by default.
-3. Confirm a collision-checked address plan. New addresses start above the highest occupied/onboarded address in the pool.
-4. The service readdresses devices sequentially, configures KiloLink, configures the NDI Discovery Server, and applies the Job Name as the NDI group.
-5. All units temporarily enter decoder mode. After the negotiation window, a valid HDMI output resolution classifies a unit as a decoder; other units return to encoder mode.
-6. After initial onboarding, select the latest N6 and N60 `.bin` firmware packages. The application validates model coverage, stores local copies with SHA-256 fingerprints, and hands the matching packages to the KiloLink fleet-update stage.
-7. Rename decoder hostnames and NDI channels, then select **Setup completed** to send the black preset to every decoder.
-8. The application becomes a red/green card-based monitor with IP, role, group, resolution, firmware, and direct links to each device UI.
+3. Confirm a collision-checked address plan and authorize the application to accept the Kiloview EULA on the selected devices. New addresses start above the highest occupied/onboarded address in the pool.
+4. Each factory-reset unit is logged into with `admin/admin`, its license is accepted, and its login is changed to `admin/<Job Name>`. The new local device credentials are stored with the device record for monitoring and future configuration.
+5. For each serial number, the service creates or reuses a KiloLink device record, generates any required authorization code on KiloLink Server, and keeps the KiloLink Alias equal to the assigned hostname.
+6. The service readdresses devices sequentially, applies the generated KiloLink code, configures the NDI Discovery Server, and applies the Job Name as the NDI group.
+7. All units temporarily enter decoder mode. After the negotiation window, a valid HDMI output resolution classifies a unit as a decoder; other units return to encoder mode.
+8. After initial onboarding, select the latest N6 and N60 `.bin` firmware packages. The application validates model coverage, stores local copies with SHA-256 fingerprints, authenticates to KiloLink Server Pro, uploads each package, matches the onboarded devices, and dispatches model-specific batch upgrades.
+9. Rename decoder hostnames and NDI channels, then select **Setup completed** to send the black preset to every decoder. Decoder renames are also synchronized back to the KiloLink Alias.
+10. The application becomes a red/green card-based monitor with IP, role, group, resolution, firmware, and direct links to each device UI.
 
 The advanced setup section contains factory credentials and a simulation mode. Simulation mode exercises the full workflow without making network or hardware changes.
 
@@ -27,6 +29,14 @@ dotnet run --project .\Kiloview.Setup.csproj
 Open `http://localhost:8091`. Use **Simulation mode** for the first acceptance run.
 
 ## Create the Windows package
+
+Recommended single-file installer (self-contained, no separate .NET installation required):
+
+```powershell
+.\scripts\Publish.ps1 -SetupExe
+```
+
+Distribute `artifacts\KiloviewSetup-Setup.exe`. Double-clicking it installs for the current Windows user, registers the service to start automatically at sign-in, starts it immediately, and opens `http://localhost:8091`.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -45,10 +55,12 @@ Extract `artifacts\KiloviewSetup-Windows.zip` and run `Install.cmd`. Installatio
 ## Operational safeguards
 
 - The UI is bound to loopback only. Device credentials and onboarding data are not exposed as a LAN web service.
-- The KiloLink onboarding code is used by the active run but is not written to `state.json`.
+- KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
 - KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. Passwords are not written to `state.json` or returned by the local web API.
+- Device credentials are intentionally stored locally in `state.json`; after first-login provisioning the username is `admin` and the password is the exact Job Name.
 - Persistent state is stored in `%LOCALAPPDATA%\Kiloview Setup\state.json`.
 - Staged firmware is stored under `%LOCALAPPDATA%\Kiloview Setup\firmware`, separated by device model, and checked with SHA-256 after upload.
+- The KiloLink web/API port is configured separately from the device-link UDP port. The validated defaults are web `8081` and device link `50000` (with KiloLink using `50000–50001` UDP).
 - Static address conflicts are checked using known inventory, ICMP, HTTP, and HTTPS before a plan is offered.
 - A failed readdress, reconnect, API call, or mode switch is shown per device and does not silently pass.
 - N60 mode changes can take about one minute. Keep displays on until HDMI negotiation completes.
@@ -58,13 +70,14 @@ Extract `artifacts\KiloviewSetup-Windows.zip` and run `Install.cmd`. Installatio
 The software build and complete simulation workflow are verified, but live N6/N60 hardware was not available in this workspace. Before production use, validate one factory-reset unit of each model and firmware version on an isolated VLAN, specifically:
 
 - factory credentials and API authentication;
+- first-login EULA acceptance and the forced password-change endpoint on the exact installed firmware (the published APIs document the user change but omit the EULA call, so the adapter capability-probes known routes and the device Web UI bundle);
 - N6 firmware exposure of the KiloLink client endpoint (the published N6 API omits it, so the adapter capability-probes both known endpoint casings);
 - NDI Discovery Server persistence for both HX and HB streams;
 - whether the firmware reports no negotiated HDMI resolution as an empty/`none` value;
 - hostname/channel changes while cycling a decoder through encoder mode;
 - black preset output on completion.
 
-KiloLink Server Pro officially supports uploading model-specific firmware and batch-upgrading selected devices in Maintenance Mode. Its public manual does not document the HTTP endpoints or payloads used by that web workflow. Version 0.2 therefore fully stages and validates firmware, completes the fleet update in simulation, and gives a guarded KiloLink handoff for real servers rather than sending an unverified firmware command. To automate the final real-server click path, capture the firmware upload/maintenance/upgrade requests from the exact deployed KiloLink Server Pro version (or obtain its private API specification) and implement them at the existing `FirmwareService` integration boundary.
+The KiloLink firmware API used by this application was recovered from and read-only tested against KiloLink Server Pro `1.08.0034`. Login, version discovery, firmware inventory, device-type inventory, and device-list calls were verified against a live local server. Firmware upload and batch dispatch remain explicitly confirmation-gated and will stop if the server is not on the validated 1.08 API contract or if every onboarded device cannot be matched in KiloLink.
 
 The documented APIs do not expose a supported call for rendering arbitrary IP/group text over the HDMI output. The UI records and shows that identity, and naming is applied to the device, but a true HDMI title card requires either a firmware overlay API from Kiloview or a small NDI title-card sender. That integration should be added only against the actual firmware/API supplied for the deployment.
 

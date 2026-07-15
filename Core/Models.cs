@@ -23,6 +23,7 @@ public sealed record ManagedDevice
     public string? FirmwareVersion { get; init; }
     public bool IsStatic { get; init; }
     public bool IsOnboarded { get; init; }
+    public bool LicenseAccepted { get; init; }
     public bool? HdmiDisplayConnected { get; init; }
     public string? HdmiOutputResolution { get; init; }
     public string? LastError { get; init; }
@@ -33,12 +34,18 @@ public sealed record ManagedDevice
 public sealed record LastJob(string JobName, string StaticStart, string StaticEnd, string NdiDiscoveryServerIp, DateTimeOffset StartedUtc)
 {
     public string KiloLinkServerIp { get; init; } = "";
+    public int KiloLinkWebPort { get; init; } = 8081;
     public bool Simulation { get; init; }
 }
 
 public sealed record FirmwarePackage(string Model, string FileName, string LocalPath, long SizeBytes, string Sha256);
 public sealed record FirmwareJob(string Status, IReadOnlyList<FirmwarePackage> Packages, DateTimeOffset StagedUtc, DateTimeOffset? FinishedUtc = null, string? Message = null);
 public sealed record FirmwareStartResult(bool Started, bool Completed, string Status, string Message, string? ManagementUrl = null);
+public sealed record KiloLinkConnectionRequest(string ServerIp, int WebPort, string Username, string Password);
+public sealed record KiloLinkConnectionStatus(string Version, IReadOnlyList<string> DeviceTypes, IReadOnlyList<string> FirmwareTypes, int DeviceCount);
+public sealed record KiloLinkServerDiscovery(string ServerIp, int WebPort, string Version);
+public sealed record KiloLinkAuthorizationResult(string SerialNumber, string Hostname, string AuthorizationCode, bool Created);
+public sealed record KiloLinkFleetResult(int PackagesUploaded, int DevicesDispatched, IReadOnlyList<string> Models);
 
 public sealed record AppState(IReadOnlyList<ManagedDevice> Devices, LastJob? LastJob = null, FirmwareJob? FirmwareJob = null)
 {
@@ -65,7 +72,8 @@ public sealed record OnboardingRequest(
     string NdiDiscoveryServerIp,
     IReadOnlyList<string> DeviceIds,
     IReadOnlyDictionary<string, DeviceRole>? RoleOverrides = null,
-    int KiloLinkPort = 50000);
+    int KiloLinkPort = 50000,
+    int KiloLinkWebPort = 8081);
 
 public sealed record DevicePlan(string DeviceId, string CurrentIp, string TargetIp, string Hostname, DeviceRole Role, bool ExistingStaticDevice = false);
 public sealed record OnboardingPlan(OnboardingRequest Settings, IReadOnlyList<DevicePlan> Devices, IReadOnlyList<string> OccupiedAddresses, IReadOnlyList<string> Warnings);
@@ -99,7 +107,7 @@ public static class InputValidation
         if (NetworkAddressing.ToUInt(end) - NetworkAddressing.ToUInt(start) > 4095)
             throw new ArgumentException("The static range is limited to 4096 addresses per onboarding run.");
         if (string.IsNullOrWhiteSpace(request.JobName)) throw new ArgumentException("Job Name is required.");
-        if (string.IsNullOrWhiteSpace(request.KiloLinkOnboardingCode)) throw new ArgumentException("KiloLink onboarding code is required.");
         if (request.KiloLinkPort is < 1 or > 65535) throw new ArgumentException("KiloLink port is invalid.");
+        if (request.KiloLinkWebPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
     }
 }

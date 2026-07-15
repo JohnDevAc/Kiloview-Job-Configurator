@@ -4,10 +4,8 @@ namespace KiloviewSetup.Core;
 
 /// <summary>
 /// Stages model-specific firmware locally and coordinates the KiloLink fleet-update step.
-/// KiloLink Server Pro documents the user workflow, but does not publish its firmware HTTP contract;
-/// a real update is therefore stopped safely until that contract is validated against the target server version.
 /// </summary>
-public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore credentials, IWebHostEnvironment environment)
+public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore credentials, KiloLinkServerClient kiloLink, IWebHostEnvironment environment)
 {
     private const long MaximumFirmwareBytes = 1024L * 1024 * 1024;
     private readonly string _directory = GetFirmwareDirectory(environment);
@@ -44,11 +42,11 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
 
         if (lastJob.Simulation || devices.All(d => d.Family == DeviceFamily.Simulated))
         {
-            var running = job with { Status = "running", Message = "KiloLink simulation fleet update is running." };
-            await store.UpdateAsync(s => s with { FirmwareJob = running });
+            var simulationRunning = job with { Status = "running", Message = "KiloLink simulation fleet update is running." };
+            await store.UpdateAsync(s => s with { FirmwareJob = simulationRunning });
             await Task.Delay(500, ct);
             var versions = job.Packages.ToDictionary(p => p.Model, p => Path.GetFileNameWithoutExtension(p.FileName), StringComparer.OrdinalIgnoreCase);
-            var completed = running with { Status = "completed", FinishedUtc = DateTimeOffset.UtcNow, Message = "All simulated devices completed their model-specific firmware update." };
+            var completed = simulationRunning with { Status = "completed", FinishedUtc = DateTimeOffset.UtcNow, Message = "All simulated devices completed their model-specific firmware update." };
             await store.UpdateAsync(s => s with
             {
                 Devices = s.Devices.Select(d => d.IsOnboarded && versions.TryGetValue(ModelOf(d), out var version) ? d with { FirmwareVersion = version } : d).ToArray(),
@@ -62,11 +60,23 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
         if (!credentials.GetStatus(lastJob.KiloLinkServerIp).Stored)
             throw new InvalidOperationException("No locally stored KiloLink server credentials are available for this job.");
 
-        var managementUrl = $"http://{lastJob.KiloLinkServerIp}";
-        const string message = "Firmware is staged, but this KiloLink Server version does not expose a documented fleet-update API. Open KiloLink, upload the staged packages under Firmware Management, enable Maintenance Mode, and run the matching N6/N60 batch upgrades. The application will not guess at undocumented firmware endpoints.";
-        var waiting = job with { Status = "awaiting-kilolink-api", Message = message };
-        await store.UpdateAsync(s => s with { FirmwareJob = waiting });
-        return new(false, false, waiting.Status, message, managementUrl);
+        var credential = credentials.ResolveAndStore(lastJob.KiloLinkServerIp, "", "");
+        var uploadRunning = job with { Status = "uploading", Message = "Uploading model-specific packages to KiloLink Server and preparing the fleet dispatch." };
+        await store.UpdateAsync(s => s with { FirmwareJob = uploadRunning });
+        try
+        {
+            var result = await kiloLink.DispatchFleetAsync(lastJob.KiloLinkServerIp, lastJob.KiloLinkWebPort, credential, job.Packages, devices, ct);
+            var message = $"KiloLink accepted {result.PackagesUploaded} firmware package(s) and dispatched updates to {result.DevicesDispatched} device(s). Monitor completion in KiloLink before removing power.";
+            var dispatched = uploadRunning with { Status = "dispatched", Message = message };
+            await store.UpdateAsync(s => s with { FirmwareJob = dispatched });
+            return new(true, false, "dispatched", message, $"http://{lastJob.KiloLinkServerIp}:{lastJob.KiloLinkWebPort}/");
+        }
+        catch (Exception ex)
+        {
+            var failed = uploadRunning with { Status = "failed", FinishedUtc = DateTimeOffset.UtcNow, Message = ex.Message };
+            await store.UpdateAsync(s => s with { FirmwareJob = failed });
+            throw;
+        }
     }
 
     private async Task<FirmwarePackage> SaveAsync(string model, IFormFile file, CancellationToken ct)

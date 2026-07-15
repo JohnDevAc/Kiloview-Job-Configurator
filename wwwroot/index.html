@@ -25,11 +25,13 @@
       </div>
       <form id="setupForm" class="panel setup-grid">
         <div class="section-title"><span>01</span><div><h2>Service connections</h2><p>Where every unit should register.</p></div></div>
-        <label><span>KiloLink Server IP</span><input name="kiloLinkServerIp" placeholder="192.168.10.20" required inputmode="decimal"></label>
-        <label><span>KiloLink onboarding code</span><input name="kiloLinkOnboardingCode" type="password" autocomplete="off" required><small>Used only during this run; never written to the state file.</small></label>
+        <label><span>KiloLink Server IP</span><input name="kiloLinkServerIp" placeholder="Auto-detecting…" required inputmode="decimal"><small>The local network is checked for KiloLink Server Pro.</small></label>
+        <div class="connection-test"><button id="findKiloLink" class="quiet" type="button">Find KiloLink Server</button><span id="kiloLinkDiscoveryResult"></span></div>
         <label><span>KiloLink Server username</span><input name="kiloLinkUsername" autocomplete="username"><small>Stored for this server IP on the local Windows PC.</small></label>
         <label><span>KiloLink Server password</span><input name="kiloLinkPassword" type="password" autocomplete="current-password"><small id="kiloLinkCredentialHint">Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.</small></label>
-        <label><span>KiloLink port</span><input name="kiloLinkPort" type="number" value="50000" min="1" max="65535" required></label>
+        <label><span>KiloLink web port</span><input name="kiloLinkWebPort" type="number" value="8081" min="1" max="65535" required><small>Server Pro web/API interface.</small></label>
+        <label><span>KiloLink device-link UDP port</span><input name="kiloLinkPort" type="number" value="50000" min="1" max="65535" required><small>Devices register on 50000–50001 UDP.</small></label>
+        <div class="wide connection-test"><button id="testKiloLink" class="quiet" type="button">Test KiloLink login</button><span id="kiloLinkTestResult"></span></div>
         <label><span>NDI Discovery Server IP</span><input name="ndiDiscoveryServerIp" placeholder="192.168.10.21" required inputmode="decimal"></label>
 
         <div class="section-title"><span>02</span><div><h2>Address pool</h2><p>Assigned from the first free address above existing units.</p></div></div>
@@ -45,7 +47,7 @@
           <summary>Device login & test options</summary>
           <div class="details-grid">
             <label><span>Username</span><input name="username" value="admin"></label>
-            <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"></label>
+            <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"><small>N6/N60 factory default is admin/admin.</small></label>
             <label class="check"><input name="simulation" type="checkbox"><span>Simulation mode — no hardware changes</span></label>
           </div>
         </details>
@@ -63,7 +65,7 @@
     <section id="planView" class="view hidden">
       <div class="page-head"><div><p class="eyebrow">CONFIRMATION</p><h1>Review the run</h1><p>No device is changed until you confirm this plan.</p></div><button class="quiet" data-action="back-devices">← Device list</button></div>
       <div class="panel plan-panel"><div id="planRows"></div><div id="planWarnings" class="warnings"></div></div>
-      <div class="sticky-action"><div><strong id="planCount"></strong><small>IP changes run sequentially to avoid collisions.</small></div><button id="runPlan" class="danger">Confirm & onboard <b>→</b></button></div>
+      <div class="sticky-action"><div><strong id="planCount"></strong><small>Confirmation accepts each device’s Kiloview EULA and sets admin / Job Name before configuration.</small></div><button id="runPlan" class="danger">Accept EULA & onboard <b>→</b></button></div>
     </section>
 
     <section id="progressView" class="view hidden">

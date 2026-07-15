@@ -6,7 +6,7 @@ using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
 
-public sealed class OnboardingService(AppStateStore store, DeviceClientFactory factory, KiloLinkCredentialStore credentialStore, ILogger<OnboardingService> logger)
+public sealed class OnboardingService(AppStateStore store, DeviceClientFactory factory, KiloLinkCredentialStore credentialStore, KiloLinkServerClient kiloLink, ILogger<OnboardingService> logger)
 {
     private readonly object _progressGate = new();
     private OnboardingProgress _progress = new(Guid.Empty, "idle", 0, 0, [], DateTimeOffset.UtcNow);
@@ -16,12 +16,16 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
     public async Task<OnboardingPlan> BuildPlanAsync(OnboardingRequest request, CancellationToken ct)
     {
         InputValidation.Validate(request);
-        var serverCredential = credentialStore.ResolveAndStore(request.KiloLinkServerIp, request.KiloLinkUsername, request.KiloLinkPassword);
-        request = request with { KiloLinkUsername = serverCredential.Username, KiloLinkPassword = "" };
         var state = await store.ReadAsync();
         var selected = request.DeviceIds.Distinct().Select(id => state.Devices.FirstOrDefault(d => d.Id == id)
             ?? throw new ArgumentException($"Selected device '{id}' is no longer in the discovery list.")).ToArray();
         if (selected.Length == 0) throw new ArgumentException("Select at least one device to onboard.");
+        if (selected.Any(d => d.Family != DeviceFamily.Simulated))
+        {
+            var serverCredential = credentialStore.ResolveAndStore(request.KiloLinkServerIp, request.KiloLinkUsername, request.KiloLinkPassword);
+            request = request with { KiloLinkUsername = serverCredential.Username, KiloLinkPassword = "" };
+        }
+        else request = request with { KiloLinkPassword = "" };
 
         var range = NetworkAddressing.Range(request.StaticStart, request.StaticEnd).Select(x => x.ToString()).ToArray();
         var occupied = new ConcurrentDictionary<string, byte>();
@@ -57,6 +61,8 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
 
         var warnings = new List<string>
         {
+            $"Confirming authorizes the application to accept the Kiloview EULA on each selected unit and set its device login to admin / {request.JobName}.",
+            "KiloLink authorization codes will be generated on the server from each unit serial number; the KiloLink alias will match the assigned hostname.",
             "Role detection temporarily switches every selected unit to decoder mode. N60 firmware can take about one minute to change mode.",
             "Keep all intended HDMI displays powered on until role detection completes."
         };
@@ -68,7 +74,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         lock (_progressGate)
         {
             if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
-            var total = Math.Max(1, plan.Devices.Count * 6);
+            var total = Math.Max(1, plan.Devices.Count * 8);
             _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
             _run = Task.Run(() => ExecuteAsync(plan));
             return new { _progress.RunId, _progress.Status };
@@ -78,6 +84,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
     private async Task ExecuteAsync(OnboardingPlan plan)
     {
         var ready = new List<ManagedDevice>();
+        KiloLinkCredential? serverCredential = null;
         try
         {
             foreach (var item in plan.Devices)
@@ -85,6 +92,13 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                 var device = (await store.ReadAsync()).Devices.First(d => d.Id == item.DeviceId);
                 try
                 {
+                    var targetCredentials = new DeviceCredentials("admin", plan.Settings.JobName);
+                    Step(device, "Access & license", "running", "Accepting EULA and applying job credentials");
+                    await factory.Create(device).ProvisionAccessAsync(targetCredentials, CancellationToken.None);
+                    device = device with { Credentials = targetCredentials, LicenseAccepted = true, Health = DeviceHealth.Configuring };
+                    await SaveDeviceAsync(device);
+                    CompleteStep(device, "Access & license", "EULA accepted; admin password set to Job Name");
+
                     Step(device, "Static IP", "running", $"Assigning {item.TargetIp}");
                     if (!item.ExistingStaticDevice)
                         await factory.Create(device).SetNetworkAsync(item.TargetIp, plan.Settings.SubnetMask, plan.Settings.Gateway, CancellationToken.None);
@@ -106,8 +120,21 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                     }
                     else CompleteStep(device, "Prepare", "Encoder mode ready");
 
+                    Step(device, "KiloLink authorization", "running", "Generating server-side device code");
+                    var authorizationCode = device.Family == DeviceFamily.Simulated
+                        ? $"SIM-{device.Id}"
+                        : (await kiloLink.AuthorizeDeviceAsync(
+                            plan.Settings.KiloLinkServerIp,
+                            plan.Settings.KiloLinkWebPort,
+                            serverCredential ??= credentialStore.ResolveAndStore(plan.Settings.KiloLinkServerIp, plan.Settings.KiloLinkUsername, plan.Settings.KiloLinkPassword),
+                            device.Id,
+                            item.Hostname,
+                            CancellationToken.None)).AuthorizationCode;
+                    CompleteStep(device, "KiloLink authorization", "Serial registered; alias matches hostname");
+
                     Step(device, "KiloLink / NDI", "running");
-                    await factory.Create(device).ConfigureOnboardingAsync(plan.Settings, item.Hostname, $"{SanitizeName(plan.Settings.JobName)}-{item.TargetIp.Split('.').Last()}", CancellationToken.None);
+                    var deviceSettings = plan.Settings with { KiloLinkOnboardingCode = authorizationCode };
+                    await factory.Create(device).ConfigureOnboardingAsync(deviceSettings, item.Hostname, $"{SanitizeName(plan.Settings.JobName)}-{item.TargetIp.Split('.').Last()}", CancellationToken.None);
                     device = device with
                     {
                         Hostname = item.Hostname,
@@ -184,6 +211,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                 LastJob = new(plan.Settings.JobName, plan.Settings.StaticStart, plan.Settings.StaticEnd, plan.Settings.NdiDiscoveryServerIp, Progress.StartedUtc)
                 {
                     KiloLinkServerIp = plan.Settings.KiloLinkServerIp,
+                    KiloLinkWebPort = plan.Settings.KiloLinkWebPort,
                     Simulation = ready.Count > 0 && ready.All(d => d.Family == DeviceFamily.Simulated)
                 },
                 FirmwareJob = null
@@ -219,6 +247,12 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         }
         await factory.Create(device).SetIdentityAsync(update.Hostname.Trim(), update.NdiChannelName.Trim(), device.NdiGroup, ct);
         device = device with { Hostname = update.Hostname.Trim(), NdiChannelName = update.NdiChannelName.Trim(), LastError = null };
+        var state = await store.ReadAsync();
+        if (device.Family != DeviceFamily.Simulated && state.LastJob is { } job && !string.IsNullOrWhiteSpace(job.KiloLinkServerIp))
+        {
+            var credential = credentialStore.ResolveAndStore(job.KiloLinkServerIp, null, null);
+            await kiloLink.AuthorizeDeviceAsync(job.KiloLinkServerIp, job.KiloLinkWebPort, credential, device.Id, device.Hostname, ct);
+        }
         if (restoreDecoder)
         {
             await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, ct);
