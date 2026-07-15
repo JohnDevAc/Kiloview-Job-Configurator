@@ -1,0 +1,11 @@
+bin/
+obj/
+.dotnet/
+.appdata/
+.nuget-packages/
+.testdata*/
+.package-smoke/
+publish/
+artifacts/
+*.user
+*.log

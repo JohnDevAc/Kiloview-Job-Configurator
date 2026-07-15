@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#09100f">
+  <title>Kiloview Setup</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#" data-action="monitor">
+      <span class="brand-mark">K</span>
+      <span><strong>Kiloview Setup</strong><small>ONBOARD · CONFIGURE · MONITOR</small></span>
+    </a>
+    <div class="service"><i id="serviceDot"></i><span>Service on port 8091</span></div>
+  </header>
+
+  <main>
+    <section id="setupView" class="view">
+      <div class="hero">
+        <p class="eyebrow">NEW JOB</p>
+        <h1>Bring every converter<br><em>online, in order.</em></h1>
+        <p>Discover factory-reset N6 and N60 units, reserve safe static addresses, connect services, and classify HDMI decoders in one guided run.</p>
+      </div>
+      <form id="setupForm" class="panel setup-grid">
+        <div class="section-title"><span>01</span><div><h2>Service connections</h2><p>Where every unit should register.</p></div></div>
+        <label><span>KiloLink Server IP</span><input name="kiloLinkServerIp" placeholder="192.168.10.20" required inputmode="decimal"></label>
+        <label><span>KiloLink onboarding code</span><input name="kiloLinkOnboardingCode" type="password" autocomplete="off" required><small>Used only during this run; never written to the state file.</small></label>
+        <label><span>KiloLink Server username</span><input name="kiloLinkUsername" autocomplete="username"><small>Stored for this server IP on the local Windows PC.</small></label>
+        <label><span>KiloLink Server password</span><input name="kiloLinkPassword" type="password" autocomplete="current-password"><small id="kiloLinkCredentialHint">Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.</small></label>
+        <label><span>KiloLink port</span><input name="kiloLinkPort" type="number" value="50000" min="1" max="65535" required></label>
+        <label><span>NDI Discovery Server IP</span><input name="ndiDiscoveryServerIp" placeholder="192.168.10.21" required inputmode="decimal"></label>
+
+        <div class="section-title"><span>02</span><div><h2>Address pool</h2><p>Assigned from the first free address above existing units.</p></div></div>
+        <label><span>Static range start</span><input name="staticStart" placeholder="192.168.10.150" required inputmode="decimal"></label>
+        <label><span>Static range end</span><input name="staticEnd" placeholder="192.168.10.199" required inputmode="decimal"></label>
+        <label><span>Subnet mask</span><input name="subnetMask" value="255.255.255.0" required inputmode="decimal"></label>
+        <label><span>Gateway</span><input name="gateway" placeholder="192.168.10.1" inputmode="decimal"></label>
+
+        <div class="section-title"><span>03</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
+        <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required maxlength="32"></label>
+        <label class="wide"><span>Networks to scan <small>(one CIDR per line)</small></span><textarea name="scanCidrs" id="scanCidrs" rows="2" placeholder="192.168.10.0/24"></textarea></label>
+        <details class="wide advanced">
+          <summary>Device login & test options</summary>
+          <div class="details-grid">
+            <label><span>Username</span><input name="username" value="admin"></label>
+            <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"></label>
+            <label class="check"><input name="simulation" type="checkbox"><span>Simulation mode — no hardware changes</span></label>
+          </div>
+        </details>
+        <div class="form-actions wide"><button class="primary" type="submit"><span>Scan network</span><b>→</b></button></div>
+      </form>
+    </section>
+
+    <section id="discoverView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">DISCOVERY</p><h1>Select devices</h1><p>Only units outside the requested static pool are selected for onboarding.</p></div><button class="quiet" data-action="back-setup">← Edit job</button></div>
+      <div id="discoverySummary" class="summary-strip"></div>
+      <div id="discoveredGrid" class="device-grid"></div>
+      <div class="sticky-action"><div><strong id="selectedCount">0 selected</strong><small>Already-static devices are preserved.</small></div><button id="buildPlan" class="primary">Review address plan <b>→</b></button></div>
+    </section>
+
+    <section id="planView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">CONFIRMATION</p><h1>Review the run</h1><p>No device is changed until you confirm this plan.</p></div><button class="quiet" data-action="back-devices">← Device list</button></div>
+      <div class="panel plan-panel"><div id="planRows"></div><div id="planWarnings" class="warnings"></div></div>
+      <div class="sticky-action"><div><strong id="planCount"></strong><small>IP changes run sequentially to avoid collisions.</small></div><button id="runPlan" class="danger">Confirm & onboard <b>→</b></button></div>
+    </section>
+
+    <section id="progressView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">ONBOARDING</p><h1 id="progressTitle">Applying configuration</h1><p id="progressMessage">Keep devices and connected displays powered on.</p></div><div class="spinner"></div></div>
+      <div class="progress-shell"><div id="progressBar"></div></div>
+      <div class="panel"><div id="progressSteps" class="timeline"></div></div>
+    </section>
+
+    <section id="firmwareView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">FLEET FIRMWARE</p><h1>Update by model</h1><p>Point the application at the latest N6 and N60 firmware packages after initial onboarding.</p></div></div>
+      <form id="firmwareForm" class="panel firmware-panel">
+        <div id="firmwareCoverage" class="summary-strip"></div>
+        <div class="firmware-files">
+          <label id="n6FirmwareLabel"><span>Latest N6 firmware <small>(.bin)</small></span><input name="n6Firmware" type="file" accept=".bin,application/octet-stream"></label>
+          <label id="n60FirmwareLabel"><span>Latest N60 firmware <small>(.bin)</small></span><input name="n60Firmware" type="file" accept=".bin,application/octet-stream"></label>
+        </div>
+        <div class="note">Firmware packages are copied to this PC for the active job. KiloLink must place devices in Maintenance Mode before its batch upgrade. Do not disconnect power or network while an update is running.</div>
+        <div id="firmwareStatus" class="firmware-status"></div>
+        <div class="firmware-actions"><button id="skipFirmware" class="quiet" type="button">Skip for now</button><button id="stageFirmware" class="primary" type="submit"><span>Stage firmware</span><b>→</b></button></div>
+      </form>
+    </section>
+
+    <section id="decoderView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">DECODER IDENTIFICATION</p><h1>Name the displays</h1><p>These units negotiated an HDMI output. Adjust names before completing setup.</p></div></div>
+      <div id="decoderGrid" class="device-grid"></div>
+      <div class="note">Changing a decoder’s NDI name temporarily switches it through encoder mode so the setting can be applied, then returns it to decoder mode. N60 units may take up to two minutes.</div>
+      <div class="sticky-action"><div><strong>All displays identified?</strong><small>This sends preset 0 (black) to every decoder.</small></div><button id="completeSetup" class="primary">Setup completed <b>✓</b></button></div>
+    </section>
+
+    <section id="monitorView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Health refreshes every 15 seconds.</p></div><button class="quiet" data-action="new-job">+ New onboarding</button></div>
+      <div class="monitor-stats" id="monitorStats"></div>
+      <div id="monitorGrid" class="device-grid"></div>
+    </section>
+  </main>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
