@@ -9,9 +9,10 @@
     <Product>Kiloview Job Configurator</Product>
     <Description>Discover, onboard, configure, identify, and monitor Kiloview devices for a production job.</Description>
     <Company>JohnDevAc</Company>
-    <Version>0.6.0</Version>
+    <Version>0.6.1</Version>
     <Copyright>Copyright © 2026 JohnDevAc. All rights reserved.</Copyright>
     <ApplicationIcon>assets\KiloviewSetup.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>

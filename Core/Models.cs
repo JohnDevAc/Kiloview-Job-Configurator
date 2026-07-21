@@ -34,7 +34,7 @@ public sealed record ManagedDevice
 public sealed record LastJob(string JobName, string StaticStart, string StaticEnd, string NdiDiscoveryServerIp, DateTimeOffset StartedUtc)
 {
     public string KiloLinkServerIp { get; init; } = "";
-    public int KiloLinkWebPort { get; init; } = 8081;
+    public int KiloLinkWebPort { get; init; } = 80;
     public bool Simulation { get; init; }
 }
 
@@ -73,7 +73,7 @@ public sealed record OnboardingRequest(
     IReadOnlyList<string> DeviceIds,
     IReadOnlyDictionary<string, DeviceRole>? RoleOverrides = null,
     int KiloLinkPort = 50000,
-    int KiloLinkWebPort = 8081);
+    int KiloLinkWebPort = 80);
 
 public sealed record DevicePlan(string DeviceId, string CurrentIp, string TargetIp, string Hostname, DeviceRole Role, bool ExistingStaticDevice = false);
 public sealed record OnboardingPlan(OnboardingRequest Settings, IReadOnlyList<DevicePlan> Devices, IReadOnlyList<string> OccupiedAddresses, IReadOnlyList<string> Warnings);

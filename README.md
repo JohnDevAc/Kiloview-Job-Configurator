@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/KiloviewSetup.png" width="140" alt="Kiloview Job Configurator icon"></p>
+
 # Kiloview Job Configurator
 
 > **Proprietary source-available software — not open source.** Free for non-commercial use in unmodified form only. Modification, derivative works, redistribution, and commercial use are prohibited. See [LICENSE.md](LICENSE.md).
@@ -41,7 +43,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it installs for the current Windows user, registers the service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded desktop and Start Menu web shortcuts.
+Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. Those shortcuts restart the elevated service when necessary before opening the UI.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -55,7 +57,11 @@ Self-contained Windows x64 package (larger; restore may need internet access):
 .\scripts\Publish.ps1 -SelfContained
 ```
 
-Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`. Installation is per-user, starts the service at sign-in, creates Start Menu entries, and places `Kiloview Job Configurator.url` on the desktop.
+Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`. Installation is per-user, registers an elevated scheduled task so the service starts with administrator rights at sign-in, and creates branded Desktop and Start Menu launch shortcuts. The installer and application request elevation through Windows UAC.
+
+## Software updates
+
+Open **System settings** from the application header to view the installed version, confirm administrator status, and check the official GitHub Releases feed. When a newer release is available, the application downloads only the named Windows installer from `JohnDevAc/Kiloview-Job-Configurator`, verifies its size and GitHub-published SHA-256 digest, and opens it with administrator rights. The update proceeds only after the user accepts the installer EULA.
 
 ## License and third-party notices
 
@@ -75,7 +81,7 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 - Device credentials are intentionally stored locally in `state.json`; after first-login provisioning the username is `admin` and the password is the exact Job Name.
 - Persistent state is stored in `%LOCALAPPDATA%\Kiloview Setup\state.json`.
 - Staged firmware is stored under `%LOCALAPPDATA%\Kiloview Setup\firmware`, separated by device model, and checked with SHA-256 after upload.
-- The KiloLink web/API port is configured separately from the device-link UDP port. The validated defaults are web `8081` and device link `50000` (with KiloLink using `50000–50001` UDP).
+- The KiloLink web/API port is configured separately from the device-link UDP port. The defaults are web `80` and device link `50000` (with KiloLink using `50000–50001` UDP).
 - Static address conflicts are checked using known inventory, ICMP, HTTP, and HTTPS before a plan is offered.
 - A failed readdress, reconnect, API call, or mode switch is shown per device and does not silently pass.
 - N60 mode changes can take about one minute. Keep displays on until HDMI negotiation completes.

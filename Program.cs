@@ -6,7 +6,9 @@ using KiloviewSetup.Devices;
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
-builder.WebHost.UseUrls("http://127.0.0.1:8091");
+var servicePort = int.TryParse(Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"), out var configuredPort)
+    && configuredPort is >= 1024 and <= 65535 ? configuredPort : 8091;
+builder.WebHost.UseUrls($"http://127.0.0.1:{servicePort}");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
@@ -21,6 +23,14 @@ builder.Services.AddSingleton<FirmwareService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
 builder.Services.AddSingleton<OnboardingService>();
+builder.Services.AddHttpClient<GitHubUpdateService>(client =>
+{
+    client.BaseAddress = new Uri("https://api.github.com/");
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("Kiloview-Job-Configurator");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+    client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+    client.Timeout = TimeSpan.FromMinutes(15);
+});
 builder.Services.AddHostedService<DeviceMonitor>();
 
 var app = builder.Build();
@@ -29,6 +39,20 @@ app.UseStaticFiles();
 
 var applicationVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", version = applicationVersion }));
+app.MapGet("/api/system/info", (GitHubUpdateService updates) => Results.Ok(updates.GetSystemInformation()));
+app.MapGet("/api/system/update", async (GitHubUpdateService updates, CancellationToken ct) =>
+{
+    try { return Results.Ok(await updates.CheckAsync(ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+app.MapPost("/api/system/update/install", async (GitHubUpdateService updates, CancellationToken ct) =>
+{
+    try { return Results.Accepted(value: await updates.DownloadAndLaunchAsync(ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+    catch (IOException ex) { return Results.Problem(ex.Message, statusCode: 500); }
+});
 app.MapGet("/license", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "LICENSE.md"), "text/markdown; charset=utf-8"));
 app.MapGet("/third-party-notices", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "THIRD-PARTY-NOTICES", "README.md"), "text/markdown; charset=utf-8"));
 app.MapGet("/api/network/subnets", () => Results.Ok(NetworkAddressing.GetLocalScanCidrs()));
@@ -53,7 +77,7 @@ app.MapGet("/api/kilolink/credentials", (string serverIp, KiloLinkCredentialStor
 });
 app.MapGet("/api/kilolink/discover", async (int? webPort, KiloLinkServerClient client, CancellationToken ct) =>
 {
-    try { return Results.Ok(await client.DiscoverAsync(webPort ?? 8081, ct)); }
+    try { return Results.Ok(await client.DiscoverAsync(webPort ?? 80, ct)); }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 app.MapPost("/api/kilolink/test", async (KiloLinkConnectionRequest request, KiloLinkCredentialStore credentials, KiloLinkServerClient client, CancellationToken ct) =>
@@ -132,7 +156,7 @@ if (args.Contains("--open-browser", StringComparer.OrdinalIgnoreCase))
 {
     app.Lifetime.ApplicationStarted.Register(() =>
     {
-        try { Process.Start(new ProcessStartInfo("http://localhost:8091") { UseShellExecute = true }); }
+        try { Process.Start(new ProcessStartInfo($"http://localhost:{servicePort}") { UseShellExecute = true }); }
         catch { /* The web service is still usable if no browser is registered. */ }
     });
 }

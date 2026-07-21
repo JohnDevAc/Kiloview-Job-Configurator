@@ -5,15 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#09100f">
   <title>Kiloview Job Configurator</title>
+  <link rel="icon" href="/KiloviewSetup.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/KiloviewSetup.png">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="#" data-action="monitor">
-      <span class="brand-mark">K</span>
+      <img class="brand-logo" src="/KiloviewSetup.png" alt="">
       <span><strong>Kiloview Job Configurator</strong><small>ONBOARD · CONFIGURE · MONITOR</small></span>
     </a>
-    <div class="service"><i id="serviceDot"></i><span>Service on port 8091</span></div>
+    <div class="top-actions">
+      <div class="service" title="Local service status"><i id="serviceDot"></i><span id="headerVersion">Version v…</span></div>
+      <button class="settings-link" type="button" data-action="settings">System settings</button>
+    </div>
   </header>
 
   <main>
@@ -29,7 +34,7 @@
         <div class="connection-test"><button id="findKiloLink" class="quiet" type="button">Find KiloLink Server</button><span id="kiloLinkDiscoveryResult"></span></div>
         <label><span>KiloLink Server username</span><input name="kiloLinkUsername" autocomplete="username"><small>Stored for this server IP on the local Windows PC.</small></label>
         <label><span>KiloLink Server password</span><input name="kiloLinkPassword" type="password" autocomplete="current-password"><small id="kiloLinkCredentialHint">Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.</small></label>
-        <label><span>KiloLink web port</span><input name="kiloLinkWebPort" type="number" value="8081" min="1" max="65535" required><small>Server Pro web/API interface.</small></label>
+        <label><span>KiloLink web port</span><input name="kiloLinkWebPort" type="number" value="80" min="1" max="65535" required><small>Server Pro web/API interface.</small></label>
         <label><span>KiloLink device-link UDP port</span><input name="kiloLinkPort" type="number" value="50000" min="1" max="65535" required><small>Devices register on 50000–50001 UDP.</small></label>
         <div class="wide connection-test"><button id="testKiloLink" class="quiet" type="button">Test KiloLink login</button><span id="kiloLinkTestResult"></span></div>
         <label><span>NDI® Discovery Server IP</span><input name="ndiDiscoveryServerIp" placeholder="192.168.10.21" required inputmode="decimal"></label>
@@ -99,6 +104,29 @@
       <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Health refreshes every 15 seconds.</p></div><button class="quiet" data-action="new-job">+ New onboarding</button></div>
       <div class="monitor-stats" id="monitorStats"></div>
       <div id="monitorGrid" class="device-groups"></div>
+    </section>
+
+    <section id="settingsView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">SYSTEM</p><h1>System settings</h1><p>Application version, administrator status, and updates from the official GitHub release.</p></div><button class="quiet" data-action="back-settings">← Back</button></div>
+      <div class="settings-grid">
+        <article class="panel settings-panel">
+          <div class="settings-brand"><img src="/KiloviewSetup.png" alt=""><div><p class="eyebrow">INSTALLED SOFTWARE</p><h2 id="settingsCurrentVersion">Version …</h2></div></div>
+          <div class="settings-row"><span>Service privileges</span><strong id="administratorStatus">Checking…</strong></div>
+          <div class="settings-row"><span>Startup</span><strong>Elevated at sign-in</strong></div>
+          <p class="settings-copy">Kiloview Job Configurator requires administrator rights for hardware discovery, network configuration, and managed startup.</p>
+        </article>
+        <article class="panel settings-panel update-panel">
+          <p class="eyebrow">SOFTWARE UPDATE</p>
+          <h2 id="latestVersion">Checking GitHub…</h2>
+          <p id="updateStatus" class="settings-copy">Contacting the official release feed.</p>
+          <a id="releaseLink" class="release-link hidden" target="_blank" rel="noreferrer">View release notes ↗</a>
+          <div class="settings-actions">
+            <button id="checkForUpdate" class="quiet" type="button">Check again</button>
+            <button id="installUpdate" class="primary hidden" type="button"><span>Download & install</span><b>→</b></button>
+          </div>
+          <small class="update-security">Updates are downloaded only from JohnDevAc/Kiloview-Job-Configurator releases and must match GitHub’s published SHA-256 digest. The installer EULA must be accepted before installation continues.</small>
+        </article>
+      </div>
     </section>
   </main>
 

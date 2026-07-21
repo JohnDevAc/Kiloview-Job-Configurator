@@ -31,6 +31,7 @@ if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 
 Copy-Item -LiteralPath (Join-Path $root 'installer\Install-KiloviewSetup.ps1') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'installer\Uninstall-KiloviewSetup.ps1') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $root 'installer\Launch-KiloviewJobConfigurator.ps1') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'installer\Install.cmd') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'assets\KiloviewSetup.ico') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $publish

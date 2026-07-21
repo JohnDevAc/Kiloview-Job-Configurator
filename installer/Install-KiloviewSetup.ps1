@@ -2,6 +2,19 @@
 param([string]$Source = $PSScriptRoot)
 
 $ErrorActionPreference = 'Stop'
+function Test-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Administrator)) {
+    $resolvedSource = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $elevationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Source `"$resolvedSource`""
+    $elevatedInstaller = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $elevationArguments -Wait -PassThru
+    exit $elevatedInstaller.ExitCode
+}
+
 # Keep these internal paths stable so existing installations and saved jobs upgrade in place.
 $installRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Kiloview Setup'
 $dataRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Kiloview Setup'
@@ -10,6 +23,7 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 $programs = [Environment]::GetFolderPath('Programs')
 $startMenu = Join-Path $programs 'Kiloview Job Configurator'
 $legacyStartMenu = Join-Path $programs 'Kiloview Setup'
+$scheduledTaskName = 'Kiloview Job Configurator Service'
 
 $sourceExe = Join-Path $Source 'KiloviewSetup.exe'
 if (-not (Test-Path $sourceExe)) { throw "KiloviewSetup.exe was not found in $Source. Run scripts\Publish.ps1 first." }
@@ -34,34 +48,41 @@ Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.d
 if (Test-Path (Join-Path $Source 'wwwroot')) { Copy-Item -LiteralPath (Join-Path $Source 'wwwroot') -Destination $installRoot -Recurse -Force }
 if (Test-Path (Join-Path $Source 'THIRD-PARTY-NOTICES')) { Copy-Item -LiteralPath (Join-Path $Source 'THIRD-PARTY-NOTICES') -Destination $installRoot -Recurse -Force }
 Copy-Item -LiteralPath (Join-Path $Source 'Uninstall-KiloviewSetup.ps1') -Destination $installRoot -Force
+Copy-Item -LiteralPath (Join-Path $Source 'Launch-KiloviewJobConfigurator.ps1') -Destination $installRoot -Force
 
 $exe = Join-Path $installRoot 'KiloviewSetup.exe'
 $icon = Join-Path $installRoot 'KiloviewSetup.ico'
+$launcher = Join-Path $installRoot 'Launch-KiloviewJobConfigurator.ps1'
 $shell = New-Object -ComObject WScript.Shell
 $legacyStartupLink = Join-Path $startup 'Kiloview Setup Service.lnk'
+$currentStartupLink = Join-Path $startup 'Kiloview Job Configurator Service.lnk'
 $legacyDesktopLink = Join-Path $desktop 'Kiloview Setup.url'
 Remove-Item -LiteralPath $legacyStartupLink -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $currentStartupLink -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $legacyDesktopLink -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $desktop 'Kiloview Job Configurator.url') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $legacyStartMenu 'Kiloview Setup.url') -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $startMenu 'Kiloview Job Configurator.url') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $legacyStartMenu -Force -ErrorAction SilentlyContinue
 
-$startupShortcut = $shell.CreateShortcut((Join-Path $startup 'Kiloview Job Configurator Service.lnk'))
-$startupShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
-$startupShortcut.Arguments = "-NoProfile -WindowStyle Hidden -Command `"& '$exe'`""
-$startupShortcut.WorkingDirectory = $installRoot
-$startupShortcut.WindowStyle = 0
-$startupShortcut.Description = 'Kiloview Job Configurator local web service'
-$startupShortcut.IconLocation = "$icon,0"
-$startupShortcut.Save()
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$taskAction = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $installRoot
+$taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
+$taskPrincipal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
+$taskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName $scheduledTaskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description 'Elevated Kiloview Job Configurator local web service' -Force | Out-Null
 
-$url = @"
-[InternetShortcut]
-URL=http://localhost:8091
-IconFile=$icon
-IconIndex=0
-"@
-Set-Content -LiteralPath (Join-Path $desktop 'Kiloview Job Configurator.url') -Value $url -Encoding ASCII
-Set-Content -LiteralPath (Join-Path $startMenu 'Kiloview Job Configurator.url') -Value $url -Encoding ASCII
+$shortcutArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
+foreach ($shortcutPath in @((Join-Path $desktop 'Kiloview Job Configurator.lnk'), (Join-Path $startMenu 'Kiloview Job Configurator.lnk'))) {
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
+    $shortcut.Arguments = $shortcutArguments
+    $shortcut.WorkingDirectory = $installRoot
+    $shortcut.WindowStyle = 0
+    $shortcut.Description = 'Open Kiloview Job Configurator with its elevated local service'
+    $shortcut.IconLocation = "$icon,0"
+    $shortcut.Save()
+}
 
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\KiloviewSetup'
 New-Item -Path $uninstallKey -Force | Out-Null
@@ -76,7 +97,7 @@ New-ItemProperty -Path $uninstallKey -Name UninstallString -Value $uninstallComm
 New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
 
-Start-Process -FilePath $exe -WorkingDirectory $installRoot -WindowStyle Hidden
+Start-ScheduledTask -TaskName $scheduledTaskName
 $healthy = $false
 for ($attempt = 0; $attempt -lt 20; $attempt++) {
     try {
