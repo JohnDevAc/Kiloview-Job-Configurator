@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/KiloviewSetup.png" width="140" alt="Kiloview Job Configurator icon"></p>
+<p align="center"><img src="wwwroot/KiloviewSetup.png" width="140" alt="Kiloview Job Configurator icon"></p>
 
 # Kiloview Job Configurator
 

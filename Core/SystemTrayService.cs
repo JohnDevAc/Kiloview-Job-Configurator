@@ -95,7 +95,7 @@ public sealed class SystemTrayService(
     {
         var installedIcon = Path.Combine(environment.ContentRootPath, "KiloviewSetup.ico");
         if (File.Exists(installedIcon)) return new Icon(installedIcon);
-        var sourceIcon = Path.Combine(environment.ContentRootPath, "assets", "KiloviewSetup.ico");
+        var sourceIcon = Path.Combine(environment.ContentRootPath, "wwwroot", "KiloviewSetup.ico");
         if (File.Exists(sourceIcon)) return new Icon(sourceIcon);
         var executableIcon = Environment.ProcessPath is { } executable
             ? Icon.ExtractAssociatedIcon(executable)

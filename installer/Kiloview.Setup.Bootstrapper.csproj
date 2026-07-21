@@ -13,7 +13,7 @@
     <Company>John Lightfoot</Company>
     <Version>0.6.4</Version>
     <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
-    <ApplicationIcon>..\assets\KiloviewSetup.ico</ApplicationIcon>
+    <ApplicationIcon>..\wwwroot\KiloviewSetup.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
