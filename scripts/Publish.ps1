@@ -23,7 +23,15 @@ New-Item -ItemType Directory -Path $publish -Force | Out-Null
 
 $arguments = @('publish', (Join-Path $root 'Kiloview.Setup.csproj'), '--configuration', $Configuration, '--output', $publish, '--configfile', (Join-Path $root 'NuGet.Config'))
 if ($SelfContained) {
-    $arguments += @('--runtime', 'win-x64', '--self-contained', 'true', '-p:PublishSingleFile=true', '--source', 'https://api.nuget.org/v3/index.json')
+    $arguments += @(
+        '--runtime', 'win-x64',
+        '--self-contained', 'true',
+        '-p:PublishSingleFile=true',
+        '-p:EnableCompressionInSingleFile=true',
+        '-p:DebugType=None',
+        '-p:DebugSymbols=false',
+        '--source', 'https://api.nuget.org/v3/index.json'
+    )
 }
 
 & dotnet @arguments
@@ -53,6 +61,7 @@ if ($SetupExe) {
         '--configfile', (Join-Path $root 'NuGet.Config'),
         '--source', 'https://api.nuget.org/v3/index.json',
         '-p:PublishSingleFile=true',
+        '-p:EnableCompressionInSingleFile=true',
         '-p:DebugType=None',
         '-p:DebugSymbols=false'
     )

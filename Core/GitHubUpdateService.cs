@@ -118,8 +118,11 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                 if (downloadedLength != asset.Size)
                     throw new InvalidOperationException($"The downloaded installer size did not match GitHub ({downloadedLength} of {asset.Size} bytes).");
 
-                await using var input = File.OpenRead(temporaryPath);
-                var actualSha256 = Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken));
+                string actualSha256;
+                await using (var input = File.OpenRead(temporaryPath))
+                {
+                    actualSha256 = Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken));
+                }
                 var expectedSha256 = asset.Digest["sha256:".Length..].ToUpperInvariant();
                 if (!CryptographicOperations.FixedTimeEquals(Convert.FromHexString(actualSha256), Convert.FromHexString(expectedSha256)))
                     throw new InvalidOperationException("The downloaded installer failed SHA-256 verification.");
