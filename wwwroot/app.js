@@ -8,7 +8,7 @@ function esc(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt
 function roleClass(r){return String(r).toLowerCase()}
 
 async function boot(){
-  try{await api('/api/health');$('#serviceDot').className='online';const cidrs=await api('/api/network/subnets');$('#scanCidrs').value=cidrs.join('\n');const app=await api('/api/state');state.devices=app.devices||[];if(app.lastJob&&state.devices.some(d=>d.isOnboarded)){renderMonitor(app);show('monitor')}else{show('setup');detectKiloLink(true)}}
+  try{const health=await api('/api/health');$('#appVersion').textContent=`v${health.version}`;$('#serviceDot').className='online';const cidrs=await api('/api/network/subnets');$('#scanCidrs').value=cidrs.join('\n');const app=await api('/api/state');state.devices=app.devices||[];if(app.lastJob&&state.devices.some(d=>d.isOnboarded)){renderMonitor(app);show('monitor')}else{show('setup');detectKiloLink(true)}}
   catch(e){toast(`Service unavailable: ${e.message}`,true)}
 }
 

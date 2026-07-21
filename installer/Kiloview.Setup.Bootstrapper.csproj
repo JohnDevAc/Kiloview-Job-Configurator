@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Kiloview Job Configurator</AssemblyName>
@@ -10,7 +11,8 @@
     <Product>Kiloview Job Configurator</Product>
     <Description>Installer for the Kiloview job onboarding, configuration, and monitoring application.</Description>
     <Company>JohnDevAc</Company>
-    <Version>0.5.9</Version>
+    <Version>0.6.0</Version>
+    <Copyright>Copyright © 2026 JohnDevAc. All rights reserved.</Copyright>
     <ApplicationIcon>..\assets\KiloviewSetup.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>

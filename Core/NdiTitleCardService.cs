@@ -317,9 +317,9 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
                 var hostSize = device.Hostname.Length > 25 ? 88 : 116;
                 Draw(dc, device.Hostname.ToUpperInvariant(), hostSize, new Rect(180, 235, 1760, 465), 0x00FFFFFF, 700);
                 Draw(dc, device.IpAddress, 92, new Rect(180, 490, 1760, 660), 0x006DD337, 600);
-                Draw(dc, $"JOB NAME / NDI GROUP   {device.NdiGroup}", 42, new Rect(185, 715, 1760, 805), 0x00D6CEC5, 400);
+                Draw(dc, $"JOB NAME / NDI® GROUP   {device.NdiGroup}", 42, new Rect(185, 715, 1760, 805), 0x00D6CEC5, 400);
                 Draw(dc, $"CHANNEL     {device.NdiChannelName}", 42, new Rect(185, 810, 1760, 900), 0x00D6CEC5, 400);
-                Draw(dc, "MATCH THIS SCREEN TO THE CARD IN KILOVIEW SETUP", 30, new Rect(180, 960, 1760, 1025), 0x008D857E, 400);
+                Draw(dc, "MATCH THIS SCREEN TO THE CARD IN KILOVIEW JOB CONFIGURATOR", 30, new Rect(180, 960, 1760, 1025), 0x008D857E, 400);
                 var pixels = new byte[Width * Height * 4];
                 Marshal.Copy(bits, pixels, 0, pixels.Length);
                 return pixels;

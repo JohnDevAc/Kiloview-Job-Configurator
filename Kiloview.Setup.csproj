@@ -9,11 +9,14 @@
     <Product>Kiloview Job Configurator</Product>
     <Description>Discover, onboard, configure, identify, and monitor Kiloview devices for a production job.</Description>
     <Company>JohnDevAc</Company>
-    <Version>0.5.9</Version>
+    <Version>0.6.0</Version>
+    <Copyright>Copyright © 2026 JohnDevAc. All rights reserved.</Copyright>
     <ApplicationIcon>assets\KiloviewSetup.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="installer\**\*.cs" />
+    <Content Include="LICENSE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="THIRD-PARTY-NOTICES\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

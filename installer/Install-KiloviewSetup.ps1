@@ -30,8 +30,9 @@ Get-Process KiloviewSetup -ErrorAction SilentlyContinue | Stop-Process -Force
 New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
-Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.dll','.json','.pdb','.ico' | Copy-Item -Destination $installRoot -Force
+Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.dll','.json','.pdb','.ico','.md','.txt' | Copy-Item -Destination $installRoot -Force
 if (Test-Path (Join-Path $Source 'wwwroot')) { Copy-Item -LiteralPath (Join-Path $Source 'wwwroot') -Destination $installRoot -Recurse -Force }
+if (Test-Path (Join-Path $Source 'THIRD-PARTY-NOTICES')) { Copy-Item -LiteralPath (Join-Path $Source 'THIRD-PARTY-NOTICES') -Destination $installRoot -Recurse -Force }
 Copy-Item -LiteralPath (Join-Path $Source 'Uninstall-KiloviewSetup.ps1') -Destination $installRoot -Force
 
 $exe = Join-Path $installRoot 'KiloviewSetup.exe'

@@ -1,8 +1,10 @@
 # Kiloview Job Configurator
 
+> **Proprietary source-available software — not open source.** Free for non-commercial use in unmodified form only. Modification, derivative works, redistribution, and commercial use are prohibited. See [LICENSE.md](LICENSE.md).
+
 Kiloview Job Configurator is the local Windows web application for discovering, onboarding, identifying, and monitoring factory-reset Kiloview N6 and N60 converters. It listens only on `http://localhost:8091` and installs a desktop shortcut to that address.
 
-This repository contains the **job configurator only**. The separate [Kiloview Environment Setup](https://github.com/JohnDevAc/Kiloview-Environment-Setup) repository installs and maintains KiloLink Server Pro, NDI Tools, and NDI Discovery Server prerequisites.
+This repository contains the **job configurator only**. The separate [Kiloview Environment Setup](https://github.com/JohnDevAc/Kiloview-Environment-Setup) repository installs and maintains KiloLink Server Pro, NDI® Tools, and NDI Discovery Server prerequisites.
 
 ## Current workflow
 
@@ -54,6 +56,16 @@ Self-contained Windows x64 package (larger; restore may need internet access):
 ```
 
 Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`. Installation is per-user, starts the service at sign-in, creates Start Menu entries, and places `Kiloview Job Configurator.url` on the desktop.
+
+## License and third-party notices
+
+Copyright © 2026 JohnDevAc. All rights reserved.
+
+The source is publicly visible but remains proprietary. The [End User License Agreement (EULA)](LICENSE.md) permits viewing the source, compiling it without modification, and installing or running unmodified copies solely for non-commercial purposes. It does not grant permission to modify the project, create derivative works, redistribute it, or use it commercially. The complete EULA controls if this summary differs from it.
+
+The self-contained Windows installer includes Microsoft .NET and ASP.NET Core runtime components under their own terms. Their license and attribution files are retained in [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES/README.md).
+
+The application loads the NDI runtime only from a separate installation of [NDI Tools](https://ndi.video/tools/); the NDI runtime is not redistributed by this project. NDI® is a registered trademark of Vizrt NDI AB. Kiloview, KiloLink, and related product names belong to their respective owner. This project is not endorsed by or affiliated with Kiloview or Vizrt NDI AB.
 
 ## Operational safeguards
 
