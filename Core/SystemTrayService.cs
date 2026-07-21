@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Drawing;
-using System.Reflection;
 using System.Windows.Forms;
 
 namespace KiloviewSetup.Core;
@@ -73,7 +72,7 @@ public sealed class SystemTrayService(
             using var notifyIcon = new NotifyIcon
             {
                 Icon = icon,
-                Text = $"Kiloview Job Configurator v{CurrentVersion}",
+                Text = $"Kiloview Job Configurator v{BuildIdentity.Version}",
                 ContextMenuStrip = menu,
                 Visible = true
             };
@@ -122,8 +121,6 @@ public sealed class SystemTrayService(
         if (restart) Interlocked.Exchange(ref _restartRequested, 1);
         applicationLifetime.StopApplication();
     }
-
-    private static string CurrentVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
 
     public void Dispose()
     {

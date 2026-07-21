@@ -61,7 +61,16 @@ Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`.
 
 ## Software updates
 
-Open **System settings** from the application header to view the installed version, confirm administrator status, and check the official GitHub Releases feed. When a newer release is available, the application downloads only the named Windows installer from `JohnDevAc/Kiloview-Job-Configurator`, verifies its size and GitHub-published SHA-256 digest, and opens it with administrator rights. The update proceeds only after the user accepts the installer EULA.
+Open **System settings** from the application header to view the installed version, confirm administrator status, and select an update channel:
+
+- **Main** receives stable GitHub releases targeted to the `main` branch.
+- **Development** receives GitHub prereleases targeted to the `development` branch. Development builds display a persistent warning banner on every UI page.
+
+The channel selection is stored in the application's shared local state, so it applies to every browser that opens the service. Switching channels is supported in either direction, including returning from a newer Development build to the latest stable Main release. When an update or channel switch is available, the application downloads only the named Windows installer from `JohnDevAc/Kiloview-Job-Configurator`, verifies its size and GitHub-published SHA-256 digest, and opens it with administrator rights. The update proceeds only after the user accepts the installer EULA.
+
+## Branch and release policy
+
+The repository has two long-lived branches. Production changes are released from `main`; active work and prereleases are released from `development`. Stable release tags use `vMAJOR.MINOR.PATCH`. Development tags use `vMAJOR.MINOR.PATCH-dev.NUMBER`, are marked as GitHub prereleases, and must target the `development` branch. Do not publish a prerelease from `main` or a stable release from `development`, because the in-application updater deliberately rejects a mismatched feed.
 
 ## License and third-party notices
 

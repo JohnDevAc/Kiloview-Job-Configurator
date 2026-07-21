@@ -20,6 +20,9 @@
       <button class="settings-link" type="button" data-action="settings">System settings</button>
     </div>
   </header>
+  <div id="developmentBanner" class="development-banner hidden" role="status">
+    DEVELOPMENT BUILD · PRERELEASE SOFTWARE · NOT FOR PRODUCTION
+  </div>
 
   <main>
     <section id="setupView" class="view">
@@ -107,16 +110,25 @@
     </section>
 
     <section id="settingsView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">SYSTEM</p><h1>System settings</h1><p>Application version, administrator status, and updates from the official GitHub release.</p></div><button class="quiet" data-action="back-settings">← Back</button></div>
+      <div class="page-head"><div><p class="eyebrow">SYSTEM</p><h1>System settings</h1><p>Application version, administrator status, and verified updates from the selected release channel.</p></div><button class="quiet" data-action="back-settings">← Back</button></div>
       <div class="settings-grid">
         <article class="panel settings-panel">
           <div class="settings-brand"><img src="/KiloviewSetup.png" alt=""><div><p class="eyebrow">INSTALLED SOFTWARE</p><h2 id="settingsCurrentVersion">Version …</h2></div></div>
+          <div class="settings-row"><span>Installed channel</span><strong id="installedChannel">Checking…</strong></div>
           <div class="settings-row"><span>Service privileges</span><strong id="administratorStatus">Checking…</strong></div>
           <div class="settings-row"><span>Startup</span><strong>Elevated at sign-in</strong></div>
           <p class="settings-copy">Kiloview Job Configurator requires administrator rights for hardware discovery, network configuration, and managed startup.</p>
         </article>
         <article class="panel settings-panel update-panel">
           <p class="eyebrow">SOFTWARE UPDATE</p>
+          <label class="update-channel" for="updateChannel">
+            <span>Release channel</span>
+            <select id="updateChannel">
+              <option value="Main">Main · stable</option>
+              <option value="Development">Development · prerelease</option>
+            </select>
+            <small id="updateChannelHelp">Main receives stable production releases.</small>
+          </label>
           <h2 id="latestVersion">Checking GitHub…</h2>
           <p id="updateStatus" class="settings-copy">Contacting the official release feed.</p>
           <a id="releaseLink" class="release-link hidden" target="_blank" rel="noreferrer">View release notes ↗</a>
@@ -124,7 +136,7 @@
             <button id="checkForUpdate" class="quiet" type="button">Check again</button>
             <button id="installUpdate" class="primary hidden" type="button"><span>Download & install</span><b>→</b></button>
           </div>
-          <small class="update-security">Updates are downloaded only from JohnDevAc/Kiloview-Job-Configurator releases and must match GitHub’s published SHA-256 digest. The installer EULA must be accepted before installation continues.</small>
+          <small class="update-security">Main uses stable releases targeted to the main branch. Development uses GitHub prereleases targeted to the development branch. Every installer must match GitHub’s published SHA-256 digest, and its EULA must be accepted before installation continues.</small>
         </article>
       </div>
     </section>

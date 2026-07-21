@@ -1,15 +1,24 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json.Serialization;
 
 namespace KiloviewSetup.Core;
 
-public sealed record SystemInformation(string CurrentVersion, bool IsAdministrator, string RepositoryUrl);
+public sealed record UpdateChannelSelection(SoftwareReleaseChannel Channel);
+
+public sealed record SystemInformation(
+    string CurrentVersion,
+    SoftwareReleaseChannel CurrentChannel,
+    SoftwareReleaseChannel SelectedChannel,
+    bool IsAdministrator,
+    string RepositoryUrl);
 
 public sealed record SoftwareUpdateInformation(
     string CurrentVersion,
+    SoftwareReleaseChannel CurrentChannel,
+    SoftwareReleaseChannel Channel,
+    bool ChannelSwitch,
     string LatestVersion,
     bool UpdateAvailable,
     string ReleaseName,
@@ -18,7 +27,12 @@ public sealed record SoftwareUpdateInformation(
     long DownloadSizeBytes,
     string Sha256);
 
-public sealed record SoftwareUpdateLaunch(string Version, string Sha256, bool Started);
+public sealed record SoftwareUpdateLaunch(
+    string Version,
+    SoftwareReleaseChannel Channel,
+    bool ChannelSwitch,
+    string Sha256,
+    bool Started);
 
 public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpdateService> logger)
 {
@@ -28,41 +42,37 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
     private const long MaximumInstallerBytes = 512L * 1024 * 1024;
     private static readonly SemaphoreSlim UpdateGate = new(1, 1);
 
-    public SystemInformation GetSystemInformation() => new(
-        CurrentVersion,
+    public SystemInformation GetSystemInformation(SoftwareReleaseChannel selectedChannel) => new(
+        BuildIdentity.Version,
+        BuildIdentity.ReleaseChannel,
+        selectedChannel,
         IsAdministrator(),
         $"https://github.com/{RepositoryOwner}/{RepositoryName}");
 
-    public async Task<SoftwareUpdateInformation> CheckAsync(CancellationToken cancellationToken)
+    public async Task<SoftwareUpdateInformation> CheckAsync(
+        SoftwareReleaseChannel channel,
+        CancellationToken cancellationToken)
     {
-        using var response = await httpClient.GetAsync(
-            $"repos/{RepositoryOwner}/{RepositoryName}/releases/latest",
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-
-        var release = await response.Content.ReadFromJsonAsync<GitHubRelease>(cancellationToken)
-            ?? throw new InvalidOperationException("GitHub returned an empty release response.");
-        var latestVersion = ParseVersion(release.TagName, "latest release tag");
-        var currentVersion = ParseVersion(CurrentVersion, "installed application version");
-        var asset = release.Assets.FirstOrDefault(candidate =>
-            candidate.Name.Equals(InstallerAssetName, StringComparison.OrdinalIgnoreCase)
-            && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"Release {release.TagName} does not contain {InstallerAssetName}.");
-
-        ValidateAsset(asset);
+        var resolved = await ResolveReleaseAsync(channel, cancellationToken);
+        var currentVersion = ParseVersion(BuildIdentity.Version, "installed application version");
+        var channelSwitch = channel != BuildIdentity.ReleaseChannel;
         return new(
-            CurrentVersion,
-            latestVersion.ToString(3),
-            latestVersion > currentVersion,
-            string.IsNullOrWhiteSpace(release.Name) ? release.TagName : release.Name,
-            release.HtmlUrl,
-            release.PublishedAt,
-            asset.Size,
-            asset.Digest["sha256:".Length..].ToUpperInvariant());
+            BuildIdentity.Version,
+            BuildIdentity.ReleaseChannel,
+            channel,
+            channelSwitch,
+            resolved.Version.Display,
+            channelSwitch || resolved.Version.CompareTo(currentVersion) > 0,
+            string.IsNullOrWhiteSpace(resolved.Release.Name) ? resolved.Release.TagName : resolved.Release.Name,
+            resolved.Release.HtmlUrl,
+            resolved.Release.PublishedAt,
+            resolved.Asset.Size,
+            resolved.Asset.Digest["sha256:".Length..].ToUpperInvariant());
     }
 
-    public async Task<SoftwareUpdateLaunch> DownloadAndLaunchAsync(CancellationToken cancellationToken)
+    public async Task<SoftwareUpdateLaunch> DownloadAndLaunchAsync(
+        SoftwareReleaseChannel channel,
+        CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsWindows())
             throw new InvalidOperationException("Automatic updates are supported only on Windows.");
@@ -72,25 +82,13 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         await UpdateGate.WaitAsync(cancellationToken);
         try
         {
-            using var releaseResponse = await httpClient.GetAsync(
-                $"repos/{RepositoryOwner}/{RepositoryName}/releases/latest",
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
-            releaseResponse.EnsureSuccessStatusCode();
-            var release = await releaseResponse.Content.ReadFromJsonAsync<GitHubRelease>(cancellationToken)
-                ?? throw new InvalidOperationException("GitHub returned an empty release response.");
-            var latestVersion = ParseVersion(release.TagName, "latest release tag");
-            var currentVersion = ParseVersion(CurrentVersion, "installed application version");
-            if (latestVersion <= currentVersion)
-                throw new InvalidOperationException("The installed version is already up to date.");
+            var resolved = await ResolveReleaseAsync(channel, cancellationToken);
+            var currentVersion = ParseVersion(BuildIdentity.Version, "installed application version");
+            var channelSwitch = channel != BuildIdentity.ReleaseChannel;
+            if (!channelSwitch && resolved.Version.CompareTo(currentVersion) <= 0)
+                throw new InvalidOperationException($"The installed {channel} version is already up to date.");
 
-            var asset = release.Assets.FirstOrDefault(candidate =>
-                candidate.Name.Equals(InstallerAssetName, StringComparison.OrdinalIgnoreCase)
-                && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException($"Release {release.TagName} does not contain {InstallerAssetName}.");
-            ValidateAsset(asset);
-
-            var downloadUri = new Uri(asset.BrowserDownloadUrl, UriKind.Absolute);
+            var downloadUri = new Uri(resolved.Asset.BrowserDownloadUrl, UriKind.Absolute);
             var expectedPrefix = $"/{RepositoryOwner}/{RepositoryName}/releases/download/";
             if (!downloadUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
                 || !downloadUri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
@@ -98,15 +96,21 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                 throw new InvalidOperationException("GitHub returned an unexpected installer download URL.");
 
             var localRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (string.IsNullOrWhiteSpace(localRoot)) throw new InvalidOperationException("Local application data is unavailable.");
+            if (string.IsNullOrWhiteSpace(localRoot))
+                throw new InvalidOperationException("Local application data is unavailable.");
             var updateDirectory = Path.Combine(localRoot, "Kiloview Setup", "updates");
             Directory.CreateDirectory(updateDirectory);
-            var installerPath = Path.Combine(updateDirectory, $"Kiloview-Job-Configurator-{latestVersion.ToString(3)}.exe");
+            var safeVersion = string.Concat(resolved.Version.Display.Select(character =>
+                char.IsLetterOrDigit(character) || character is '.' or '-' ? character : '-'));
+            var installerPath = Path.Combine(updateDirectory, $"Kiloview-Job-Configurator-{safeVersion}.exe");
             var temporaryPath = installerPath + ".download";
 
             try
             {
-                using var download = await httpClient.GetAsync(downloadUri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var download = await httpClient.GetAsync(
+                    downloadUri,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
                 download.EnsureSuccessStatusCode();
                 if (download.Content.Headers.ContentLength is > MaximumInstallerBytes)
                     throw new InvalidOperationException("The GitHub installer exceeds the allowed download size.");
@@ -115,21 +119,25 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                     await download.Content.CopyToAsync(output, cancellationToken);
 
                 var downloadedLength = new FileInfo(temporaryPath).Length;
-                if (downloadedLength != asset.Size)
-                    throw new InvalidOperationException($"The downloaded installer size did not match GitHub ({downloadedLength} of {asset.Size} bytes).");
+                if (downloadedLength != resolved.Asset.Size)
+                    throw new InvalidOperationException(
+                        $"The downloaded installer size did not match GitHub ({downloadedLength} of {resolved.Asset.Size} bytes).");
 
                 string actualSha256;
                 await using (var input = File.OpenRead(temporaryPath))
                 {
                     actualSha256 = Convert.ToHexString(await SHA256.HashDataAsync(input, cancellationToken));
                 }
-                var expectedSha256 = asset.Digest["sha256:".Length..].ToUpperInvariant();
-                if (!CryptographicOperations.FixedTimeEquals(Convert.FromHexString(actualSha256), Convert.FromHexString(expectedSha256)))
+                var expectedSha256 = resolved.Asset.Digest["sha256:".Length..].ToUpperInvariant();
+                if (!CryptographicOperations.FixedTimeEquals(
+                        Convert.FromHexString(actualSha256),
+                        Convert.FromHexString(expectedSha256)))
                     throw new InvalidOperationException("The downloaded installer failed SHA-256 verification.");
 
                 File.Move(temporaryPath, installerPath, true);
                 foreach (var oldInstaller in Directory.EnumerateFiles(updateDirectory, "Kiloview-Job-Configurator-*.exe"))
-                    if (!oldInstaller.Equals(installerPath, StringComparison.OrdinalIgnoreCase)) File.Delete(oldInstaller);
+                    if (!oldInstaller.Equals(installerPath, StringComparison.OrdinalIgnoreCase))
+                        File.Delete(oldInstaller);
 
                 _ = Process.Start(new ProcessStartInfo(installerPath)
                 {
@@ -138,8 +146,11 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                     WorkingDirectory = updateDirectory
                 }) ?? throw new InvalidOperationException("Windows could not start the update installer.");
 
-                logger.LogInformation("Verified and launched Kiloview Job Configurator update {Version} from GitHub.", latestVersion.ToString(3));
-                return new(latestVersion.ToString(3), actualSha256, true);
+                logger.LogInformation(
+                    "Verified and launched Kiloview Job Configurator {Channel} update {Version} from GitHub.",
+                    channel,
+                    resolved.Version.Display);
+                return new(resolved.Version.Display, channel, channelSwitch, actualSha256, true);
             }
             finally
             {
@@ -152,7 +163,48 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         }
     }
 
-    private static string CurrentVersion => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+    private async Task<ResolvedRelease> ResolveReleaseAsync(
+        SoftwareReleaseChannel channel,
+        CancellationToken cancellationToken)
+    {
+        GitHubRelease release;
+        if (channel == SoftwareReleaseChannel.Main)
+        {
+            using var response = await httpClient.GetAsync(
+                $"repos/{RepositoryOwner}/{RepositoryName}/releases/latest",
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            response.EnsureSuccessStatusCode();
+            release = await response.Content.ReadFromJsonAsync<GitHubRelease>(cancellationToken)
+                ?? throw new InvalidOperationException("GitHub returned an empty Main release response.");
+            if (release.Draft || release.Prerelease
+                || !string.Equals(release.TargetCommitish, "main", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("GitHub's latest stable release is not targeted to the Main branch.");
+        }
+        else
+        {
+            using var response = await httpClient.GetAsync(
+                $"repos/{RepositoryOwner}/{RepositoryName}/releases?per_page=30",
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            response.EnsureSuccessStatusCode();
+            var releases = await response.Content.ReadFromJsonAsync<List<GitHubRelease>>(cancellationToken)
+                ?? throw new InvalidOperationException("GitHub returned an empty Development release response.");
+            release = releases.FirstOrDefault(candidate =>
+                    !candidate.Draft
+                    && candidate.Prerelease
+                    && string.Equals(candidate.TargetCommitish, "development", StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("No Development prerelease has been published yet.");
+        }
+
+        var version = ParseVersion(release.TagName, $"latest {channel} release tag");
+        var asset = release.Assets.FirstOrDefault(candidate =>
+            candidate.Name.Equals(InstallerAssetName, StringComparison.OrdinalIgnoreCase)
+            && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"Release {release.TagName} does not contain {InstallerAssetName}.");
+        ValidateAsset(asset);
+        return new(release, asset, version);
+    }
 
     private static bool IsAdministrator()
     {
@@ -161,12 +213,16 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-    private static Version ParseVersion(string value, string field)
+    private static SoftwareVersion ParseVersion(string value, string field)
     {
-        var normalized = value.Trim().TrimStart('v', 'V').Split('-', 2)[0];
-        if (!Version.TryParse(normalized, out var version))
-            throw new InvalidOperationException($"The {field} is not a valid version: {value}");
-        return version;
+        var display = value.Trim().TrimStart('v', 'V').Split('+', 2)[0];
+        var parts = display.Split('-', 2);
+        if (!Version.TryParse(parts[0], out var core))
+            throw new InvalidOperationException($"The {field} is not a valid semantic version: {value}");
+        var prerelease = parts.Length == 2
+            ? parts[1].Split('.', StringSplitOptions.RemoveEmptyEntries)
+            : [];
+        return new(core, prerelease, display);
     }
 
     private static void ValidateAsset(GitHubAsset asset)
@@ -180,11 +236,48 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
             throw new InvalidOperationException("The GitHub release does not provide a valid SHA-256 digest for the installer.");
     }
 
+    private sealed record ResolvedRelease(GitHubRelease Release, GitHubAsset Asset, SoftwareVersion Version);
+
+    private sealed record SoftwareVersion(Version Core, IReadOnlyList<string> Prerelease, string Display)
+        : IComparable<SoftwareVersion>
+    {
+        public int CompareTo(SoftwareVersion? other)
+        {
+            if (other is null) return 1;
+            var coreComparison = Core.CompareTo(other.Core);
+            if (coreComparison != 0) return coreComparison;
+            if (Prerelease.Count == 0) return other.Prerelease.Count == 0 ? 0 : 1;
+            if (other.Prerelease.Count == 0) return -1;
+
+            for (var index = 0; index < Math.Max(Prerelease.Count, other.Prerelease.Count); index++)
+            {
+                if (index >= Prerelease.Count) return -1;
+                if (index >= other.Prerelease.Count) return 1;
+                var comparison = CompareIdentifier(Prerelease[index], other.Prerelease[index]);
+                if (comparison != 0) return comparison;
+            }
+            return 0;
+        }
+
+        private static int CompareIdentifier(string left, string right)
+        {
+            var leftNumeric = long.TryParse(left, out var leftNumber);
+            var rightNumeric = long.TryParse(right, out var rightNumber);
+            if (leftNumeric && rightNumeric) return leftNumber.CompareTo(rightNumber);
+            if (leftNumeric) return -1;
+            if (rightNumeric) return 1;
+            return string.Compare(left, right, StringComparison.Ordinal);
+        }
+    }
+
     private sealed record GitHubRelease(
         [property: JsonPropertyName("tag_name")] string TagName,
         string Name,
         [property: JsonPropertyName("html_url")] string HtmlUrl,
         [property: JsonPropertyName("published_at")] DateTimeOffset? PublishedAt,
+        [property: JsonPropertyName("target_commitish")] string TargetCommitish,
+        bool Draft,
+        bool Prerelease,
         IReadOnlyList<GitHubAsset> Assets);
 
     private sealed record GitHubAsset(

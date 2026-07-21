@@ -47,7 +47,11 @@ public sealed record KiloLinkServerDiscovery(string ServerIp, int WebPort, strin
 public sealed record KiloLinkAuthorizationResult(string SerialNumber, string Hostname, string AuthorizationCode, bool Created);
 public sealed record KiloLinkFleetResult(int PackagesUploaded, int DevicesDispatched, IReadOnlyList<string> Models);
 
-public sealed record AppState(IReadOnlyList<ManagedDevice> Devices, LastJob? LastJob = null, FirmwareJob? FirmwareJob = null)
+public sealed record AppState(
+    IReadOnlyList<ManagedDevice> Devices,
+    LastJob? LastJob = null,
+    FirmwareJob? FirmwareJob = null,
+    SoftwareReleaseChannel UpdateChannel = SoftwareReleaseChannel.Main)
 {
     public static AppState Empty => new([]);
 }

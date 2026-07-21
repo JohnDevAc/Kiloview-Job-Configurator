@@ -47,18 +47,41 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-var applicationVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok", version = applicationVersion }));
-app.MapGet("/api/system/info", (GitHubUpdateService updates) => Results.Ok(updates.GetSystemInformation()));
-app.MapGet("/api/system/update", async (GitHubUpdateService updates, CancellationToken ct) =>
+app.MapGet("/api/health", () => Results.Ok(new
 {
-    try { return Results.Ok(await updates.CheckAsync(ct)); }
+    status = "ok",
+    version = BuildIdentity.Version,
+    channel = BuildIdentity.ReleaseChannel
+}));
+app.MapGet("/api/system/info", async (GitHubUpdateService updates, AppStateStore store) =>
+{
+    var state = await store.ReadAsync();
+    return Results.Ok(updates.GetSystemInformation(state.UpdateChannel));
+});
+app.MapPut("/api/system/update/channel", async (UpdateChannelSelection selection, AppStateStore store) =>
+{
+    if (!Enum.IsDefined(selection.Channel))
+        return Results.BadRequest(new { error = "Select either the Main or Development release channel." });
+    var state = await store.UpdateAsync(current => current with { UpdateChannel = selection.Channel });
+    return Results.Ok(new { channel = state.UpdateChannel });
+});
+app.MapGet("/api/system/update", async (GitHubUpdateService updates, AppStateStore store, CancellationToken ct) =>
+{
+    try
+    {
+        var state = await store.ReadAsync();
+        return Results.Ok(await updates.CheckAsync(state.UpdateChannel, ct));
+    }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
-app.MapPost("/api/system/update/install", async (GitHubUpdateService updates, CancellationToken ct) =>
+app.MapPost("/api/system/update/install", async (GitHubUpdateService updates, AppStateStore store, CancellationToken ct) =>
 {
-    try { return Results.Accepted(value: await updates.DownloadAndLaunchAsync(ct)); }
+    try
+    {
+        var state = await store.ReadAsync();
+        return Results.Accepted(value: await updates.DownloadAndLaunchAsync(state.UpdateChannel, ct));
+    }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
     catch (IOException ex) { return Results.Problem(ex.Message, statusCode: 500); }
