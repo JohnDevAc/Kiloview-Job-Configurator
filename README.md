@@ -43,7 +43,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. Those shortcuts restart the elevated service when necessary before opening the UI.
+Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -65,7 +65,7 @@ Open **System settings** from the application header to view the installed versi
 
 ## License and third-party notices
 
-Copyright © 2026 JohnDevAc. All rights reserved.
+Copyright © 2026 John Lightfoot. All rights reserved.
 
 The source is publicly visible but remains proprietary. The [End User License Agreement (EULA)](LICENSE.md) permits viewing the source, compiling it without modification, and installing or running unmodified copies solely for non-commercial purposes. It does not grant permission to modify the project, create derivative works, redistribute it, or use it commercially. The complete EULA controls if this summary differs from it.
 

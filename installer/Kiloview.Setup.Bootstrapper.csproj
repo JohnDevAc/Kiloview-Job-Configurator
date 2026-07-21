@@ -10,9 +10,9 @@
     <AssemblyTitle>Kiloview Job Configurator</AssemblyTitle>
     <Product>Kiloview Job Configurator</Product>
     <Description>Installer for the Kiloview job onboarding, configuration, and monitoring application.</Description>
-    <Company>JohnDevAc</Company>
-    <Version>0.6.1</Version>
-    <Copyright>Copyright © 2026 JohnDevAc. All rights reserved.</Copyright>
+    <Company>John Lightfoot</Company>
+    <Version>0.6.2</Version>
+    <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
     <ApplicationIcon>..\assets\KiloviewSetup.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>

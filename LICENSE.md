@@ -4,13 +4,13 @@ Proprietary Non-Commercial No-Derivatives License
 
 Version 1.0 — 21 July 2026
 
-Copyright © 2026 JohnDevAc. All rights reserved.
+Copyright © 2026 John Lightfoot. All rights reserved.
 
 This software and its source code are proprietary. Public availability of the source code does not make the software open source.
 
 ## 1. Limited permission
 
-Subject to all terms of this license, JohnDevAc (the “Licensor”) grants you a personal, limited, non-exclusive, non-transferable, non-sublicensable, royalty-free license to:
+Subject to all terms of this license, John Lightfoot (the “Licensor”) grants you a personal, limited, non-exclusive, non-transferable, non-sublicensable, royalty-free license to:
 
 1. view the source code;
 2. download or make reasonable backup copies;

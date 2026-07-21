@@ -3,11 +3,19 @@ using System.Text.Json.Serialization;
 using KiloviewSetup.Core;
 using KiloviewSetup.Devices;
 
-var builder = WebApplication.CreateBuilder(args);
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
 var servicePort = int.TryParse(Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"), out var configuredPort)
     && configuredPort is >= 1024 and <= 65535 ? configuredPort : 8091;
+using var instanceMutex = new Mutex(true, $"Local\\KiloviewJobConfigurator-{servicePort}", out var ownsInstanceMutex);
+if (!ownsInstanceMutex)
+{
+    try { Process.Start(new ProcessStartInfo($"http://localhost:{servicePort}") { UseShellExecute = true }); }
+    catch { /* The existing tray process remains available even if no browser is registered. */ }
+    return;
+}
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddDebug();
 builder.WebHost.UseUrls($"http://127.0.0.1:{servicePort}");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
@@ -23,6 +31,8 @@ builder.Services.AddSingleton<FirmwareService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
 builder.Services.AddSingleton<OnboardingService>();
+builder.Services.AddSingleton<SystemTrayService>();
+builder.Services.AddHostedService(services => services.GetRequiredService<SystemTrayService>());
 builder.Services.AddHttpClient<GitHubUpdateService>(client =>
 {
     client.BaseAddress = new Uri("https://api.github.com/");
@@ -162,4 +172,25 @@ if (args.Contains("--open-browser", StringComparer.OrdinalIgnoreCase))
 }
 
 app.MapFallbackToFile("index.html");
-app.Run();
+var systemTray = app.Services.GetRequiredService<SystemTrayService>();
+try
+{
+    await app.RunAsync();
+}
+finally
+{
+    instanceMutex.ReleaseMutex();
+}
+
+if (systemTray.RestartRequested && Environment.ProcessPath is { } executablePath)
+{
+    var restart = new ProcessStartInfo
+    {
+        FileName = executablePath,
+        UseShellExecute = false,
+        WorkingDirectory = app.Environment.ContentRootPath
+    };
+    if (Path.GetFileNameWithoutExtension(executablePath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+        restart.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
+    Process.Start(restart);
+}

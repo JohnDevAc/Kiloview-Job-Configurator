@@ -89,7 +89,7 @@ New-Item -Path $uninstallKey -Force | Out-Null
 $displayVersion = (Get-Item -LiteralPath $exe).VersionInfo.ProductVersion
 New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Kiloview Job Configurator' -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value $displayVersion -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'JohnDevAc' -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'John Lightfoot' -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installRoot -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value $icon -PropertyType String -Force | Out-Null
 $uninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $installRoot 'Uninstall-KiloviewSetup.ps1')`""
