@@ -28,6 +28,7 @@ if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
 Copy-Item -LiteralPath (Join-Path $root 'installer\Install-KiloviewSetup.ps1') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'installer\Uninstall-KiloviewSetup.ps1') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'installer\Install.cmd') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $root 'assets\KiloviewSetup.ico') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $publish
 
 if (Test-Path $package) { Remove-Item -LiteralPath $package -Force }
@@ -35,70 +36,24 @@ Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $package -Compr
 Write-Host "Package created: $package"
 
 if ($SetupExe) {
-    $temporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-    $setupSource = Join-Path $temporaryRoot ("KiloviewSetup-IExpress-" + [Guid]::NewGuid().ToString('N'))
-    try {
-        New-Item -ItemType Directory -Path $setupSource -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $root 'installer\Setup-Install.cmd') -Destination $setupSource
-        Copy-Item -LiteralPath (Join-Path $root 'installer\Setup-Install.ps1') -Destination $setupSource
-        Copy-Item -LiteralPath $package -Destination (Join-Path $setupSource 'KiloviewSetup-Payload.zip')
+    $bootstrapperPublish = Join-Path $artifactRoot 'bootstrapper'
+    if (Test-Path $bootstrapperPublish) { Remove-Item -LiteralPath $bootstrapperPublish -Recurse -Force }
+    $bootstrapperArguments = @(
+        'publish', (Join-Path $root 'installer\Kiloview.Setup.Bootstrapper.csproj'),
+        '--configuration', $Configuration,
+        '--runtime', 'win-x64',
+        '--self-contained', 'true',
+        '--output', $bootstrapperPublish,
+        '--configfile', (Join-Path $root 'NuGet.Config'),
+        '--source', 'https://api.nuget.org/v3/index.json',
+        '-p:PublishSingleFile=true',
+        '-p:DebugType=None',
+        '-p:DebugSymbols=false'
+    )
+    & dotnet @bootstrapperArguments
+    if ($LASTEXITCODE -ne 0) { throw 'bootstrapper publish failed.' }
 
-        $temporarySetup = Join-Path $setupSource 'KiloviewSetup-Setup.exe'
-        $sed = Join-Path $setupSource 'KiloviewSetup.sed'
-        $sourceWithSlash = $setupSource.TrimEnd('\') + '\'
-        $sedContent = @"
-[Version]
-Class=IEXPRESS
-SEDVersion=3
-[Options]
-PackagePurpose=InstallApp
-ShowInstallProgramWindow=1
-HideExtractAnimation=0
-UseLongFileName=1
-InsideCompressed=0
-CAB_FixedSize=0
-CAB_ResvCodeSigning=0
-RebootMode=N
-InstallPrompt=%InstallPrompt%
-DisplayLicense=%DisplayLicense%
-FinishMessage=%FinishMessage%
-TargetName=%TargetName%
-FriendlyName=%FriendlyName%
-AppLaunched=%AppLaunched%
-PostInstallCmd=%PostInstallCmd%
-AdminQuietInstCmd=%AdminQuietInstCmd%
-UserQuietInstCmd=%UserQuietInstCmd%
-SourceFiles=SourceFiles
-[Strings]
-InstallPrompt=
-DisplayLicense=
-FinishMessage=Kiloview Setup was installed and has been started.
-TargetName=$temporarySetup
-FriendlyName=Kiloview Setup
-AppLaunched=cmd.exe /d /c Setup-Install.cmd
-PostInstallCmd=<None>
-AdminQuietInstCmd=cmd.exe /d /c Setup-Install.cmd
-UserQuietInstCmd=cmd.exe /d /c Setup-Install.cmd
-FILE0="Setup-Install.cmd"
-FILE1="Setup-Install.ps1"
-FILE2="KiloviewSetup-Payload.zip"
-[SourceFiles]
-SourceFiles0=$sourceWithSlash
-[SourceFiles0]
-%FILE0%=
-%FILE1%=
-%FILE2%=
-"@
-        Set-Content -LiteralPath $sed -Value $sedContent -Encoding ASCII
-        $iexpress = Start-Process -FilePath "$env:WINDIR\System32\iexpress.exe" -ArgumentList @('/N', '/Q', $sed) -WindowStyle Hidden -Wait -PassThru
-        if ($iexpress.ExitCode -ne 0 -or -not (Test-Path $temporarySetup)) { throw "IExpress failed to create Setup.exe (exit $($iexpress.ExitCode))." }
-        Copy-Item -LiteralPath $temporarySetup -Destination $setup -Force
-        Write-Host "Installer created: $setup"
-    }
-    finally {
-        $resolvedSetupSource = [IO.Path]::GetFullPath($setupSource)
-        if ($resolvedSetupSource.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedSetupSource)) {
-            Remove-Item -LiteralPath $resolvedSetupSource -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+    Copy-Item -LiteralPath (Join-Path $bootstrapperPublish 'KiloviewSetup-Setup.exe') -Destination $setup -Force
+    Remove-Item -LiteralPath $bootstrapperPublish -Recurse -Force
+    Write-Host "Branded installer created: $setup"
 }

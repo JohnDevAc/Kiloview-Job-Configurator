@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>KiloviewSetup-Setup</AssemblyName>
+    <RootNamespace>KiloviewSetup.Bootstrapper</RootNamespace>
+    <Version>0.5.8</Version>
+    <ApplicationIcon>..\assets\KiloviewSetup.ico</ApplicationIcon>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\artifacts\KiloviewSetup-Windows.zip" LogicalName="KiloviewSetup.Payload.zip" />
+  </ItemGroup>
+</Project>

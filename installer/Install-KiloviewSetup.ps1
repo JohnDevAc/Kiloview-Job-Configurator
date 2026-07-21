@@ -27,11 +27,12 @@ Get-Process KiloviewSetup -ErrorAction SilentlyContinue | Stop-Process -Force
 New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
-Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.dll','.json','.pdb' | Copy-Item -Destination $installRoot -Force
+Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.dll','.json','.pdb','.ico' | Copy-Item -Destination $installRoot -Force
 if (Test-Path (Join-Path $Source 'wwwroot')) { Copy-Item -LiteralPath (Join-Path $Source 'wwwroot') -Destination $installRoot -Recurse -Force }
 Copy-Item -LiteralPath (Join-Path $Source 'Uninstall-KiloviewSetup.ps1') -Destination $installRoot -Force
 
 $exe = Join-Path $installRoot 'KiloviewSetup.exe'
+$icon = Join-Path $installRoot 'KiloviewSetup.ico'
 $shell = New-Object -ComObject WScript.Shell
 $startupShortcut = $shell.CreateShortcut((Join-Path $startup 'Kiloview Setup Service.lnk'))
 $startupShortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
@@ -39,12 +40,13 @@ $startupShortcut.Arguments = "-NoProfile -WindowStyle Hidden -Command `"& '$exe'
 $startupShortcut.WorkingDirectory = $installRoot
 $startupShortcut.WindowStyle = 0
 $startupShortcut.Description = 'Kiloview Setup local web service'
+$startupShortcut.IconLocation = "$icon,0"
 $startupShortcut.Save()
 
 $url = @"
 [InternetShortcut]
 URL=http://localhost:8091
-IconFile=$exe
+IconFile=$icon
 IconIndex=0
 "@
 Set-Content -LiteralPath (Join-Path $desktop 'Kiloview Setup.url') -Value $url -Encoding ASCII
@@ -57,7 +59,7 @@ New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Kiloview Setup' -
 New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value $displayVersion -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'JohnDevAc' -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installRoot -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value $exe -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value $icon -PropertyType String -Force | Out-Null
 $uninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $installRoot 'Uninstall-KiloviewSetup.ps1')`""
 New-ItemProperty -Path $uninstallKey -Name UninstallString -Value $uninstallCommand -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null

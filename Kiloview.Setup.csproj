@@ -5,7 +5,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>KiloviewSetup</RootNamespace>
     <AssemblyName>KiloviewSetup</AssemblyName>
-    <Version>0.5.7</Version>
+    <Version>0.5.8</Version>
+    <ApplicationIcon>assets\KiloviewSetup.ico</ApplicationIcon>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="installer\**\*.cs" />
+  </ItemGroup>
 </Project>
