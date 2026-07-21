@@ -11,7 +11,7 @@
     <Product>Kiloview Job Configurator</Product>
     <Description>Installer for the Kiloview job onboarding, configuration, and monitoring application.</Description>
     <Company>John Lightfoot</Company>
-    <Version>0.6.3</Version>
+    <Version>0.6.4</Version>
     <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
     <ApplicationIcon>..\assets\KiloviewSetup.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>

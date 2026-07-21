@@ -10,6 +10,7 @@ internal static class BootstrapperProgram
 {
     private const string PayloadResource = "KiloviewSetup.Payload.zip";
     private const string ProductName = "Kiloview Job Configurator";
+    private static readonly string InstallerLogPath = Path.Combine(Path.GetTempPath(), "KiloviewSetup-Installer.log");
 
     [STAThread]
     private static int Main()
@@ -19,6 +20,7 @@ internal static class BootstrapperProgram
 
         try
         {
+            Log($"Installer {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)} started from {Environment.ProcessPath}.");
             Directory.CreateDirectory(extractRoot);
             var archivePath = Path.Combine(extractRoot, "KiloviewSetup-Payload.zip");
             using (var payload = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResource)
@@ -30,6 +32,7 @@ internal static class BootstrapperProgram
 
             ZipFile.ExtractToDirectory(archivePath, extractRoot, overwriteFiles: true);
             File.Delete(archivePath);
+            Log($"Payload extracted to {extractRoot}.");
 
             var licensePath = Path.Combine(extractRoot, "LICENSE.md");
             if (!File.Exists(licensePath))
@@ -39,8 +42,10 @@ internal static class BootstrapperProgram
 
             if (!ShowLicenseAgreement(File.ReadAllText(licensePath)))
             {
+                Log("License agreement declined; installation cancelled.");
                 return 2;
             }
+            Log("License agreement accepted; starting the elevated installation script.");
 
             var installerScript = Path.Combine(extractRoot, "Install-KiloviewSetup.ps1");
             if (!File.Exists(installerScript))
@@ -53,6 +58,8 @@ internal static class BootstrapperProgram
                 FileName = "powershell.exe",
                 UseShellExecute = false,
                 CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 WorkingDirectory = extractRoot
             };
             startInfo.ArgumentList.Add("-NoProfile");
@@ -65,16 +72,24 @@ internal static class BootstrapperProgram
 
             using var installer = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Windows PowerShell could not be started.");
+            var standardOutput = installer.StandardOutput.ReadToEndAsync();
+            var standardError = installer.StandardError.ReadToEndAsync();
             installer.WaitForExit();
+            var output = standardOutput.GetAwaiter().GetResult();
+            var error = standardError.GetAwaiter().GetResult();
+            if (!string.IsNullOrWhiteSpace(output)) Log($"Installer output:{Environment.NewLine}{output.Trim()}");
+            if (!string.IsNullOrWhiteSpace(error)) Log($"Installer error:{Environment.NewLine}{error.Trim()}");
             if (installer.ExitCode != 0)
             {
-                throw new InvalidOperationException($"Installation failed with exit code {installer.ExitCode}. See the installer log in your temporary folder.");
+                throw new InvalidOperationException($"Installation failed with exit code {installer.ExitCode}. See {InstallerLogPath} for details.");
             }
 
+            Log("Installation completed successfully.");
             return 0;
         }
         catch (Exception exception)
         {
+            Log($"Installation failed:{Environment.NewLine}{exception}");
             MessageBox(IntPtr.Zero, exception.Message, $"{ProductName} installation failed", 0x00000010);
             return 1;
         }
@@ -92,6 +107,18 @@ internal static class BootstrapperProgram
                     // Installation is already complete; Windows can clean up a locked temp folder later.
                 }
             }
+        }
+    }
+
+    private static void Log(string message)
+    {
+        try
+        {
+            File.AppendAllText(InstallerLogPath, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Logging must never prevent the installer from running or displaying the real error.
         }
     }
 
