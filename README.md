@@ -1,6 +1,8 @@
-# Kiloview Setup
+# Kiloview Job Configurator
 
-Kiloview Setup is a local Windows web application for discovering, onboarding, identifying, and monitoring factory-reset Kiloview N6 and N60 converters. It listens only on `http://localhost:8091` and installs a desktop shortcut to that address.
+Kiloview Job Configurator is the local Windows web application for discovering, onboarding, identifying, and monitoring factory-reset Kiloview N6 and N60 converters. It listens only on `http://localhost:8091` and installs a desktop shortcut to that address.
+
+This repository contains the **job configurator only**. The separate [Kiloview Environment Setup](https://github.com/JohnDevAc/Kiloview-Environment-Setup) repository installs and maintains KiloLink Server Pro, NDI Tools, and NDI Discovery Server prerequisites.
 
 ## Current workflow
 
@@ -37,7 +39,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\Kiloview Job Setup Manager.exe`. Its outcome-focused name reflects the complete job workflow—onboarding, configuration, identification, and monitoring—while the installed application remains **Kiloview Setup**. The installer carries the Kiloview Setup application icon. Double-clicking it installs for the current Windows user, registers the service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded desktop and Start Menu web shortcuts.
+Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it installs for the current Windows user, registers the service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded desktop and Start Menu web shortcuts.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -51,7 +53,7 @@ Self-contained Windows x64 package (larger; restore may need internet access):
 .\scripts\Publish.ps1 -SelfContained
 ```
 
-Extract `artifacts\KiloviewSetup-Windows.zip` and run `Install.cmd`. Installation is per-user, needs no administrator rights, starts the service at sign-in, creates Start Menu entries, and places `Kiloview Setup.url` on the desktop.
+Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`. Installation is per-user, starts the service at sign-in, creates Start Menu entries, and places `Kiloview Job Configurator.url` on the desktop.
 
 ## Operational safeguards
 

@@ -8,7 +8,7 @@ namespace KiloviewSetup.Bootstrapper;
 internal static class BootstrapperProgram
 {
     private const string PayloadResource = "KiloviewSetup.Payload.zip";
-    private const string ProductName = "Kiloview Job Setup Manager";
+    private const string ProductName = "Kiloview Job Configurator";
 
     [STAThread]
     private static int Main()

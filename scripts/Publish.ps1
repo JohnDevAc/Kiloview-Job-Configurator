@@ -8,12 +8,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $artifactRoot = Join-Path $root 'artifacts'
-$publish = Join-Path $artifactRoot 'KiloviewSetup'
-$package = Join-Path $artifactRoot 'KiloviewSetup-Windows.zip'
-$setup = Join-Path $artifactRoot 'Kiloview Job Setup Manager.exe'
+$publish = Join-Path $artifactRoot 'KiloviewJobConfigurator'
+$package = Join-Path $artifactRoot 'Kiloview-Job-Configurator-Windows.zip'
+$setup = Join-Path $artifactRoot 'Kiloview-Job-Configurator.exe'
 $legacySetups = @(
     (Join-Path $artifactRoot 'KiloviewSetup-Setup.exe'),
-    (Join-Path $artifactRoot 'NDI-KILO Environment Setup.exe')
+    (Join-Path $artifactRoot 'Kiloview Job Setup Manager.exe')
 )
 
 if ($SetupExe) { $SelfContained = $true }
@@ -58,7 +58,7 @@ if ($SetupExe) {
     & dotnet @bootstrapperArguments
     if ($LASTEXITCODE -ne 0) { throw 'bootstrapper publish failed.' }
 
-    Copy-Item -LiteralPath (Join-Path $bootstrapperPublish 'Kiloview Job Setup Manager.exe') -Destination $setup -Force
+    Copy-Item -LiteralPath (Join-Path $bootstrapperPublish 'Kiloview Job Configurator.exe') -Destination $setup -Force
     Remove-Item -LiteralPath $bootstrapperPublish -Recurse -Force
     Write-Host "Branded installer created: $setup"
 }

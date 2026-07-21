@@ -4,18 +4,18 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AssemblyName>Kiloview Job Setup Manager</AssemblyName>
+    <AssemblyName>Kiloview Job Configurator</AssemblyName>
     <RootNamespace>KiloviewSetup.Bootstrapper</RootNamespace>
-    <Title>Kiloview Job Setup Manager</Title>
-    <Product>Kiloview Job Setup Manager</Product>
+    <AssemblyTitle>Kiloview Job Configurator</AssemblyTitle>
+    <Product>Kiloview Job Configurator</Product>
     <Description>Installer for the Kiloview job onboarding, configuration, and monitoring application.</Description>
     <Company>JohnDevAc</Company>
-    <Version>0.5.8</Version>
+    <Version>0.5.9</Version>
     <ApplicationIcon>..\assets\KiloviewSetup.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="..\artifacts\KiloviewSetup-Windows.zip" LogicalName="KiloviewSetup.Payload.zip" />
+    <EmbeddedResource Include="..\artifacts\Kiloview-Job-Configurator-Windows.zip" LogicalName="KiloviewSetup.Payload.zip" />
   </ItemGroup>
 </Project>
