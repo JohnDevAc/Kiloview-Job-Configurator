@@ -8,6 +8,7 @@ namespace KiloviewSetup.Bootstrapper;
 internal static class BootstrapperProgram
 {
     private const string PayloadResource = "KiloviewSetup.Payload.zip";
+    private const string ProductName = "Kiloview Job Setup Manager";
 
     [STAThread]
     private static int Main()
@@ -62,7 +63,7 @@ internal static class BootstrapperProgram
         }
         catch (Exception exception)
         {
-            MessageBox(IntPtr.Zero, exception.Message, "Kiloview Setup installation failed", 0x00000010);
+            MessageBox(IntPtr.Zero, exception.Message, $"{ProductName} installation failed", 0x00000010);
             return 1;
         }
         finally
