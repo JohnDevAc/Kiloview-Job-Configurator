@@ -9,7 +9,9 @@ public sealed record EncoderThumbnail(byte[] Bytes, bool Live, DateTimeOffset Ca
 /// <summary>Captures a low-bandwidth NDI preview frame for each encoder and caches a browser-ready 320x240 bitmap.</summary>
 public sealed class EncoderThumbnailService(AppStateStore store, ILogger<EncoderThumbnailService> logger) : IDisposable
 {
-    private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(10);
+    // The browser requests a new preview every five seconds. Keep the cache just
+    // below that interval so each scheduled request can capture a newer frame.
+    private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(4);
     private readonly ConcurrentDictionary<string, EncoderThumbnail> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _deviceLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _captureLimit = new(4, 4);

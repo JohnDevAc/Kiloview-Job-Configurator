@@ -12,7 +12,7 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
     private readonly Dictionary<string, TitleCardSender> _senders = new(StringComparer.OrdinalIgnoreCase);
     private NdiRuntime? _runtime;
 
-    public Task<TitleCardSource> StartOrUpdateAsync(ManagedDevice device, CancellationToken ct)
+    public async Task<TitleCardSource> StartOrUpdateAsync(ManagedDevice device, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("NDI identity cards require Windows and NDI Tools.");
@@ -25,6 +25,7 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
             ? $"public,{group}"
             : group;
         var localAddress = LocalAddressFor(device.IpAddress);
+        var created = false;
         lock (_gate)
         {
             _runtime ??= new NdiRuntime();
@@ -33,13 +34,17 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
                 || !string.Equals(sender.Groups, publishedGroups, StringComparison.Ordinal))
             {
                 sender?.Dispose();
-                sender = new TitleCardSender(_runtime, sourceName, publishedGroups, logger);
+                sender = new TitleCardSender(_runtime, sourceName, publishedGroups, device, logger);
                 _senders[device.Id] = sender;
+                created = true;
                 logger.LogInformation("Started NDI identity source {Source} for {Device} in groups {Groups}", sourceName, device.Id, publishedGroups);
             }
-            sender.Update(device);
+            else sender.Update(device);
         }
-        return Task.FromResult(new TitleCardSource(sourceName, group, localAddress));
+        // NDI discovery is asynchronous. Do not tell the UI that a newly-created
+        // card is active until it has sent frames long enough to be advertised.
+        if (created) await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        return new TitleCardSource(sourceName, group, localAddress);
     }
 
     public void StopAll()
@@ -98,13 +103,15 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
         public string Name { get; }
         public string Groups { get; }
 
-        public TitleCardSender(NdiRuntime runtime, string sourceName, string group, ILogger logger)
+        public TitleCardSender(NdiRuntime runtime, string sourceName, string group, ManagedDevice device, ILogger logger)
         {
             _runtime = runtime;
             _logger = logger;
             Name = sourceName;
             Groups = group;
             _sender = runtime.CreateSender(sourceName, group);
+            _pixels = TitleCardRenderer.Render(device);
+            _pixelsHandle = GCHandle.Alloc(_pixels, GCHandleType.Pinned);
             _loop = Task.Run(SendLoopAsync);
         }
 
@@ -113,7 +120,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
             var replacement = TitleCardRenderer.Render(device);
             lock (_frameGate)
             {
-                _runtime.Synchronize(_sender);
                 if (_pixelsHandle.IsAllocated) _pixelsHandle.Free();
                 _pixels = replacement;
                 _pixelsHandle = GCHandle.Alloc(_pixels, GCHandleType.Pinned);
@@ -147,7 +153,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
             try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
             lock (_frameGate)
             {
-                _runtime.Synchronize(_sender);
                 if (_pixelsHandle.IsAllocated) _pixelsHandle.Free();
                 _runtime.DestroySender(_sender);
             }
@@ -162,7 +167,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
         private readonly SendCreateDelegate _sendCreate;
         private readonly SendDestroyDelegate _sendDestroy;
         private readonly SendVideoDelegate _sendVideo;
-        private readonly SendVideoSyncDelegate _sendVideoSync;
         private bool _disposed;
 
         public NdiRuntime()
@@ -173,7 +177,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
             _sendCreate = Export<SendCreateDelegate>("NDIlib_send_create");
             _sendDestroy = Export<SendDestroyDelegate>("NDIlib_send_destroy");
             _sendVideo = Export<SendVideoDelegate>("NDIlib_send_send_video_v2");
-            _sendVideoSync = Export<SendVideoSyncDelegate>("NDIlib_send_send_video_v2");
             if (_initialize() == 0) throw new InvalidOperationException("The installed NDI runtime could not be initialized.");
         }
 
@@ -218,7 +221,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
             _sendVideo(sender, ref frame);
         }
 
-        public void Synchronize(IntPtr sender) => _sendVideoSync(sender, IntPtr.Zero);
         public void DestroySender(IntPtr sender) => _sendDestroy(sender);
 
         private T Export<T>(string name) where T : Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library, name));
@@ -248,7 +250,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr SendCreateDelegate(ref SendCreate settings);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void SendDestroyDelegate(IntPtr sender);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void SendVideoDelegate(IntPtr sender, ref VideoFrame frame);
-        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void SendVideoSyncDelegate(IntPtr sender, IntPtr frame);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct SendCreate
