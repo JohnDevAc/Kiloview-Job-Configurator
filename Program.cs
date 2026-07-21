@@ -209,6 +209,19 @@ app.MapPost("/api/teletools/{id}/stop", async (string id, AppStateStore store, T
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
+app.MapDelete("/api/teletools/{id}", async (string id, AppStateStore store, TeleToolFleetService teleTools, CancellationToken ct) =>
+{
+    try
+    {
+        var device = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == id)
+            ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
+        return Results.Ok(await teleTools.RemoveAsync(device, ct));
+    }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
 app.MapPost("/api/onboarding/complete", async (OnboardingService onboarding, CancellationToken ct) =>
     Results.Ok(await onboarding.CompleteAsync(ct)));
 

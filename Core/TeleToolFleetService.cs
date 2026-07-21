@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -12,6 +13,7 @@ public sealed class TeleToolFleetService(
 {
     public const int DefaultPort = 8000;
     public const string RequiredDevVersion = "1.8.5+dev.54";
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _adoptionGates = new();
 
     public async Task<ManagedDevice?> ProbeAsync(string ipAddress, int port, CancellationToken ct)
     {
@@ -122,26 +124,40 @@ public sealed class TeleToolFleetService(
             };
         }
 
-        var manager = await fleetIdentity.GetAsync(ct);
-        var snapshot = await PostAsync(device.IpAddress, device.WebPort, "/api/manager/snapshot", new
+        var gate = _adoptionGates.GetOrAdd(device.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
         {
-            manager_id = manager.ManagerId,
-            manager_url = manager.ManagerUrl,
-            manager_name = manager.ManagerName,
-            heartbeat = true
-        }, TimeSpan.FromSeconds(8), ct);
-        var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
-        var status = Object(snapshot, "status");
-        var release = Object(snapshot, "release");
-        var host = Object(snapshot, "hostname");
-        var adoption = Object(snapshot, "adoption");
-        var hostname = Text(host, "hostname");
-        if (!string.IsNullOrWhiteSpace(hostname)) device = device with { Hostname = hostname };
-        return ApplyStatus(device, status, config, release, adoption) with
+            var tracked = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == device.Id);
+            if (tracked?.IsOnboarded != true)
+                return await ReadAsync((tracked ?? device) with { IsOnboarded = false }, false, ct);
+
+            device = tracked;
+            var manager = await fleetIdentity.GetAsync(ct);
+            var snapshot = await PostAsync(device.IpAddress, device.WebPort, "/api/manager/snapshot", new
+            {
+                manager_id = manager.ManagerId,
+                manager_url = manager.ManagerUrl,
+                manager_name = manager.ManagerName,
+                heartbeat = true
+            }, TimeSpan.FromSeconds(8), ct);
+            var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            var status = Object(snapshot, "status");
+            var release = Object(snapshot, "release");
+            var host = Object(snapshot, "hostname");
+            var adoption = Object(snapshot, "adoption");
+            var hostname = Text(host, "hostname");
+            if (!string.IsNullOrWhiteSpace(hostname)) device = device with { Hostname = hostname };
+            return ApplyStatus(device, status, config, release, adoption) with
+            {
+                IsOnboarded = true,
+                IsStatic = device.IsStatic
+            };
+        }
+        finally
         {
-            IsOnboarded = device.IsOnboarded,
-            IsStatic = device.IsStatic
-        };
+            gate.Release();
+        }
     }
 
     public async Task ConfigureAsync(
@@ -281,6 +297,49 @@ public sealed class TeleToolFleetService(
 
         await PostAsync(device.IpAddress, device.WebPort, "/api/stop", new { }, TimeSpan.FromSeconds(15), ct);
         return await ReadAsync(device, true, ct);
+    }
+
+    public async Task<TeleToolRemovalResult> RemoveAsync(ManagedDevice device, CancellationToken ct)
+    {
+        if (!device.IsTeleTool()) throw new InvalidOperationException("Only TeleTool encoders can be removed from the TeleTool fleet.");
+        if (!device.IsOnboarded) throw new InvalidOperationException("This TeleTool is not onboarded.");
+
+        var gate = _adoptionGates.GetOrAdd(device.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            var state = await store.ReadAsync();
+            var tracked = state.Devices.FirstOrDefault(candidate => candidate.Id == device.Id)
+                ?? throw new KeyNotFoundException($"Device '{device.Id}' was not found.");
+            if (!tracked.IsOnboarded) throw new InvalidOperationException("This TeleTool is not onboarded.");
+
+            if (tracked.Family != DeviceFamily.SimulatedTeleTool)
+            {
+                var manager = await fleetIdentity.GetAsync(ct);
+                var response = await PostAsync(tracked.IpAddress, tracked.WebPort, "/api/manager/adoption/release", new
+                {
+                    manager_id = manager.ManagerId
+                }, TimeSpan.FromSeconds(8), ct);
+                var adoption = Object(response, "adoption");
+                if (Flag(adoption, "adopted"))
+                {
+                    var owner = Text(adoption, "manager_name") ?? Text(adoption, "manager_url") ?? "another Fleet Manager";
+                    throw new InvalidOperationException($"TeleTool is still adopted by {owner}; it was not removed from this job.");
+                }
+            }
+
+            var updated = await store.UpdateAsync(current => current with
+            {
+                Devices = current.Devices.Where(candidate => candidate.Id != tracked.Id).ToArray()
+            });
+            var remaining = updated.Devices.Count(candidate => candidate.IsOnboarded && candidate.IsTeleTool());
+            logger.LogInformation("Removed TeleTool {DeviceId} at {Address} from the onboarded fleet", tracked.Id, tracked.IpAddress);
+            return new(tracked.Id, tracked.Hostname, remaining, "released");
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task ChangeSimulationAsync(string id, Func<ManagedDevice, ManagedDevice> update) =>

@@ -19,6 +19,8 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
             return await SimulateAsync(watch);
         }
 
+        await ClearSimulationAsync();
+
         var cidrs = (request.ScanCidrs is { Count: > 0 } ? request.ScanCidrs : NetworkAddressing.GetLocalScanCidrs())
             .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
         if (cidrs.Length == 0) throw new ArgumentException("No active IPv4 network was found. Enter a scan CIDR manually.");
@@ -154,5 +156,16 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
             FirmwareJob = state.LastJob?.Simulation == true ? null : state.FirmwareJob
         });
         return new(devices, ["simulation"], watch.Elapsed);
+    }
+
+    private async Task ClearSimulationAsync()
+    {
+        titleCards.StopAll();
+        await store.UpdateAsync(state => state with
+        {
+            Devices = state.Devices.Where(device => !device.IsSimulation()).ToArray(),
+            LastJob = state.LastJob?.Simulation == true ? null : state.LastJob,
+            FirmwareJob = state.LastJob?.Simulation == true ? null : state.FirmwareJob
+        });
     }
 }

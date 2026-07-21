@@ -35,7 +35,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
             try
             {
                 EncoderThumbnail thumbnail;
-                if (device.Family == DeviceFamily.Simulated)
+                if (device.IsSimulation())
                 {
                     thumbnail = new(ThumbnailBitmap.Pattern(device.Id), true, DateTimeOffset.UtcNow);
                 }

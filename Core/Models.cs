@@ -118,6 +118,7 @@ public sealed record OnboardingStep(string DeviceId, string IpAddress, string St
 public sealed record OnboardingProgress(Guid RunId, string Status, int Completed, int Total, IReadOnlyList<OnboardingStep> Steps, DateTimeOffset StartedUtc, DateTimeOffset? FinishedUtc = null);
 
 public sealed record RoleUpdate(DeviceRole Role);
+public sealed record TeleToolRemovalResult(string Id, string Hostname, int ManagedTeleToolCount, string FleetStatus);
 public sealed record IdentityUpdate(string Hostname, string NdiChannelName);
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
 public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
