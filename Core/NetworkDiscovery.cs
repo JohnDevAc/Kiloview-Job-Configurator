@@ -6,12 +6,18 @@ using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
 
-public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore store)
+public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore store, NdiTitleCardService titleCards)
 {
     public async Task<DiscoveryResult> DiscoverAsync(DiscoveryRequest request, CancellationToken ct)
     {
         var watch = Stopwatch.StartNew();
-        if (request.Simulation) return await SimulateAsync(watch);
+        if (request.Simulation)
+        {
+            // A simulation scan is the start of a new synthetic fleet. Stop cards
+            // from any previous run so Studio Monitor cannot show stale identities.
+            titleCards.StopAll();
+            return await SimulateAsync(watch);
+        }
 
         var cidrs = (request.ScanCidrs is { Count: > 0 } ? request.ScanCidrs : NetworkAddressing.GetLocalScanCidrs())
             .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
@@ -81,7 +87,17 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
             HdmiOutputResolution = i is 2 or 5 ? "1920x1080p60" : null,
             Credentials = new()
         }).ToArray();
-        await MergeAsync(devices);
+        // Replace the previous synthetic fleet rather than merging its onboarded
+        // names, groups and addresses into this new simulation run.
+        await store.UpdateAsync(state => state with
+        {
+            Devices = state.Devices.Where(d => d.Family != DeviceFamily.Simulated)
+                .Concat(devices)
+                .OrderBy(d => d.IpAddress)
+                .ToArray(),
+            LastJob = state.LastJob?.Simulation == true ? null : state.LastJob,
+            FirmwareJob = state.LastJob?.Simulation == true ? null : state.FirmwareJob
+        });
         return new(devices, ["simulation"], watch.Elapsed);
     }
 }

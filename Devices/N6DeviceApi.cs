@@ -135,6 +135,38 @@ internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credential
         return new(connected, connected ? resolution : null);
     }
 
+    public async Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            try
+            {
+                using var targets = await PostAsync(client, "/api/decoder/discovery/set_manual_targets.json",
+                    new { ip = new[] { source.LocalAddress }, group_name = new[] { source.Group } }, "configure N6 identity-card discovery", ct);
+                using var discovery = await GetAsync(client, "/api/decoder/discovery/get.json", "find N6 identity card", ct);
+                var data = discovery.RootElement.TryGetProperty("data", out var rows) && rows.ValueKind == JsonValueKind.Array ? rows : default;
+                if (data.ValueKind == JsonValueKind.Array)
+                {
+                    var match = data.EnumerateArray().FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
+                    if (match.ValueKind == JsonValueKind.Object)
+                    {
+                        var name = String(match, "name", source.Name);
+                        var url = String(match, "original_url", String(match, "url"));
+                        if (!string.IsNullOrWhiteSpace(url))
+                        {
+                            using var selected = await PostAsync(client, "/api/decoder/current/set.json", new { name, url }, "show N6 identity card", ct);
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (DeviceApiException) when (attempt < 19) { /* Decoder services can lag behind the web UI after a mode change. */ }
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+        throw new DeviceApiException($"The N6 did not discover its NDI identity source '{source.Name}'.");
+    }
+
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

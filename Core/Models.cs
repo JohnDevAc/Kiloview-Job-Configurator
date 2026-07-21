@@ -84,6 +84,7 @@ public sealed record OnboardingProgress(Guid RunId, string Status, int Completed
 public sealed record RoleUpdate(DeviceRole Role);
 public sealed record IdentityUpdate(string Hostname, string NdiChannelName);
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
+public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
 
 public static class InputValidation
 {
@@ -107,6 +108,7 @@ public static class InputValidation
         if (NetworkAddressing.ToUInt(end) - NetworkAddressing.ToUInt(start) > 4095)
             throw new ArgumentException("The static range is limited to 4096 addresses per onboarding run.");
         if (string.IsNullOrWhiteSpace(request.JobName)) throw new ArgumentException("Job Name is required.");
+        if (request.JobName.Contains(',')) throw new ArgumentException("Job Name cannot contain a comma because it is also used as an NDI group name.");
         if (request.KiloLinkPort is < 1 or > 65535) throw new ArgumentException("KiloLink port is invalid.");
         if (request.KiloLinkWebPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
     }

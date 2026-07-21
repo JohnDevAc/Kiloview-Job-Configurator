@@ -12,10 +12,11 @@ Kiloview Setup is a local Windows web application for discovering, onboarding, i
 6. The service readdresses devices sequentially, applies the generated KiloLink code, configures the NDI Discovery Server, and applies the Job Name as the NDI group.
 7. All units temporarily enter decoder mode. After the negotiation window, a valid HDMI output resolution classifies a unit as a decoder; other units return to encoder mode.
 8. After initial onboarding, select the latest N6 and N60 `.bin` firmware packages. The application validates model coverage, stores local copies with SHA-256 fingerprints, authenticates to KiloLink Server Pro, uploads each package, matches the onboarded devices, and dispatches model-specific batch upgrades.
-9. Rename decoder hostnames and NDI channels, then select **Setup completed** to send the black preset to every decoder. Decoder renames are also synchronized back to the KiloLink Alias.
-10. The application becomes a red/green card-based monitor with IP, role, group, resolution, firmware, and direct links to each device UI.
+9. On the **Name the displays** page, the application confirms that the Job Name has been applied as the NDI group, publishes one temporary NDI identity card per decoder, and selects it on that unit. Every connected HDMI display shows its hostname, IP address, `JOB NAME / NDI GROUP`, and NDI channel. Renaming refreshes the displayed card and synchronizes the KiloLink Alias.
+10. Select **Setup completed** to stop the temporary NDI identity sources and send the black preset to every decoder.
+11. The application becomes a red/green card-based monitor, with decoders and encoders in separate compact groups. Encoder cards include a cached 320x240 capture of their current HDMI input obtained from the encoder's low-bandwidth NDI preview stream, along with IP, group, firmware, and a direct device-UI link.
 
-The advanced setup section contains factory credentials and a simulation mode. Simulation mode exercises the full workflow without making network or hardware changes.
+The advanced setup section contains factory credentials and a simulation mode. Simulation mode exercises the full workflow without changing Kiloview or KiloLink hardware. Each simulation scan starts a fresh synthetic fleet so identities from an earlier run cannot leak into the next job. On the **Name the displays** page it publishes real test-card NDI sources in both `public` and the simulated Job Name group so they are immediately visible in NDI Studio Monitor; every source name includes the same hostname and static IP shown on its decoder card.
 
 ## Build and run
 
@@ -64,6 +65,7 @@ Extract `artifacts\KiloviewSetup-Windows.zip` and run `Install.cmd`. Installatio
 - Static address conflicts are checked using known inventory, ICMP, HTTP, and HTTPS before a plan is offered.
 - A failed readdress, reconnect, API call, or mode switch is shown per device and does not silently pass.
 - N60 mode changes can take about one minute. Keep displays on until HDMI negotiation completes.
+- Display identity cards use the NDI runtime installed with NDI Tools 6 on the setup PC. The runtime is loaded locally and is not redistributed in the installer.
 
 ## Hardware acceptance required
 
@@ -75,14 +77,16 @@ The software build and complete simulation workflow are verified, but live N6/N6
 - NDI Discovery Server persistence for both HX and HB streams;
 - whether the firmware reports no negotiated HDMI resolution as an empty/`none` value;
 - hostname/channel changes while cycling a decoder through encoder mode;
+- identity-source discovery and selection on N6 `2.00.0009.0134` and N60 `2.45.0014.0170`;
 - black preset output on completion.
 
 The KiloLink firmware API used by this application was recovered from and read-only tested against KiloLink Server Pro `1.08.0034`. Login, version discovery, firmware inventory, device-type inventory, and device-list calls were verified against a live local server. Firmware upload and batch dispatch remain explicitly confirmation-gated and will stop if the server is not on the validated 1.08 API contract or if every onboarded device cannot be matched in KiloLink.
 
-The documented APIs do not expose a supported call for rendering arbitrary IP/group text over the HDMI output. The UI records and shows that identity, and naming is applied to the device, but a true HDMI title card requires either a firmware overlay API from Kiloview or a small NDI title-card sender. That integration should be added only against the actual firmware/API supplied for the deployment.
+Kiloview's N6 2.00 release notes mention text/image overlay support, but neither the published N6 nor N60 API documents an overlay endpoint. To avoid depending on an undocumented firmware call, the application renders the identity as a temporary local NDI source and selects it with each model's documented decoder API. This provides the same HDMI result on both N6 and N60 units.
 
 ## Official API references
 
 - [Kiloview N5/N6 API v3.0](https://enstatic.kiloview.com/wp-content/uploads/2025/09/NEW-N5ampN6-APIEN-version-3.0-1.pdf)
 - [Kiloview N60 Web API v2.01](https://enstatic.kiloview.com/wp-content/uploads/2025/09/N60-WEB-API-EN-Version2.01.pdf)
 - [Kiloview N6/N5 user manual](https://enstatic.kiloview.com/wp-content/uploads/2025/09/N6ampN5-for-NDI%C2%AEUser-ManuelV1.pdf)
+- [NDI sender API](https://docs.ndi.video/all/developing-with-ndi/sdk/ndi-send)

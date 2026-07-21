@@ -6,7 +6,7 @@ using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
 
-public sealed class OnboardingService(AppStateStore store, DeviceClientFactory factory, KiloLinkCredentialStore credentialStore, KiloLinkServerClient kiloLink, ILogger<OnboardingService> logger)
+public sealed class OnboardingService(AppStateStore store, DeviceClientFactory factory, KiloLinkCredentialStore credentialStore, KiloLinkServerClient kiloLink, NdiTitleCardService titleCards, ILogger<OnboardingService> logger)
 {
     private readonly object _progressGate = new();
     private OnboardingProgress _progress = new(Guid.Empty, "idle", 0, 0, [], DateTimeOffset.UtcNow);
@@ -74,6 +74,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         lock (_progressGate)
         {
             if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
+            titleCards.StopAll();
             var total = Math.Max(1, plan.Devices.Count * 8);
             _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
             _run = Task.Run(() => ExecuteAsync(plan));
@@ -145,7 +146,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                         LastError = null
                     };
                     await SaveDeviceAsync(device);
-                    CompleteStep(device, "KiloLink / NDI", "Server, discovery and group configured");
+                    CompleteStep(device, "KiloLink / NDI", $"NDI group '{plan.Settings.JobName}' applied from Job Name");
                     ready.Add(device);
                 }
                 catch (Exception ex)
@@ -256,16 +257,61 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         if (restoreDecoder)
         {
             await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, ct);
-            device = device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring };
+            device = await WaitForDeviceAsync(device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring }, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45), ct);
+            await SaveDeviceAsync(device);
+            var source = await titleCards.StartOrUpdateAsync(device, ct);
+            await factory.Create(device).ShowIdentityAsync(source, ct);
+        }
+        else if (device.Family == DeviceFamily.Simulated && device.Role == DeviceRole.Decoder)
+        {
+            await titleCards.StartOrUpdateAsync(device, ct);
         }
         await SaveDeviceAsync(device);
         return device;
+    }
+
+    public async Task<object> PrepareDecoderIdentificationAsync(CancellationToken ct)
+    {
+        var decoders = (await store.ReadAsync()).Devices.Where(d => d.IsOnboarded && d.Role == DeviceRole.Decoder).ToArray();
+        var active = new ConcurrentBag<string>();
+        var cards = new ConcurrentBag<object>();
+        var errors = new ConcurrentBag<object>();
+        await Parallel.ForEachAsync(decoders, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct }, async (device, token) =>
+        {
+            try
+            {
+                var source = await titleCards.StartOrUpdateAsync(device, token);
+                await factory.Create(device).ShowIdentityAsync(source, token);
+                active.Add(device.Id);
+                cards.Add(new
+                {
+                    device.Id,
+                    source.Name,
+                    device.Hostname,
+                    device.IpAddress,
+                    device.NdiGroup,
+                    device.NdiChannelName
+                });
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not show identity card on {Device}", device.Id);
+                errors.Add(new { device.Id, device.IpAddress, ex.Message });
+            }
+        });
+        return new
+        {
+            active = active.OrderBy(id => id).ToArray(),
+            cards = cards.ToArray(),
+            errors = errors.ToArray()
+        };
     }
 
     public async Task<object> CompleteAsync(CancellationToken ct)
     {
         var decoders = (await store.ReadAsync()).Devices.Where(d => d.IsOnboarded && d.Role == DeviceRole.Decoder).ToArray();
         var errors = new ConcurrentBag<object>();
+        titleCards.StopAll();
         await Parallel.ForEachAsync(decoders, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct }, async (device, token) =>
         {
             try { await factory.Create(device).BlankAsync(token); }

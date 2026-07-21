@@ -89,16 +89,16 @@
     </section>
 
     <section id="decoderView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">DECODER IDENTIFICATION</p><h1>Name the displays</h1><p>These units negotiated an HDMI output. Adjust names before completing setup.</p></div></div>
-      <div id="decoderGrid" class="device-grid"></div>
-      <div class="note">Changing a decoder’s NDI name temporarily switches it through encoder mode so the setting can be applied, then returns it to decoder mode. N60 units may take up to two minutes.</div>
+      <div class="page-head"><div><p class="eyebrow">DECODER IDENTIFICATION</p><h1>Name the displays</h1><p>Each HDMI display shows a unique title card containing its current hostname, IP address, NDI group, and channel.</p></div></div>
+      <div id="decoderGrid" class="device-groups"></div>
+      <div class="note">Match the physical screen to its card below. Applying new names refreshes the HDMI title card after the decoder returns from its temporary encoder-mode change. N60 units may take up to two minutes.</div>
       <div class="sticky-action"><div><strong>All displays identified?</strong><small>This sends preset 0 (black) to every decoder.</small></div><button id="completeSetup" class="primary">Setup completed <b>✓</b></button></div>
     </section>
 
     <section id="monitorView" class="view hidden">
       <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Health refreshes every 15 seconds.</p></div><button class="quiet" data-action="new-job">+ New onboarding</button></div>
       <div class="monitor-stats" id="monitorStats"></div>
-      <div id="monitorGrid" class="device-grid"></div>
+      <div id="monitorGrid" class="device-groups"></div>
     </section>
   </main>
 

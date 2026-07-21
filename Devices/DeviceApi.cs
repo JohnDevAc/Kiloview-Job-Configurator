@@ -17,6 +17,7 @@ public interface IDeviceApi
     Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct);
     Task SetRoleAsync(DeviceRole role, CancellationToken ct);
     Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct);
+    Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct);
     Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct);
     Task BlankAsync(CancellationToken ct);
 }

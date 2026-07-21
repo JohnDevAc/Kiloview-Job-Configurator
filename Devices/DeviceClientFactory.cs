@@ -61,6 +61,7 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
         var device = await Device();
         return new(device.HdmiDisplayConnected == true, device.HdmiDisplayConnected == true ? device.HdmiOutputResolution ?? "1920x1080p60" : null);
     }
+    public Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct) => Task.CompletedTask;
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct) =>
         await Change(d => d with { Hostname = hostname, NdiChannelName = channelName, NdiGroup = group });
     public Task BlankAsync(CancellationToken ct) => Task.CompletedTask;

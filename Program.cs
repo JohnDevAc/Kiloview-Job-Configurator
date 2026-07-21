@@ -4,6 +4,8 @@ using KiloviewSetup.Core;
 using KiloviewSetup.Devices;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 builder.WebHost.UseUrls("http://127.0.0.1:8091");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
@@ -13,6 +15,8 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 builder.Services.AddSingleton<AppStateStore>();
 builder.Services.AddSingleton<KiloLinkCredentialStore>();
 builder.Services.AddSingleton<KiloLinkServerClient>();
+builder.Services.AddSingleton<NdiTitleCardService>();
+builder.Services.AddSingleton<EncoderThumbnailService>();
 builder.Services.AddSingleton<FirmwareService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
@@ -23,10 +27,22 @@ var app = builder.Build();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok", version = "0.4.0" }));
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok", version = "0.5.4" }));
 app.MapGet("/api/network/subnets", () => Results.Ok(NetworkAddressing.GetLocalScanCidrs()));
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));
 app.MapGet("/api/devices", async (AppStateStore store) => Results.Ok((await store.ReadAsync()).Devices));
+app.MapGet("/api/devices/{id}/thumbnail", async (string id, EncoderThumbnailService thumbnails, HttpResponse response, CancellationToken ct) =>
+{
+    try
+    {
+        var thumbnail = await thumbnails.GetAsync(id, ct);
+        response.Headers.CacheControl = "no-store";
+        response.Headers["X-Kiloview-Preview"] = thumbnail.Live ? "live" : "unavailable";
+        return Results.File(thumbnail.Bytes, "image/bmp");
+    }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
 app.MapGet("/api/kilolink/credentials", (string serverIp, KiloLinkCredentialStore credentials) =>
 {
     try { return Results.Ok(credentials.GetStatus(serverIp)); }
@@ -67,6 +83,8 @@ app.MapPost("/api/onboarding/run", (OnboardingPlan plan, OnboardingService onboa
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 app.MapGet("/api/onboarding/progress", (OnboardingService onboarding) => Results.Ok(onboarding.Progress));
+app.MapPost("/api/onboarding/identify", async (OnboardingService onboarding, CancellationToken ct) =>
+    Results.Ok(await onboarding.PrepareDecoderIdentificationAsync(ct)));
 
 app.MapPost("/api/firmware/stage", async (HttpRequest request, FirmwareService firmware, CancellationToken ct) =>
 {

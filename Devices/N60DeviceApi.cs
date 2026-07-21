@@ -157,6 +157,40 @@ internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentia
         return new(connected, connected ? resolution : null);
     }
 
+    public async Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            try
+            {
+                using var targets = await PostAsync(client, "/api/codec/discovery/addManualIpsGroups",
+                    new { groups = new[] { source.Group }, manuals = new[] { source.LocalAddress } }, "configure N60 identity-card discovery", ct);
+                using var discovery = await GetAsync(client, "/api/codec/discovery/scan", "find N60 identity card", ct);
+                var data = discovery.RootElement.TryGetProperty("data", out var rows) && rows.ValueKind == JsonValueKind.Array ? rows : default;
+                if (data.ValueKind == JsonValueKind.Array)
+                {
+                    var match = data.EnumerateArray().FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
+                    if (match.ValueKind == JsonValueKind.Object)
+                    {
+                        var name = String(match, "name", source.Name);
+                        var url = String(match, "original_url", String(match, "url"));
+                        var group = String(match, "group", String(match, "group_name", source.Group));
+                        var id = match.TryGetProperty("id", out var index) && index.TryGetInt32(out var value) ? value : 0;
+                        if (!string.IsNullOrWhiteSpace(url))
+                        {
+                            using var selected = await PostAsync(client, "/api/codec/decode/addSpec", new { id, name, url, group }, "show N60 identity card", ct);
+                            return;
+                        }
+                    }
+                }
+            }
+            catch (DeviceApiException) when (attempt < 19) { /* Decoder services can lag behind the web UI after a mode change. */ }
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+        throw new DeviceApiException($"The N60 did not discover its NDI identity source '{source.Name}'.");
+    }
+
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
