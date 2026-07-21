@@ -15,12 +15,15 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
 
     public async Task<OnboardingPlan> BuildPlanAsync(OnboardingRequest request, CancellationToken ct)
     {
-        InputValidation.Validate(request);
         var state = await store.ReadAsync();
         var selected = request.DeviceIds.Distinct().Select(id => state.Devices.FirstOrDefault(d => d.Id == id)
             ?? throw new ArgumentException($"Selected device '{id}' is no longer in the discovery list.")).ToArray();
         if (selected.Length == 0) throw new ArgumentException("Select at least one device to onboard.");
-        if (selected.Any(d => d.Family != DeviceFamily.Simulated))
+        if (selected.Any(d => !d.CanOnboard))
+            throw new ArgumentException(selected.First(d => !d.CanOnboard).ManagementMessage ?? "One or more selected devices cannot be onboarded.");
+        var requiresKiloLink = selected.Any(d => d.IsKiloview() && !d.IsSimulation());
+        InputValidation.Validate(request, requiresKiloLink);
+        if (requiresKiloLink)
         {
             var serverCredential = credentialStore.ResolveAndStore(request.KiloLinkServerIp, request.KiloLinkUsername, request.KiloLinkPassword);
             request = request with { KiloLinkUsername = serverCredential.Username, KiloLinkPassword = "" };
@@ -43,29 +46,41 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         var next = occupiedNumbers.Length == 0 ? startNumber : Math.Max(startNumber, occupiedNumbers.Max() + 1);
         var end = NetworkAddressing.ToUInt(IPAddress.Parse(request.StaticEnd));
         var plans = new List<DevicePlan>();
-        for (var i = 0; i < selected.Length; i++)
+        var kiloviewNumber = 0;
+        var teleToolNumber = 0;
+        foreach (var device in selected)
         {
-            var device = selected[i];
+            var hostname = device.IsTeleTool()
+                ? $"{SanitizeName(request.JobName)}-TT-{++teleToolNumber:000}"
+                : $"{SanitizeName(request.JobName)}-KV-{++kiloviewNumber:000}";
             if (device.IsStatic && range.Contains(device.IpAddress))
             {
-                plans.Add(new(device.Id, device.IpAddress, device.IpAddress, $"{SanitizeName(request.JobName)}-KV-{i + 1:000}", device.Role, true));
+                plans.Add(new(device.Id, device.IpAddress, device.IpAddress, hostname, device.IsTeleTool() ? DeviceRole.Encoder : device.Role, true, device.Family));
                 continue;
             }
             while (next <= end && occupied.ContainsKey(NetworkAddressing.FromUInt(next).ToString())) next++;
             if (next > end) throw new ArgumentException("There are not enough unused addresses above the previously onboarded devices in the static range.");
             var target = NetworkAddressing.FromUInt(next++).ToString();
-            var role = request.RoleOverrides is not null && request.RoleOverrides.TryGetValue(device.Id, out var value) ? value : DeviceRole.Unknown;
-            plans.Add(new(device.Id, device.IpAddress, target, $"{SanitizeName(request.JobName)}-KV-{i + 1:000}", role));
+            var role = device.IsTeleTool()
+                ? DeviceRole.Encoder
+                : request.RoleOverrides is not null && request.RoleOverrides.TryGetValue(device.Id, out var value) ? value : DeviceRole.Unknown;
+            plans.Add(new(device.Id, device.IpAddress, target, hostname, role, false, device.Family));
             occupied.TryAdd(target, 0);
         }
 
-        var warnings = new List<string>
+        var warnings = new List<string>();
+        if (selected.Any(d => d.IsKiloview()))
         {
-            $"Confirming authorizes the application to accept the Kiloview EULA on each selected unit and set its device login to admin / {request.JobName}.",
-            "KiloLink authorization codes will be generated on the server from each unit serial number; the KiloLink alias will match the assigned hostname.",
-            "Role detection temporarily switches every selected unit to decoder mode. N60 firmware can take about one minute to change mode.",
-            "Keep all intended HDMI displays powered on until role detection completes."
-        };
+            warnings.Add($"Confirming authorizes the application to accept the Kiloview EULA on each selected Kiloview and set its device login to admin / {request.JobName}.");
+            warnings.Add("KiloLink authorization codes will be generated for Kiloview units; each KiloLink alias will match the assigned hostname.");
+            warnings.Add("Kiloview role detection temporarily switches those units to decoder mode. N60 firmware can take about one minute to change mode.");
+            warnings.Add("Keep all intended HDMI displays powered on until Kiloview role detection completes.");
+        }
+        if (selected.Any(d => d.IsTeleTool()))
+        {
+            warnings.Add($"TeleTools will remain encoders and receive hostnames, NDI channel names, Discovery Server {request.NdiDiscoveryServerIp}, and NDI group '{request.JobName}' from the TeleTool Dev API.");
+            warnings.Add("TeleTools already adopted by another Fleet Manager or managing their own fleet cannot be selected.");
+        }
         return new(request, plans, occupied.Keys.OrderBy(x => NetworkAddressing.ToUInt(IPAddress.Parse(x))).ToArray(), warnings);
     }
 
@@ -75,7 +90,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         {
             if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
             titleCards.StopAll();
-            var total = Math.Max(1, plan.Devices.Count * 8);
+            var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 8));
             _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
             _run = Task.Run(() => ExecuteAsync(plan));
             return new { _progress.RunId, _progress.Status };
@@ -93,6 +108,12 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                 var device = (await store.ReadAsync()).Devices.First(d => d.Id == item.DeviceId);
                 try
                 {
+                    if (device.IsTeleTool())
+                    {
+                        await OnboardTeleToolAsync(device, item, plan.Settings);
+                        continue;
+                    }
+
                     var targetCredentials = new DeviceCredentials("admin", plan.Settings.JobName);
                     Step(device, "Access & license", "running", "Accepting EULA and applying job credentials");
                     await factory.Create(device).ProvisionAccessAsync(targetCredentials, CancellationToken.None);
@@ -122,7 +143,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                     else CompleteStep(device, "Prepare", "Encoder mode ready");
 
                     Step(device, "KiloLink authorization", "running", "Generating server-side device code");
-                    var authorizationCode = device.Family == DeviceFamily.Simulated
+                    var authorizationCode = device.IsSimulation()
                         ? $"SIM-{device.Id}"
                         : (await kiloLink.AuthorizeDeviceAsync(
                             plan.Settings.KiloLinkServerIp,
@@ -169,7 +190,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                 catch (Exception ex) { FailStep(device, "HDMI probe", ex.Message); }
             }
 
-            if (ready.Any(d => d.Family != DeviceFamily.Simulated)) await Task.Delay(TimeSpan.FromSeconds(70));
+            if (ready.Any(d => !d.IsSimulation())) await Task.Delay(TimeSpan.FromSeconds(70));
             else await Task.Delay(350);
 
             foreach (var original in ready)
@@ -213,17 +234,75 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                 {
                     KiloLinkServerIp = plan.Settings.KiloLinkServerIp,
                     KiloLinkWebPort = plan.Settings.KiloLinkWebPort,
-                    Simulation = ready.Count > 0 && ready.All(d => d.Family == DeviceFamily.Simulated)
+                    Simulation = plan.Devices.Count > 0 && plan.Devices.All(d => d.Family is DeviceFamily.Simulated or DeviceFamily.SimulatedTeleTool)
                 },
                 FirmwareJob = null
             });
-            Finish(Progress.Steps.Any(s => s.Status == "error") ? "completed-with-errors" : "awaiting-decoder-names");
+            Finish(Progress.Steps.Any(s => s.Status == "error")
+                ? "completed-with-errors"
+                : ready.Count > 0 ? "awaiting-decoder-names" : "completed");
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Onboarding run failed");
             Finish("failed");
         }
+    }
+
+    private async Task OnboardTeleToolAsync(ManagedDevice device, DevicePlan item, OnboardingRequest settings)
+    {
+        if (!device.CanOnboard)
+            throw new InvalidOperationException(device.ManagementMessage ?? "This TeleTool cannot be onboarded.");
+
+        var channelName = $"{SanitizeName(settings.JobName)}-{item.TargetIp.Split('.').Last()}";
+        Step(device, "TeleTool Dev API", "running", $"Checking for {TeleToolFleetService.RequiredDevVersion} or later");
+        CompleteStep(device, "TeleTool Dev API", $"NDI group and Discovery Server API available on {device.FirmwareVersion ?? "Dev build"}");
+
+        Step(device, "Identity & NDI", "running", $"Applying {item.Hostname}, channel {channelName}, and group {settings.JobName}");
+        await factory.Create(device).ConfigureOnboardingAsync(settings, item.Hostname, channelName, CancellationToken.None);
+        device = device with
+        {
+            Hostname = item.Hostname,
+            NdiChannelName = channelName,
+            NdiGroup = settings.JobName,
+            Role = DeviceRole.Encoder,
+            Health = DeviceHealth.Configuring,
+            LastError = null
+        };
+        await SaveDeviceAsync(device);
+        CompleteStep(device, "Identity & NDI", $"Discovery Server {settings.NdiDiscoveryServerIp}; group '{settings.JobName}'");
+
+        Step(device, "Static IP", "running", $"Assigning {item.TargetIp} on TeleTool eth0");
+        if (!item.ExistingStaticDevice)
+            await factory.Create(device).SetNetworkAsync(item.TargetIp, settings.SubnetMask, settings.Gateway, CancellationToken.None);
+        device = device with { IpAddress = item.TargetIp, IsStatic = true, Health = DeviceHealth.Configuring };
+        await SaveDeviceAsync(device);
+        CompleteStep(device, "Static IP", item.ExistingStaticDevice ? "Already in static range" : "Address assigned");
+
+        Step(device, "Reconnect", "running", $"Waiting for TeleTool at {item.TargetIp}:{device.WebPort}");
+        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(60));
+        CompleteStep(device, "Reconnect", "TeleTool web API reachable on its static address");
+
+        Step(device, "Fleet adoption", "running", "Registering this configurator as the active Fleet Manager");
+        device = await WaitForDeviceAsync(device with
+        {
+            IsOnboarded = true,
+            Role = DeviceRole.Encoder,
+            Health = DeviceHealth.Configuring,
+            ManagementState = "managed",
+            ManagementMessage = "Managed by this configurator"
+        }, TimeSpan.FromSeconds(30));
+        device = device with
+        {
+            IsOnboarded = true,
+            Role = DeviceRole.Encoder,
+            Health = DeviceHealth.Online,
+            ManagementState = "managed",
+            ManagementMessage = "Managed by this configurator",
+            LastError = null
+        };
+        await SaveDeviceAsync(device);
+        CompleteStep(device, "Fleet adoption", "Monitoring heartbeat and stream controls enabled");
     }
 
     public async Task<ManagedDevice> SetRoleAsync(string id, DeviceRole role, CancellationToken ct)
@@ -240,7 +319,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         if (string.IsNullOrWhiteSpace(update.Hostname) || string.IsNullOrWhiteSpace(update.NdiChannelName))
             throw new ArgumentException("Hostname and NDI channel name are required.");
         var device = await GetDeviceAsync(id);
-        var restoreDecoder = device.Role == DeviceRole.Decoder && device.Family != DeviceFamily.Simulated;
+        var restoreDecoder = device.Role == DeviceRole.Decoder && !device.IsSimulation();
         if (restoreDecoder)
         {
             await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, ct);
@@ -249,7 +328,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         await factory.Create(device).SetIdentityAsync(update.Hostname.Trim(), update.NdiChannelName.Trim(), device.NdiGroup, ct);
         device = device with { Hostname = update.Hostname.Trim(), NdiChannelName = update.NdiChannelName.Trim(), LastError = null };
         var state = await store.ReadAsync();
-        if (device.Family != DeviceFamily.Simulated && state.LastJob is { } job && !string.IsNullOrWhiteSpace(job.KiloLinkServerIp))
+        if (device.IsKiloview() && !device.IsSimulation() && state.LastJob is { } job && !string.IsNullOrWhiteSpace(job.KiloLinkServerIp))
         {
             var credential = credentialStore.ResolveAndStore(job.KiloLinkServerIp, null, null);
             await kiloLink.AuthorizeDeviceAsync(job.KiloLinkServerIp, job.KiloLinkWebPort, credential, device.Id, device.Hostname, ct);
@@ -328,7 +407,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
 
     private async Task<ManagedDevice> WaitForDeviceAsync(ManagedDevice device, TimeSpan timeout, CancellationToken ct = default)
     {
-        if (device.Family == DeviceFamily.Simulated) return await factory.Create(device).ReadAsync(ct);
+        if (device.IsSimulation()) return await factory.Create(device).ReadAsync(ct);
         var end = DateTimeOffset.UtcNow + timeout;
         Exception? last = null;
         while (DateTimeOffset.UtcNow < end)
@@ -339,7 +418,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                 var read = await factory.Create(device).ReadAsync(ct);
                 return read with { IsOnboarded = device.IsOnboarded, NdiGroup = device.NdiGroup, NdiChannelName = device.NdiChannelName };
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException) { last = ex; }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or System.Text.Json.JsonException) { last = ex; }
             await Task.Delay(TimeSpan.FromSeconds(3), ct);
         }
         throw new DeviceApiException($"Device did not become reachable at {device.IpAddress} within {timeout.TotalSeconds:0} seconds.", last);
@@ -353,7 +432,7 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
             if ((await ping.SendPingAsync(address, TimeSpan.FromMilliseconds(300), cancellationToken: ct)).Status == IPStatus.Success) return true;
         }
         catch (Exception ex) when (ex is PingException or OperationCanceledException) { if (ct.IsCancellationRequested) throw; }
-        foreach (var port in new[] { 80, 443 })
+        foreach (var port in new[] { 80, 443, TeleToolFleetService.DefaultPort })
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(300);

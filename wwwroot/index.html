@@ -29,11 +29,11 @@
       <div class="hero">
         <p class="eyebrow">NEW JOB</p>
         <h1>Bring every converter<br><em>online, in order.</em></h1>
-        <p>Discover factory-reset N6 and N60 units, reserve safe static addresses, connect services, and classify HDMI decoders in one guided run.</p>
+        <p>Discover Kiloview N6/N60 converters and TeleTool encoders, reserve safe static addresses, connect NDI services, and monitor the complete job fleet.</p>
       </div>
       <form id="setupForm" class="panel setup-grid">
         <div class="section-title"><span>01</span><div><h2>Service connections</h2><p>Where every unit should register.</p></div></div>
-        <label><span>KiloLink Server IP</span><input name="kiloLinkServerIp" placeholder="Auto-detecting…" required inputmode="decimal"><small>The local network is checked for KiloLink Server Pro.</small></label>
+        <label><span>KiloLink Server IP <small>(Kiloview only)</small></span><input name="kiloLinkServerIp" placeholder="Auto-detecting…" inputmode="decimal"><small>Required when onboarding Kiloview units; TeleTools do not use KiloLink.</small></label>
         <div class="connection-test"><button id="findKiloLink" class="quiet" type="button">Find KiloLink Server</button><span id="kiloLinkDiscoveryResult"></span></div>
         <label><span>KiloLink Server username</span><input name="kiloLinkUsername" autocomplete="username"><small>Stored for this server IP on the local Windows PC.</small></label>
         <label><span>KiloLink Server password</span><input name="kiloLinkPassword" type="password" autocomplete="current-password"><small id="kiloLinkCredentialHint">Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.</small></label>
@@ -55,7 +55,7 @@
           <summary>Device login & test options</summary>
           <div class="details-grid">
             <label><span>Username</span><input name="username" value="admin"></label>
-            <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"><small>N6/N60 factory default is admin/admin.</small></label>
+            <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"><small>Kiloview N6/N60 factory default is admin/admin. TeleTool Dev does not require device credentials.</small></label>
             <label class="check"><input name="simulation" type="checkbox"><span>Simulation mode — no hardware changes</span></label>
           </div>
         </details>
@@ -64,7 +64,7 @@
     </section>
 
     <section id="discoverView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">DISCOVERY</p><h1>Select devices</h1><p>Only units outside the requested static pool are selected for onboarding.</p></div><button class="quiet" data-action="back-setup">← Edit job</button></div>
+      <div class="page-head"><div><p class="eyebrow">DISCOVERY</p><h1>Select devices</h1><p>Kiloview converters and compatible TeleTool Dev encoders share one collision-checked address plan.</p></div><button class="quiet" data-action="back-setup">← Edit job</button></div>
       <div id="discoverySummary" class="summary-strip"></div>
       <div id="discoveredGrid" class="device-grid"></div>
       <div class="sticky-action"><div><strong id="selectedCount">0 selected</strong><small>Already-static devices are preserved.</small></div><button id="buildPlan" class="primary">Review address plan <b>→</b></button></div>
@@ -73,7 +73,7 @@
     <section id="planView" class="view hidden">
       <div class="page-head"><div><p class="eyebrow">CONFIRMATION</p><h1>Review the run</h1><p>No device is changed until you confirm this plan.</p></div><button class="quiet" data-action="back-devices">← Device list</button></div>
       <div class="panel plan-panel"><div id="planRows"></div><div id="planWarnings" class="warnings"></div></div>
-      <div class="sticky-action"><div><strong id="planCount"></strong><small>Confirmation accepts each device’s Kiloview EULA and sets admin / Job Name before configuration.</small></div><button id="runPlan" class="danger">Accept EULA & onboard <b>→</b></button></div>
+      <div class="sticky-action"><div><strong id="planCount"></strong><small id="planConfirmation">Kiloview EULA acceptance applies only to selected Kiloview units.</small></div><button id="runPlan" class="danger"><span>Onboard selected devices</span> <b>→</b></button></div>
     </section>
 
     <section id="progressView" class="view hidden">
@@ -104,7 +104,7 @@
     </section>
 
     <section id="monitorView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Health refreshes every 15 seconds.</p></div><button class="quiet" data-action="new-job">+ New onboarding</button></div>
+      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><button class="quiet" data-action="new-job">+ New onboarding</button></div>
       <div class="monitor-stats" id="monitorStats"></div>
       <div id="monitorGrid" class="device-groups"></div>
     </section>

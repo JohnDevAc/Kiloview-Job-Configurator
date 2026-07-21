@@ -4,14 +4,14 @@
 
 > **Proprietary source-available software — not open source.** Free for non-commercial use in unmodified form only. Modification, derivative works, redistribution, and commercial use are prohibited. See [LICENSE.md](LICENSE.md).
 
-Kiloview Job Configurator is the local Windows web application for discovering, onboarding, identifying, and monitoring factory-reset Kiloview N6 and N60 converters. It listens only on `http://localhost:8091` and installs a desktop shortcut to that address.
+Kiloview Job Configurator is the local Windows web application for discovering, onboarding, identifying, and monitoring Kiloview N6/N60 converters and TeleTool encoders. It listens only on `http://localhost:8091` and installs a desktop shortcut to that address.
 
 This repository contains the **job configurator only**. The separate [Kiloview Environment Setup](https://github.com/JohnDevAc/Kiloview-Environment-Setup) repository installs and maintains KiloLink Server Pro, NDI® Tools, and NDI Discovery Server prerequisites.
 
 ## Current workflow
 
 1. The application scans active local networks for KiloLink Server Pro. Confirm the detected server, enter its login, then enter the static IP pool, Job Name, NDI Discovery Server IP, and scan network. The KiloLink username/password are retained locally for that server IP.
-2. Review discovered N6/N60 devices. Units already in the static pool are preserved and excluded by default.
+2. Review discovered N6/N60 devices and TeleTool Dev encoders. Units already in the static pool are preserved and excluded by default. TeleTools already adopted by another Fleet Manager or managing their own fleet are shown but cannot be selected.
 3. Confirm a collision-checked address plan and authorize the application to accept the Kiloview EULA on the selected devices. New addresses start above the highest occupied/onboarded address in the pool.
 4. Each factory-reset unit is logged into with `admin/admin`, its license is accepted, and its login is changed to `admin/<Job Name>`. The new local device credentials are stored with the device record for monitoring and future configuration.
 5. For each serial number, the service creates or reuses a KiloLink device record, generates any required authorization code on KiloLink Server, and keeps the KiloLink Alias equal to the assigned hostname.
@@ -20,7 +20,13 @@ This repository contains the **job configurator only**. The separate [Kiloview E
 8. After initial onboarding, select the latest N6 and N60 `.bin` firmware packages. The application validates model coverage, stores local copies with SHA-256 fingerprints, authenticates to KiloLink Server Pro, uploads each package, matches the onboarded devices, and dispatches model-specific batch upgrades.
 9. On the **Name the displays** page, the application confirms that the Job Name has been applied as the NDI group, publishes one temporary NDI identity card per decoder, and selects it on that unit. Every connected HDMI display shows its hostname, IP address, `JOB NAME / NDI GROUP`, and NDI channel. Decoder and encoder cards both allow the hostname and NDI channel name to be changed; encoder previews make the associated HDMI input easy to identify. Renaming refreshes the displayed decoder card and synchronizes the KiloLink Alias.
 10. Select **Setup completed** to stop the temporary NDI identity sources and send the black preset to every decoder.
-11. The application becomes a red/green card-based monitor, with decoders and encoders in separate compact groups. Encoder cards include a 320x240 capture of their current HDMI input obtained from the encoder's low-bandwidth NDI preview stream and refreshed every five seconds, along with IP, group, firmware, and a direct device-UI link.
+11. The application becomes a red/green card-based monitor, with Kiloview decoders, Kiloview encoders, and TeleTool encoders in separate groups. Kiloview encoder cards include a 320x240 capture of their current HDMI input. TeleTool cards use the TeleTool Fleet Manager snapshot and adoption APIs to show reachability, stream state, TV channel, NDI name/group, RF signal, pipeline health, and Dev version, with Start NDI, Stop NDI, and direct device-UI controls.
+
+## TeleTool Dev integration
+
+TeleTool discovery probes port `8000` and validates the `/api/manager/discovery` identity before a host is accepted. Onboarding requires TeleTool `1.8.5+dev.54` or later from the TeleTool `dev` branch because that release exposes the `ndi_groups` and `ndi_discovery_server` configuration fields. Older or Main builds remain visible in discovery with an update-required message and are never partially configured.
+
+Each selected TeleTool remains an encoder and receives a `JOB-TT-###` hostname, a job-derived NDI channel name, the selected static IPv4 address on `eth0`, the job's NDI Discovery Server, and the exact Job Name as its NDI send group. If its NDI stream is already running, onboarding restarts that stream with the new identity/group so the change takes effect immediately. The configurator then maintains the TeleTool adoption heartbeat while the unit remains in the onboarded fleet.
 
 The advanced setup section contains factory credentials and a simulation mode. Simulation mode exercises the full workflow without changing Kiloview or KiloLink hardware. Each simulation scan starts a fresh synthetic fleet so identities from an earlier run cannot leak into the next job. On the **Name the displays** page it publishes real test-card NDI sources in both `public` and the simulated Job Name group so they are immediately visible in NDI Studio Monitor; every source name includes the same hostname and static IP shown on its decoder card.
 

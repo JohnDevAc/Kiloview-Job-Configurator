@@ -28,6 +28,8 @@ builder.Services.AddSingleton<KiloLinkServerClient>();
 builder.Services.AddSingleton<NdiTitleCardService>();
 builder.Services.AddSingleton<EncoderThumbnailService>();
 builder.Services.AddSingleton<FirmwareService>();
+builder.Services.AddSingleton<TeleToolFleetIdentity>();
+builder.Services.AddSingleton<TeleToolFleetService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
 builder.Services.AddSingleton<OnboardingService>();
@@ -41,6 +43,7 @@ builder.Services.AddHttpClient<GitHubUpdateService>(client =>
     client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
     client.Timeout = TimeSpan.FromMinutes(15);
 });
+builder.Services.AddHttpClient("TeleTool", client => client.Timeout = Timeout.InfiniteTimeSpan);
 builder.Services.AddHostedService<DeviceMonitor>();
 
 var app = builder.Build();
@@ -174,6 +177,36 @@ app.MapPost("/api/devices/{id}/identity", async (string id, IdentityUpdate updat
     try { return Results.Ok(await onboarding.SetIdentityAsync(id, update, ct)); }
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
     catch (DeviceApiException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
+app.MapPost("/api/teletools/{id}/start", async (string id, AppStateStore store, TeleToolFleetService teleTools, CancellationToken ct) =>
+{
+    try
+    {
+        var device = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == id)
+            ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
+        var updated = await teleTools.StartAsync(device, ct);
+        await store.UpdateAsync(state => state with { Devices = state.Devices.Select(candidate => candidate.Id == id ? updated : candidate).ToArray() });
+        return Results.Ok(updated);
+    }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
+app.MapPost("/api/teletools/{id}/stop", async (string id, AppStateStore store, TeleToolFleetService teleTools, CancellationToken ct) =>
+{
+    try
+    {
+        var device = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == id)
+            ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
+        var updated = await teleTools.StopAsync(device, ct);
+        await store.UpdateAsync(state => state with { Devices = state.Devices.Select(candidate => candidate.Id == id ? updated : candidate).ToArray() });
+        return Results.Ok(updated);
+    }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
 app.MapPost("/api/onboarding/complete", async (OnboardingService onboarding, CancellationToken ct) =>

@@ -13,7 +13,7 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
     public async Task<FirmwareJob> StageAsync(IFormFile? n6Firmware, IFormFile? n60Firmware, CancellationToken ct)
     {
         var state = await store.ReadAsync();
-        var devices = state.Devices.Where(d => d.IsOnboarded).ToArray();
+        var devices = state.Devices.Where(d => d.IsOnboarded && d.IsKiloview()).ToArray();
         if (devices.Length == 0) throw new InvalidOperationException("Complete initial onboarding before staging firmware.");
 
         var needsN6 = devices.Any(d => IsModel(d, "N6"));
@@ -36,11 +36,11 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
         var state = await store.ReadAsync();
         var job = state.FirmwareJob ?? throw new InvalidOperationException("Stage the N6/N60 firmware packages first.");
         var lastJob = state.LastJob ?? throw new InvalidOperationException("No completed onboarding job is available.");
-        var devices = state.Devices.Where(d => d.IsOnboarded).ToArray();
+        var devices = state.Devices.Where(d => d.IsOnboarded && d.IsKiloview()).ToArray();
         if (devices.Length == 0) throw new InvalidOperationException("No onboarded devices are available for a fleet update.");
         ValidateCoverage(devices, job.Packages);
 
-        if (lastJob.Simulation || devices.All(d => d.Family == DeviceFamily.Simulated))
+        if (lastJob.Simulation || devices.All(d => d.IsSimulation()))
         {
             var simulationRunning = job with { Status = "running", Message = "KiloLink simulation fleet update is running." };
             await store.UpdateAsync(s => s with { FirmwareJob = simulationRunning });

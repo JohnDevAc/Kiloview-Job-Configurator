@@ -2,7 +2,7 @@ using System.Net;
 
 namespace KiloviewSetup.Core;
 
-public enum DeviceFamily { N6, N60, Simulated }
+public enum DeviceFamily { N6, N60, TeleTool, Simulated, SimulatedTeleTool }
 public enum DeviceRole { Unknown, Encoder, Decoder }
 public enum DeviceHealth { Unknown, Online, Offline, Configuring, Error }
 
@@ -29,6 +29,30 @@ public sealed record ManagedDevice
     public string? LastError { get; init; }
     public DateTimeOffset LastSeenUtc { get; init; } = DateTimeOffset.UtcNow;
     public DeviceCredentials Credentials { get; init; } = new();
+    public int WebPort { get; init; } = 80;
+    public bool CanOnboard { get; init; } = true;
+    public string? ManagementState { get; init; }
+    public string? ManagementMessage { get; init; }
+    public bool? StreamRunning { get; init; }
+    public string? StreamStatus { get; init; }
+    public string? ActiveChannelName { get; init; }
+    public string? ActiveChannelNumber { get; init; }
+    public string? PipelineStatus { get; init; }
+    public string? RfSignal { get; init; }
+    public string? RfSignalKind { get; init; }
+    public bool TeleToolControlReady { get; init; }
+    public string? TeleToolReleaseBranch { get; init; }
+}
+
+public static class DeviceClassification
+{
+    public static bool IsTeleTool(this ManagedDevice device) =>
+        device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool;
+
+    public static bool IsSimulation(this ManagedDevice device) =>
+        device.Family is DeviceFamily.Simulated or DeviceFamily.SimulatedTeleTool;
+
+    public static bool IsKiloview(this ManagedDevice device) => !device.IsTeleTool();
 }
 
 public sealed record LastJob(string JobName, string StaticStart, string StaticEnd, string NdiDiscoveryServerIp, DateTimeOffset StartedUtc)
@@ -51,7 +75,8 @@ public sealed record AppState(
     IReadOnlyList<ManagedDevice> Devices,
     LastJob? LastJob = null,
     FirmwareJob? FirmwareJob = null,
-    SoftwareReleaseChannel UpdateChannel = SoftwareReleaseChannel.Main)
+    SoftwareReleaseChannel UpdateChannel = SoftwareReleaseChannel.Main,
+    string? TeleToolManagerId = null)
 {
     public static AppState Empty => new([]);
 }
@@ -79,7 +104,14 @@ public sealed record OnboardingRequest(
     int KiloLinkPort = 50000,
     int KiloLinkWebPort = 80);
 
-public sealed record DevicePlan(string DeviceId, string CurrentIp, string TargetIp, string Hostname, DeviceRole Role, bool ExistingStaticDevice = false);
+public sealed record DevicePlan(
+    string DeviceId,
+    string CurrentIp,
+    string TargetIp,
+    string Hostname,
+    DeviceRole Role,
+    bool ExistingStaticDevice = false,
+    DeviceFamily Family = DeviceFamily.N6);
 public sealed record OnboardingPlan(OnboardingRequest Settings, IReadOnlyList<DevicePlan> Devices, IReadOnlyList<string> OccupiedAddresses, IReadOnlyList<string> Warnings);
 
 public sealed record OnboardingStep(string DeviceId, string IpAddress, string Step, string Status, string? Message = null);
@@ -99,11 +131,11 @@ public static class InputValidation
         return ip;
     }
 
-    public static void Validate(OnboardingRequest request)
+    public static void Validate(OnboardingRequest request, bool requireKiloLink = true)
     {
         var start = Ip(request.StaticStart, "Static range start");
         var end = Ip(request.StaticEnd, "Static range end");
-        Ip(request.KiloLinkServerIp, "KiloLink Server IP");
+        if (requireKiloLink) Ip(request.KiloLinkServerIp, "KiloLink Server IP");
         Ip(request.NdiDiscoveryServerIp, "NDI Discovery Server IP");
         Ip(request.SubnetMask, "Subnet mask");
         if (!string.IsNullOrWhiteSpace(request.Gateway)) Ip(request.Gateway, "Gateway");
@@ -113,7 +145,7 @@ public static class InputValidation
             throw new ArgumentException("The static range is limited to 4096 addresses per onboarding run.");
         if (string.IsNullOrWhiteSpace(request.JobName)) throw new ArgumentException("Job Name is required.");
         if (request.JobName.Contains(',')) throw new ArgumentException("Job Name cannot contain a comma because it is also used as an NDI group name.");
-        if (request.KiloLinkPort is < 1 or > 65535) throw new ArgumentException("KiloLink port is invalid.");
-        if (request.KiloLinkWebPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
+        if (requireKiloLink && request.KiloLinkPort is < 1 or > 65535) throw new ArgumentException("KiloLink port is invalid.");
+        if (requireKiloLink && request.KiloLinkWebPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
     }
 }

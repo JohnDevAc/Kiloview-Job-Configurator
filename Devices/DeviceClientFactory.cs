@@ -2,13 +2,15 @@ using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
 
-public sealed class DeviceClientFactory(AppStateStore store)
+public sealed class DeviceClientFactory(AppStateStore store, TeleToolFleetService teleTools)
 {
     public IDeviceApi Create(ManagedDevice device) => device.Family switch
     {
         DeviceFamily.N6 => new N6DeviceApi(device.IpAddress, device.Credentials),
         DeviceFamily.N60 => new N60DeviceApi(device.IpAddress, device.Credentials),
+        DeviceFamily.TeleTool => new TeleToolDeviceApi(device, teleTools),
         DeviceFamily.Simulated => new SimulatedDeviceApi(store, device.Id),
+        DeviceFamily.SimulatedTeleTool => new TeleToolDeviceApi(device, teleTools),
         _ => throw new NotSupportedException($"Unsupported device family {device.Family}.")
     };
 
@@ -38,6 +40,9 @@ public sealed class DeviceClientFactory(AppStateStore store)
         }
         return null;
     }
+
+    public Task<ManagedDevice?> ProbeTeleToolAsync(string ipAddress, CancellationToken ct) =>
+        teleTools.ProbeAsync(ipAddress, TeleToolFleetService.DefaultPort, ct);
 }
 
 internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDeviceApi

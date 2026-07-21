@@ -24,7 +24,7 @@ public sealed class DeviceMonitor(AppStateStore store, DeviceClientFactory facto
             ManagedDevice updated;
             try
             {
-                updated = device.Family == DeviceFamily.Simulated
+                updated = device.IsSimulation()
                     ? device with { Health = DeviceHealth.Online, LastSeenUtc = DateTimeOffset.UtcNow, LastError = null }
                     : (await factory.Create(device).ReadAsync(token)) with
                     {
@@ -36,7 +36,7 @@ public sealed class DeviceMonitor(AppStateStore store, DeviceClientFactory facto
                         LastError = null
                     };
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or System.Text.Json.JsonException)
             {
                 updated = device with { Health = DeviceHealth.Offline, LastError = ex.Message };
             }
