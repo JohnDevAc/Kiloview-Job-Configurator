@@ -10,7 +10,11 @@ $root = Split-Path -Parent $PSScriptRoot
 $artifactRoot = Join-Path $root 'artifacts'
 $publish = Join-Path $artifactRoot 'KiloviewSetup'
 $package = Join-Path $artifactRoot 'KiloviewSetup-Windows.zip'
-$setup = Join-Path $artifactRoot 'KiloviewSetup-Setup.exe'
+$setup = Join-Path $artifactRoot 'Kiloview Job Setup Manager.exe'
+$legacySetups = @(
+    (Join-Path $artifactRoot 'KiloviewSetup-Setup.exe'),
+    (Join-Path $artifactRoot 'NDI-KILO Environment Setup.exe')
+)
 
 if ($SetupExe) { $SelfContained = $true }
 
@@ -36,6 +40,7 @@ Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $package -Compr
 Write-Host "Package created: $package"
 
 if ($SetupExe) {
+    $legacySetups | Remove-Item -Force -ErrorAction SilentlyContinue
     $bootstrapperPublish = Join-Path $artifactRoot 'bootstrapper'
     if (Test-Path $bootstrapperPublish) { Remove-Item -LiteralPath $bootstrapperPublish -Recurse -Force }
     $bootstrapperArguments = @(
@@ -53,7 +58,7 @@ if ($SetupExe) {
     & dotnet @bootstrapperArguments
     if ($LASTEXITCODE -ne 0) { throw 'bootstrapper publish failed.' }
 
-    Copy-Item -LiteralPath (Join-Path $bootstrapperPublish 'KiloviewSetup-Setup.exe') -Destination $setup -Force
+    Copy-Item -LiteralPath (Join-Path $bootstrapperPublish 'Kiloview Job Setup Manager.exe') -Destination $setup -Force
     Remove-Item -LiteralPath $bootstrapperPublish -Recurse -Force
     Write-Host "Branded installer created: $setup"
 }

@@ -18,7 +18,7 @@ if (Test-Path $runtimeConfig) {
     if ($needsSharedRuntime) {
         $runtimes = & dotnet --list-runtimes 2>$null
         if (-not ($runtimes -match 'Microsoft\.AspNetCore\.App 8\.')) {
-            throw 'The .NET 8 ASP.NET Core Runtime is required. Use Setup.exe or install the .NET 8 ASP.NET Core Runtime.'
+            throw 'The .NET 8 ASP.NET Core Runtime is required. Use Kiloview Job Setup Manager.exe or install the .NET 8 ASP.NET Core Runtime.'
         }
     }
 }

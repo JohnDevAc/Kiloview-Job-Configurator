@@ -37,7 +37,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\KiloviewSetup-Setup.exe`. The installer carries the Kiloview Setup application icon. Double-clicking it installs for the current Windows user, registers the service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded desktop and Start Menu web shortcuts.
+Distribute `artifacts\Kiloview Job Setup Manager.exe`. Its outcome-focused name reflects the complete job workflow—onboarding, configuration, identification, and monitoring—while the installed application remains **Kiloview Setup**. The installer carries the Kiloview Setup application icon. Double-clicking it installs for the current Windows user, registers the service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded desktop and Start Menu web shortcuts.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
