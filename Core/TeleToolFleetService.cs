@@ -26,11 +26,20 @@ public sealed class TeleToolFleetService(
             var configTask = GetAsync(ipAddress, port, "/api/config/ui", TimeSpan.FromSeconds(3), ct);
             var statusTask = GetAsync(ipAddress, port, "/api/status?lite=1&stats=1&logs=0&rf=1", TimeSpan.FromSeconds(4), ct);
             var networkTask = GetAsync(ipAddress, port, "/api/system/network_info", TimeSpan.FromSeconds(3), ct);
-            await Task.WhenAll(configTask, statusTask, networkTask);
+            var audioStatusTask = TryGetAsync(ipAddress, port, "/api/audio/status?logs=0", TimeSpan.FromSeconds(3), ct);
+            var audioDevicesTask = TryGetAsync(ipAddress, port, "/api/audio/devices", TimeSpan.FromSeconds(3), ct);
+            await Task.WhenAll(
+                (Task)configTask,
+                statusTask,
+                networkTask,
+                audioStatusTask,
+                audioDevicesTask);
 
             var config = await configTask;
             var status = await statusTask;
             var network = await networkTask;
+            var audioStatus = await audioStatusTask;
+            var audioDevices = await audioDevicesTask;
             var release = Object(identity, "release");
             var adoption = Object(identity, "adoption");
             var remoteManager = Object(identity, "manager");
@@ -96,7 +105,7 @@ public sealed class TeleToolFleetService(
                 IsStatic = string.Equals(Text(Object(network, "network"), "mode"), "manual", StringComparison.OrdinalIgnoreCase),
                 LicenseAccepted = true
             };
-            return ApplyStatus(device, status, config, release, null);
+            return ApplyStatus(device, status, config, release, null, audioStatus, audioDevices);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
@@ -134,21 +143,30 @@ public sealed class TeleToolFleetService(
 
             device = tracked;
             var manager = await fleetIdentity.GetAsync(ct);
-            var snapshot = await PostAsync(device.IpAddress, device.WebPort, "/api/manager/snapshot", new
+            var snapshotTask = PostAsync(device.IpAddress, device.WebPort, "/api/manager/snapshot", new
             {
                 manager_id = manager.ManagerId,
                 manager_url = manager.ManagerUrl,
                 manager_name = manager.ManagerName,
                 heartbeat = true
             }, TimeSpan.FromSeconds(8), ct);
-            var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            var configTask = GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            var audioStatusTask = TryGetAsync(device.IpAddress, device.WebPort, "/api/audio/status?logs=0", TimeSpan.FromSeconds(3), ct);
+            var audioDevicesTask = TryGetAsync(device.IpAddress, device.WebPort, "/api/audio/devices", TimeSpan.FromSeconds(3), ct);
+            await Task.WhenAll(
+                (Task)snapshotTask,
+                configTask,
+                audioStatusTask,
+                audioDevicesTask);
+            var snapshot = await snapshotTask;
+            var config = await configTask;
             var status = Object(snapshot, "status");
             var release = Object(snapshot, "release");
             var host = Object(snapshot, "hostname");
             var adoption = Object(snapshot, "adoption");
             var hostname = Text(host, "hostname");
             if (!string.IsNullOrWhiteSpace(hostname)) device = device with { Hostname = hostname };
-            return ApplyStatus(device, status, config, release, adoption) with
+            return ApplyStatus(device, status, config, release, adoption, await audioStatusTask, await audioDevicesTask) with
             {
                 IsOnboarded = true,
                 IsStatic = device.IsStatic
@@ -370,7 +388,9 @@ public sealed class TeleToolFleetService(
         JsonObject status,
         JsonObject config,
         JsonObject release,
-        JsonObject? adoption)
+        JsonObject? adoption,
+        JsonObject? audioStatus,
+        JsonObject? audioDevices)
     {
         var supervisor = Object(status, "supervisor");
         var lastStart = Object(supervisor, "last_start_request");
@@ -393,6 +413,7 @@ public sealed class TeleToolFleetService(
             Text(status, "active_channel_uuid"),
             Text(supervisor, "desired_channel_uuid"),
             Text(lastStart, "channel_uuid")) is not null;
+        var dante = ReadDanteAudio(audioStatus, audioDevices);
 
         return device with
         {
@@ -411,10 +432,58 @@ public sealed class TeleToolFleetService(
             PipelineStatus = Text(supervisor, "pipeline_status") ?? Text(status, "pipeline_state"),
             RfSignal = rfSignal,
             RfSignalKind = rfKind,
+            DanteAudioActive = dante?.Active,
+            DanteAudioReady = dante?.Ready,
+            DanteAudioStatus = dante?.Status,
+            DanteAudioDeviceLabel = dante?.DeviceLabel,
+            DanteAudioDetails = dante?.Details,
+            DanteAudioKind = dante?.Kind,
             TeleToolControlReady = controlReady,
             ManagementState = adoption is null ? device.ManagementState : adoptionOk ? "managed" : "adopted-other",
             ManagementMessage = adoption is null ? device.ManagementMessage : adoptionOk ? "Managed by this configurator" : "Adopted by another Fleet Manager"
         };
+    }
+
+    private static DanteAudioSnapshot? ReadDanteAudio(JsonObject? audioStatus, JsonObject? audioDevices)
+    {
+        if (audioStatus is null && audioDevices is null) return null;
+
+        var devices = (audioDevices?["devices"] as JsonArray)?
+            .OfType<JsonObject>()
+            .Where(IsDanteAudioDevice)
+            .ToArray() ?? [];
+        var statusDeviceId = Text(audioStatus, "device_id");
+        var selectedId = FirstText(statusDeviceId, Text(audioDevices, "selected"));
+        var device = devices.FirstOrDefault(candidate =>
+                string.Equals(Text(candidate, "id"), selectedId, StringComparison.OrdinalIgnoreCase))
+            ?? devices.FirstOrDefault();
+
+        if (device is null)
+            return new(false, false, "Unavailable", null, "No Dante-compatible audio output was detected.", null);
+
+        var deviceId = Text(device, "id");
+        var label = Text(device, "label") ?? "Dante-compatible audio output";
+        var ready = Flag(device, "ready", true);
+        var running = Flag(audioStatus, "running");
+        var active = running && (statusDeviceId is null ||
+            string.Equals(statusDeviceId, deviceId, StringComparison.OrdinalIgnoreCase));
+        var error = Text(audioStatus, "last_error");
+        var details = Text(device, "details");
+        var status = active ? "Active" : !ready ? "Fault" : error is not null ? "Error" : "Off";
+        var message = active
+            ? $"{label} audio output is running."
+            : FirstText(error, details, ready
+                ? $"{label} audio output is ready but stopped."
+                : $"{label} is not ready.")!;
+
+        return new(active, ready, status, label, message, Text(device, "kind"));
+    }
+
+    private static bool IsDanteAudioDevice(JsonObject device)
+    {
+        var identity = string.Join(" ", Text(device, "id"), Text(device, "label"), Text(device, "kind"), Text(device, "details"));
+        return new[] { "dante", "avio", "audinate", "inferno" }
+            .Any(term => identity.Contains(term, StringComparison.OrdinalIgnoreCase));
     }
 
     private static Dictionary<string, object?> BuildStartPayload(
@@ -455,6 +524,25 @@ public sealed class TeleToolFleetService(
         TimeSpan timeout,
         CancellationToken ct) =>
         await SendAsync(address, port, HttpMethod.Get, path, null, timeout, ct);
+
+    private async Task<JsonObject?> TryGetAsync(
+        string address,
+        int port,
+        string path,
+        TimeSpan timeout,
+        CancellationToken ct)
+    {
+        try
+        {
+            return await GetAsync(address, port, path, timeout, ct);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested &&
+            (ex is HttpRequestException or TaskCanceledException or JsonException))
+        {
+            logger.LogDebug(ex, "Optional TeleTool endpoint {Path} unavailable for {Address}:{Port}", path, address, port);
+            return null;
+        }
+    }
 
     private async Task<JsonObject> PostAsync(
         string address,
@@ -533,6 +621,14 @@ public sealed class TeleToolFleetService(
     }
 
     private static string? FirstText(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+
+    private sealed record DanteAudioSnapshot(
+        bool Active,
+        bool Ready,
+        string Status,
+        string? DeviceLabel,
+        string Details,
+        string? Kind);
 
     private static string? NormaliseMac(string? value)
     {
