@@ -68,6 +68,7 @@ public sealed record FirmwareStartResult(bool Started, bool Completed, string St
 public sealed record KiloLinkConnectionRequest(string ServerIp, int WebPort, string Username, string Password);
 public sealed record KiloLinkConnectionStatus(string Version, IReadOnlyList<string> DeviceTypes, IReadOnlyList<string> FirmwareTypes, int DeviceCount);
 public sealed record KiloLinkServerDiscovery(string ServerIp, int WebPort, string Version);
+public sealed record NdiDiscoveryServerDiscovery(string ServerIp, int Port);
 public sealed record KiloLinkAuthorizationResult(string SerialNumber, string Hostname, string AuthorizationCode, bool Created);
 public sealed record KiloLinkFleetResult(int PackagesUploaded, int DevicesDispatched, IReadOnlyList<string> Models);
 

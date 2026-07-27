@@ -32,6 +32,7 @@ $startMenus = @(
     (Join-Path $programs 'Kiloview Setup')
 )
 $scheduledTaskName = 'Kiloview Job Configurator Service'
+$firewallRuleName = 'Kiloview Job Configurator LAN'
 
 Get-Process KiloviewSetup -ErrorAction SilentlyContinue | Stop-Process -Force
 if ($PSCmdlet.ShouldProcess($installRoot, 'Remove Kiloview Job Configurator application files')) {
@@ -40,6 +41,7 @@ if ($PSCmdlet.ShouldProcess($installRoot, 'Remove Kiloview Job Configurator appl
         Stop-ScheduledTask -TaskName $scheduledTaskName -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $scheduledTaskName -Confirm:$false
     }
+    Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     $startupLinks | Remove-Item -Force -ErrorAction SilentlyContinue
     $desktopLinks | Remove-Item -Force -ErrorAction SilentlyContinue
     $startMenus | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

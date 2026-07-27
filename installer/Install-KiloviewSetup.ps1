@@ -24,6 +24,7 @@ $programs = [Environment]::GetFolderPath('Programs')
 $startMenu = Join-Path $programs 'Kiloview Job Configurator'
 $legacyStartMenu = Join-Path $programs 'Kiloview Setup'
 $scheduledTaskName = 'Kiloview Job Configurator Service'
+$firewallRuleName = 'Kiloview Job Configurator LAN'
 
 $sourceExe = Join-Path $Source 'KiloviewSetup.exe'
 if (-not (Test-Path $sourceExe)) { throw "KiloviewSetup.exe was not found in $Source. Run scripts\Publish.ps1 first." }
@@ -79,11 +80,25 @@ Remove-Item -LiteralPath (Join-Path $startMenu 'Kiloview Job Configurator.url') 
 Remove-Item -LiteralPath $legacyStartMenu -Force -ErrorAction SilentlyContinue
 
 $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$taskAction = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $installRoot
+$taskAction = New-ScheduledTaskAction -Execute $exe -Argument '--lan' -WorkingDirectory $installRoot
 $taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
 $taskPrincipal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
 $taskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $scheduledTaskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description 'Elevated Kiloview Job Configurator local web service' -Force | Out-Null
+Register-ScheduledTask -TaskName $scheduledTaskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description 'Elevated Kiloview Job Configurator private LAN web service' -Force | Out-Null
+
+Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule `
+    -DisplayName $firewallRuleName `
+    -Description 'Allows Kiloview Job Configurator web access from the local subnet on trusted Windows network profiles.' `
+    -Direction Inbound `
+    -Action Allow `
+    -Enabled True `
+    -Profile Domain,Private `
+    -Program $exe `
+    -Protocol TCP `
+    -LocalPort 8091 `
+    -RemoteAddress LocalSubnet `
+    -EdgeTraversalPolicy Block | Out-Null
 
 $shortcutArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
 foreach ($shortcutPath in @((Join-Path $desktop 'Kiloview Job Configurator.lnk'), (Join-Path $startMenu 'Kiloview Job Configurator.lnk'))) {
@@ -126,3 +141,4 @@ for ($attempt = 0; $attempt -lt 20; $attempt++) {
 if (-not $healthy) { throw 'Kiloview Job Configurator was installed but did not start successfully on port 8091.' }
 Start-Process 'http://localhost:8091'
 Write-Host "Kiloview Job Configurator installed for the current user at $installRoot"
+Write-Host 'LAN access is enabled on TCP 8091 for the local subnet when Windows is using a Domain or Private network profile.'

@@ -4,13 +4,13 @@
 
 > **Proprietary source-available software — not open source.** Free for non-commercial use in unmodified form only. Modification, derivative works, redistribution, and commercial use are prohibited. See [LICENSE.md](LICENSE.md).
 
-Kiloview Job Configurator is the local Windows web application for discovering, onboarding, identifying, and monitoring Kiloview N6/N60 converters and TeleTool encoders. It listens only on `http://localhost:8091` and installs a desktop shortcut to that address.
+Kiloview Job Configurator is the Windows web application for discovering, onboarding, identifying, and monitoring Kiloview N6/N60 converters and TeleTool encoders. A development run listens on `http://localhost:8091`; the Windows installer enables private-LAN access on TCP `8091` and installs a desktop shortcut to the local address.
 
 This repository contains the **job configurator only**. The separate [Kiloview Environment Setup](https://github.com/JohnDevAc/Kiloview-Environment-Setup) repository installs and maintains KiloLink Server Pro, NDI® Tools, and NDI Discovery Server prerequisites.
 
 ## Current workflow
 
-1. The application scans active local networks for KiloLink Server Pro. Confirm the detected server, enter its login, then enter the static IP pool, Job Name, NDI Discovery Server IP, and scan network. The KiloLink username/password are retained locally for that server IP.
+1. Every time the onboarding setup page opens, the application automatically scans active local networks for KiloLink Server Pro and an NDI Discovery Server listening on TCP `5959`. Confirm the detected services, enter the KiloLink login, then enter the static IP pool, Job Name, and scan network. Manual retry buttons remain available, and the KiloLink username/password are retained locally for that server IP.
 2. Review discovered N6/N60 devices and TeleTool Dev encoders. Every eligible card can be included in onboarding or explicitly left standalone; standalone units are omitted from the final plan and receive no configuration changes. Units already in the static pool are preserved and excluded by default. TeleTools already adopted by another Fleet Manager or managing their own fleet are shown but cannot be selected.
 3. Confirm a collision-checked address plan and authorize the application to accept the Kiloview EULA on the selected devices. New addresses start above the highest occupied/onboarded address in the pool.
 4. Each factory-reset unit is logged into with `admin/admin`, its license is accepted, and its login is changed to `admin/<Job Name>`. The new local device credentials are stored with the device record for monitoring and future configuration.
@@ -20,7 +20,7 @@ This repository contains the **job configurator only**. The separate [Kiloview E
 8. After initial onboarding, select the latest N6 and N60 `.bin` firmware packages. The application validates model coverage, stores local copies with SHA-256 fingerprints, authenticates to KiloLink Server Pro, uploads each package, matches the onboarded devices, and dispatches model-specific batch upgrades.
 9. On the **Name the displays** page, the application confirms that the Job Name has been applied as the NDI group, publishes one temporary NDI identity card per decoder, and selects it on that unit. Every connected HDMI display shows its hostname, IP address, `JOB NAME / NDI GROUP`, and NDI channel. Decoder and encoder cards both allow the hostname and NDI channel name to be changed; encoder previews make the associated HDMI input easy to identify. Renaming refreshes the displayed decoder card and synchronizes the KiloLink Alias.
 10. Select **Setup completed** to stop the temporary NDI identity sources and send the black preset to every decoder.
-11. The application becomes a red/green card-based monitor, with Kiloview decoders, Kiloview encoders, and TeleTool encoders in separate groups. Kiloview and TeleTool encoder cards include a 320x240 capture of their current NDI output. TeleTool cards use the TeleTool Fleet Manager snapshot and adoption APIs to show reachability, stream state, TV channel, NDI name/group, RF signal, pipeline health, and Dev version, with Start NDI, Stop NDI, direct device-UI, and Remove from job controls. Removing a TeleTool releases this configurator's Fleet Manager adoption and updates the fleet totals immediately; it does not reset the unit's network/NDI configuration or stop an active stream.
+11. The application becomes a red/green card-based monitor, with Kiloview decoders, Kiloview encoders, and TeleTool encoders in separate groups. Kiloview and TeleTool encoder cards include a 320x240 capture of their current NDI output. When a TeleTool reports that its NDI stream is active but two consecutive frame captures fail, its preview changes to a warning image and the card highlights a likely NDI output, group, or Discovery Server error; the warning clears when a frame is received or the stream stops. TeleTool cards use the TeleTool Fleet Manager snapshot and adoption APIs to show reachability, stream state, TV channel, NDI name/group, RF signal, pipeline health, and Dev version, with Start NDI, Stop NDI, direct device-UI, and Remove from job controls. Removing a TeleTool releases this configurator's Fleet Manager adoption and updates the fleet totals immediately; it does not reset the unit's network/NDI configuration or stop an active stream.
 
 TeleTool-only onboarding runs skip the Kiloview firmware and decoder-identification stages, even when an older Kiloview fleet remains in local state. Starting a real network scan with Simulation mode disabled removes all simulated devices and clears any simulated job/firmware state before discovery results are stored.
 
@@ -51,7 +51,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
+Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in with LAN access enabled, adds a Windows Firewall rule for TCP `8091` limited to `LocalSubnet` on Domain/Private profiles, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. Other trusted LAN devices can open `http://<setup-pc-ip>:8091`. Public network profiles remain blocked, and uninstalling removes the firewall rule. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -92,7 +92,8 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 
 ## Operational safeguards
 
-- The UI is bound to loopback only. Device credentials and onboarding data are not exposed as a LAN web service.
+- The installed UI listens on TCP `8091` for LAN management. Windows Firewall limits inbound access to `LocalSubnet` on Domain/Private profiles and blocks Public profiles. The UI has no separate application login, so expose it only on a trusted management LAN.
+- Stored device credentials remain in local `state.json` for device management but are excluded from every HTTP API response.
 - KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
 - KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. Passwords are not written to `state.json` or returned by the local web API.
 - Device credentials are intentionally stored locally in `state.json`; after first-login provisioning the username is `admin` and the password is the exact Job Name.

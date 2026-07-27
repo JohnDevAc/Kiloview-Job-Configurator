@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using KiloviewSetup.Core;
 using KiloviewSetup.Devices;
 
 var servicePort = int.TryParse(Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"), out var configuredPort)
     && configuredPort is >= 1024 and <= 65535 ? configuredPort : 8091;
+var lanAccess = args.Contains("--lan", StringComparer.OrdinalIgnoreCase)
+    || string.Equals(Environment.GetEnvironmentVariable("KILOVIEW_LAN_ACCESS"), "1", StringComparison.Ordinal);
 using var instanceMutex = new Mutex(true, $"Local\\KiloviewJobConfigurator-{servicePort}", out var ownsInstanceMutex);
 if (!ownsInstanceMutex)
 {
@@ -16,15 +19,25 @@ if (!ownsInstanceMutex)
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddDebug();
-builder.WebHost.UseUrls($"http://127.0.0.1:{servicePort}");
+builder.WebHost.UseUrls($"http://{(lanAccess ? "0.0.0.0" : "127.0.0.1")}:{servicePort}");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
     o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     o.SerializerOptions.PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase;
+    var resolver = new DefaultJsonTypeInfoResolver();
+    resolver.Modifiers.Add(typeInfo =>
+    {
+        if (typeInfo.Type != typeof(ManagedDevice)) return;
+        var credentials = typeInfo.Properties.FirstOrDefault(property =>
+            property.Name.Equals(nameof(ManagedDevice.Credentials), StringComparison.OrdinalIgnoreCase));
+        if (credentials is not null) credentials.ShouldSerialize = static (_, _) => false;
+    });
+    o.SerializerOptions.TypeInfoResolver = resolver;
 });
 builder.Services.AddSingleton<AppStateStore>();
 builder.Services.AddSingleton<KiloLinkCredentialStore>();
 builder.Services.AddSingleton<KiloLinkServerClient>();
+builder.Services.AddSingleton<NdiDiscoveryServerClient>();
 builder.Services.AddSingleton<NdiTitleCardService>();
 builder.Services.AddSingleton<EncoderThumbnailService>();
 builder.Services.AddSingleton<FirmwareService>();
@@ -100,7 +113,8 @@ app.MapGet("/api/devices/{id}/thumbnail", async (string id, EncoderThumbnailServ
     {
         var thumbnail = await thumbnails.GetAsync(id, ct);
         response.Headers.CacheControl = "no-store";
-        response.Headers["X-Kiloview-Preview"] = thumbnail.Live ? "live" : "unavailable";
+        response.Headers["X-Kiloview-Preview"] = thumbnail.Live ? "live" : thumbnail.Warning ? "warning" : "unavailable";
+        response.Headers["X-Kiloview-Preview-Failures"] = thumbnail.ConsecutiveFailures.ToString();
         return Results.File(thumbnail.Bytes, "image/bmp");
     }
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
@@ -114,6 +128,11 @@ app.MapGet("/api/kilolink/credentials", (string serverIp, KiloLinkCredentialStor
 app.MapGet("/api/kilolink/discover", async (int? webPort, KiloLinkServerClient client, CancellationToken ct) =>
 {
     try { return Results.Ok(await client.DiscoverAsync(webPort ?? 80, ct)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+app.MapGet("/api/ndi/discover", async (int? port, NdiDiscoveryServerClient client, CancellationToken ct) =>
+{
+    try { return Results.Ok(await client.DiscoverAsync(port ?? NdiDiscoveryServerClient.DefaultPort, ct)); }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 app.MapPost("/api/kilolink/test", async (KiloLinkConnectionRequest request, KiloLinkCredentialStore credentials, KiloLinkServerClient client, CancellationToken ct) =>
@@ -261,5 +280,6 @@ if (systemTray.RestartRequested && Environment.ProcessPath is { } executablePath
     };
     if (Path.GetFileNameWithoutExtension(executablePath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
         restart.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
+    if (lanAccess) restart.ArgumentList.Add("--lan");
     Process.Start(restart);
 }

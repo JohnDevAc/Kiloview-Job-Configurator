@@ -4,7 +4,12 @@ using System.Runtime.InteropServices;
 
 namespace KiloviewSetup.Core;
 
-public sealed record EncoderThumbnail(byte[] Bytes, bool Live, DateTimeOffset CapturedUtc);
+public sealed record EncoderThumbnail(
+    byte[] Bytes,
+    bool Live,
+    DateTimeOffset CapturedUtc,
+    bool Warning = false,
+    int ConsecutiveFailures = 0);
 
 /// <summary>Captures a low-bandwidth NDI preview frame for each encoder and caches a browser-ready 320x240 bitmap.</summary>
 public sealed class EncoderThumbnailService(AppStateStore store, ILogger<EncoderThumbnailService> logger) : IDisposable
@@ -13,6 +18,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
     // below that interval so each scheduled request can capture a newer frame.
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(4);
     private readonly ConcurrentDictionary<string, EncoderThumbnail> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, int> _failures = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _deviceLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _captureLimit = new(4, 4);
     private readonly object _runtimeGate = new();
@@ -24,6 +30,20 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
             ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
         if (!device.IsOnboarded || device.Role != DeviceRole.Encoder)
             throw new InvalidOperationException("HDMI input previews are available only for onboarded encoders.");
+
+        var activeTeleToolStream = device.IsTeleTool() && device.StreamRunning == true;
+        if (!activeTeleToolStream)
+        {
+            _failures.TryRemove(id, out _);
+            if (_cache.TryGetValue(id, out var stoppedStreamPreview) && stoppedStreamPreview.Warning)
+                _cache.TryRemove(id, out _);
+        }
+        else if (_cache.TryGetValue(id, out var stoppedStreamPreview) &&
+                 !stoppedStreamPreview.Live &&
+                 stoppedStreamPreview.ConsecutiveFailures == 0)
+        {
+            _cache.TryRemove(id, out _);
+        }
 
         if (_cache.TryGetValue(id, out var cached) && DateTimeOffset.UtcNow - cached.CapturedUtc < CacheLifetime) return cached;
         var deviceLock = _deviceLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1));
@@ -37,6 +57,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                 EncoderThumbnail thumbnail;
                 if (device.IsSimulation())
                 {
+                    _failures.TryRemove(id, out _);
                     thumbnail = new(ThumbnailBitmap.Pattern(device.Id), true, DateTimeOffset.UtcNow);
                 }
                 else
@@ -44,9 +65,24 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                     byte[]? frame = null;
                     try { frame = await Runtime().CaptureAsync(device, ct); }
                     catch (Exception ex) { logger.LogWarning(ex, "Could not capture NDI preview for encoder {Device}", device.Id); }
-                    thumbnail = frame is null
-                        ? new(ThumbnailBitmap.Unavailable(device.Id), false, DateTimeOffset.UtcNow)
-                        : new(frame, true, DateTimeOffset.UtcNow);
+                    if (frame is not null)
+                    {
+                        _failures.TryRemove(id, out _);
+                        thumbnail = new(frame, true, DateTimeOffset.UtcNow);
+                    }
+                    else
+                    {
+                        var failures = activeTeleToolStream
+                            ? _failures.AddOrUpdate(id, 1, static (_, current) => current + 1)
+                            : 0;
+                        var warning = activeTeleToolStream && failures >= 2;
+                        thumbnail = new(
+                            warning ? ThumbnailBitmap.Warning(device.Id) : ThumbnailBitmap.Unavailable(device.Id),
+                            false,
+                            DateTimeOffset.UtcNow,
+                            warning,
+                            failures);
+                    }
                 }
                 _cache[id] = thumbnail;
                 return thumbnail;
@@ -346,6 +382,48 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                     bitmap[row++] = value;
                     bitmap[row++] = value;
                     bitmap[row++] = value;
+                }
+            }
+            return bitmap;
+        }
+
+        public static byte[] Warning(string seed)
+        {
+            var bitmap = CreateEmpty();
+            var shift = Math.Abs(StringComparer.OrdinalIgnoreCase.GetHashCode(seed) % 24);
+            for (var y = 0; y < Height; y++)
+            {
+                var row = HeaderSize + (Height - 1 - y) * RowStride;
+                for (var x = 0; x < Width; x++)
+                {
+                    var stripe = ((x + y + shift) / 16) % 2 == 0;
+                    var red = stripe ? (byte)52 : (byte)38;
+                    var green = stripe ? (byte)35 : (byte)27;
+                    var blue = stripe ? (byte)24 : (byte)20;
+
+                    var triangleY = y - 26;
+                    var triangleHalfWidth = triangleY is >= 0 and <= 158 ? triangleY * 112 / 158 : -1;
+                    var distanceFromCentre = Math.Abs(x - Width / 2);
+                    if (triangleHalfWidth >= 0 && distanceFromCentre <= triangleHalfWidth)
+                    {
+                        var onBorder = triangleY >= 148 || distanceFromCentre >= triangleHalfWidth - 7;
+                        red = onBorder ? (byte)243 : (byte)38;
+                        green = onBorder ? (byte)189 : (byte)29;
+                        blue = onBorder ? (byte)74 : (byte)24;
+                    }
+
+                    var exclamationStem = y is >= 78 and <= 137 && x is >= 153 and <= 166;
+                    var exclamationDot = (x - 160) * (x - 160) + (y - 158) * (y - 158) <= 64;
+                    if (exclamationStem || exclamationDot)
+                    {
+                        red = 243;
+                        green = 189;
+                        blue = 74;
+                    }
+
+                    bitmap[row++] = blue;
+                    bitmap[row++] = green;
+                    bitmap[row++] = red;
                 }
             }
             return bitmap;
