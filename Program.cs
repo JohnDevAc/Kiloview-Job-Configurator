@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using KiloviewSetup.Core;
@@ -120,9 +121,30 @@ app.MapGet("/api/devices/{id}/thumbnail", async (string id, EncoderThumbnailServ
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
     catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
-app.MapGet("/api/kilolink/credentials", (string serverIp, KiloLinkCredentialStore credentials) =>
+app.MapGet("/api/kilolink/credentials", (string serverIp, HttpContext context, KiloLinkCredentialStore credentials) =>
 {
-    try { return Results.Ok(credentials.GetStatus(serverIp)); }
+    try
+    {
+        var status = credentials.GetStatus(serverIp);
+        var canReveal = context.Connection.RemoteIpAddress is { } remoteIp && IPAddress.IsLoopback(remoteIp);
+        return Results.Ok(new { status.Stored, status.Username, CanReveal = canReveal });
+    }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+});
+app.MapPost("/api/kilolink/credentials/reveal", (string serverIp, HttpContext context, HttpResponse response, KiloLinkCredentialStore credentials) =>
+{
+    response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+    response.Headers.Pragma = "no-cache";
+    response.Headers.Expires = "0";
+    if (context.Connection.RemoteIpAddress is not { } remoteIp || !IPAddress.IsLoopback(remoteIp))
+        return Results.Json(
+            new { error = "Stored passwords can only be viewed from the setup PC using localhost." },
+            statusCode: StatusCodes.Status403Forbidden);
+    try
+    {
+        var credential = credentials.GetStoredCredential(serverIp);
+        return Results.Ok(new { credential.Username, credential.Password });
+    }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 app.MapGet("/api/kilolink/discover", async (int? webPort, KiloLinkServerClient client, CancellationToken ct) =>

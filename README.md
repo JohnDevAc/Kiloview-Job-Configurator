@@ -95,7 +95,7 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 - The installed UI listens on TCP `8091` for LAN management. Windows Firewall limits inbound access to `LocalSubnet` on Domain/Private profiles and blocks Public profiles. The UI has no separate application login, so expose it only on a trusted management LAN.
 - Stored device credentials remain in local `state.json` for device management but are excluded from every HTTP API response.
 - KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
-- KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. Passwords are not written to `state.json` or returned by the local web API.
+- KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. When a stored login is available, onboarding displays its username and a masked password indicator and allows the blank password field to reuse it. An explicit View/Hide control can retrieve the password only through a no-cache, loopback-only endpoint opened from `localhost` on the setup PC; LAN clients cannot retrieve it. Passwords are never written to `state.json`.
 - Device credentials are intentionally stored locally in `state.json`; after first-login provisioning the username is `admin` and the password is the exact Job Name.
 - Persistent state is stored in `%LOCALAPPDATA%\Kiloview Setup\state.json`.
 - Staged firmware is stored under `%LOCALAPPDATA%\Kiloview Setup\firmware`, separated by device model, and checked with SHA-256 after upload.

@@ -26,6 +26,13 @@ public sealed class KiloLinkCredentialStore
         return new(credential is not null, credential?.Username);
     }
 
+    public KiloLinkCredential GetStoredCredential(string serverIp)
+    {
+        InputValidation.Ip(serverIp, "KiloLink Server IP");
+        return Read(serverIp)
+            ?? throw new ArgumentException("No stored KiloLink credentials exist for this server IP.");
+    }
+
     public KiloLinkCredential ResolveAndStore(string serverIp, string? username, string? password)
     {
         InputValidation.Ip(serverIp, "KiloLink Server IP");
