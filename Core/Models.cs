@@ -170,7 +170,8 @@ public sealed record MulticastConfiguration(
     IReadOnlyList<MulticastAssignment> Assignments,
     string Status,
     DateTimeOffset GeneratedUtc,
-    DateTimeOffset? AppliedUtc = null);
+    DateTimeOffset? AppliedUtc = null,
+    bool AccessManagerRunning = false);
 public sealed record MulticastApplyResult(
     string Status,
     int Applied,

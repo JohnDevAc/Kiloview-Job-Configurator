@@ -83,7 +83,8 @@ public sealed class MulticastService(
             accessManager.Detected,
             assignments,
             "planned",
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            AccessManagerRunning: accessManager.IsRunning);
     }
 
     public async Task<MulticastApplyResult> ApplyAsync(MulticastConfiguration plan, CancellationToken ct)

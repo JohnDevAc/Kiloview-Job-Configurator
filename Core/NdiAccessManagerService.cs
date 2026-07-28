@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -10,7 +11,9 @@ public sealed record NdiAccessManagerStatus(
     string ConfigPath,
     string? NetPrefix,
     string? Netmask,
-    int? Ttl);
+    int? Ttl,
+    bool AccessManagerRunning = false,
+    string? Error = null);
 
 public sealed class NdiAccessManagerService
 {
@@ -24,6 +27,21 @@ public sealed class NdiAccessManagerService
     public string ConfigPath => _configPath;
 
     public bool Detected => File.Exists(_configPath) || AccessManagerCandidates().Any(File.Exists);
+    public bool IsRunning => AccessManagerProcessNames().Any(name =>
+    {
+        try
+        {
+            var processes = Process.GetProcessesByName(name);
+            foreach (var process in processes) process.Dispose();
+            return processes.Length > 0;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException
+            or PlatformNotSupportedException
+            or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    });
 
     public async Task<NdiAccessManagerStatus> ApplyAsync(
         string netPrefix,
@@ -33,6 +51,10 @@ public sealed class NdiAccessManagerService
         string discoveryServer,
         CancellationToken ct)
     {
+        if (IsRunning)
+            throw new InvalidOperationException(
+                "Close NDI Access Manager before applying multicast settings. It keeps an in-memory copy and can overwrite externally applied changes when it exits.");
+
         var directory = Path.GetDirectoryName(_configPath)
             ?? throw new InvalidOperationException("The NDI Access Manager configuration directory could not be resolved.");
         Directory.CreateDirectory(directory);
@@ -96,36 +118,48 @@ public sealed class NdiAccessManagerService
             if (File.Exists(temporary)) File.Delete(temporary);
         }
 
-        return await ReadStatusAsync(netPrefix, netmask, ttl, ct);
+        return await ReadStatusAsync(netPrefix, netmask, ttl, ct, group, discoveryServer);
     }
 
     public async Task<NdiAccessManagerStatus> ReadStatusAsync(
         string? expectedPrefix = null,
         string? expectedMask = null,
         int? expectedTtl = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? expectedGroup = null,
+        string? expectedDiscoveryServer = null)
     {
+        var running = IsRunning;
         if (!File.Exists(_configPath))
-            return new(Detected, false, false, _configPath, null, null, null);
+            return new(Detected, false, false, _configPath, null, null, null, running, "The NDI Access Manager configuration file is missing.");
 
         try
         {
             await using var input = File.OpenRead(_configPath);
             var root = await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject;
             var send = root?["ndi"]?["multicast"]?["send"] as JsonObject;
+            var receive = root?["ndi"]?["multicast"]?["recv"] as JsonObject;
+            var groups = root?["ndi"]?["groups"] as JsonObject;
+            var networks = root?["ndi"]?["networks"] as JsonObject;
             var enabled = Bool(send, "enable");
             var prefix = Text(send, "netprefix");
             var mask = Text(send, "netmask");
             var ttl = Int(send, "ttl");
             var matches = enabled
+                && Bool(receive, "enable")
                 && (expectedPrefix is null || string.Equals(prefix, expectedPrefix, StringComparison.Ordinal))
                 && (expectedMask is null || string.Equals(mask, expectedMask, StringComparison.Ordinal))
-                && (expectedTtl is null || ttl == expectedTtl);
-            return new(Detected, matches, matches, _configPath, prefix, mask, ttl);
+                && (expectedTtl is null || ttl == expectedTtl)
+                && (expectedGroup is null
+                    || ContainsValue(Text(groups, "send"), expectedGroup)
+                    && ContainsValue(Text(groups, "recv"), expectedGroup))
+                && (string.IsNullOrWhiteSpace(expectedDiscoveryServer)
+                    || ContainsValue(Text(networks, "discovery"), expectedDiscoveryServer));
+            return new(Detected, matches, matches, _configPath, prefix, mask, ttl, running);
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
-            return new(Detected, false, false, _configPath, null, null, null);
+            return new(Detected, false, false, _configPath, null, null, null, running, ex.Message);
         }
     }
 
@@ -144,6 +178,11 @@ public sealed class NdiAccessManagerService
             .Append(group.Trim())
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase));
+
+    private static bool ContainsValue(string? current, string expected) =>
+        (current ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(expected.Trim(), StringComparer.OrdinalIgnoreCase);
 
     private static string? Text(JsonObject? source, string name) =>
         source?[name] is JsonValue value && value.TryGetValue<string>(out var text)
@@ -170,5 +209,11 @@ public sealed class NdiAccessManagerService
         yield return Path.Combine(programFiles, "NDI", "NDI Tools", "Access Manager.exe");
         yield return Path.Combine(programFiles, "NewTek", "NDI 5 Tools", "Access Manager.exe");
         yield return Path.Combine(programFiles, "NewTek", "NDI 4 Tools", "Access Manager.exe");
+    }
+
+    private static IEnumerable<string> AccessManagerProcessNames()
+    {
+        yield return "Access Manager";
+        yield return "NDI Access Manager";
     }
 }

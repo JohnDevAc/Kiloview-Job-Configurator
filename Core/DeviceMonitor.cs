@@ -2,7 +2,11 @@ using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
 
-public sealed class DeviceMonitor(AppStateStore store, DeviceClientFactory factory, ILogger<DeviceMonitor> logger) : BackgroundService
+public sealed class DeviceMonitor(
+    AppStateStore store,
+    DeviceClientFactory factory,
+    NdiAccessManagerService accessManager,
+    ILogger<DeviceMonitor> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -53,6 +57,51 @@ public sealed class DeviceMonitor(AppStateStore store, DeviceClientFactory facto
                 updated = device with { Health = DeviceHealth.Offline, MulticastInUse = false, LastError = ex.Message };
             }
             await store.UpdateAsync(s => s with { Devices = s.Devices.Select(d => d.Id == device.Id ? updated : d).ToArray() });
+        });
+        await PollAccessManagerAsync(ct);
+    }
+
+    private async Task PollAccessManagerAsync(CancellationToken ct)
+    {
+        var state = await store.ReadAsync();
+        var multicast = state.Multicast;
+        var local = multicast?.Assignments.FirstOrDefault(assignment => assignment.EndpointId == "local-pc");
+        if (multicast is null || local is null) return;
+
+        var status = await accessManager.ReadStatusAsync(
+            local.NetPrefix,
+            local.Netmask,
+            local.Ttl,
+            ct,
+            multicast.JobName,
+            state.LastJob?.NdiDiscoveryServerIp);
+        var error = status.Configured
+            ? null
+            : status.Error ?? (status.AccessManagerRunning
+                ? "NDI Access Manager is open and its multicast settings do not match this job. Close it, then reapply multicast setup."
+                : $"NDI Access Manager multicast, NDI group, or Discovery Server settings changed. Current send range: {status.NetPrefix ?? "disabled"} / {status.Netmask ?? "not set"}, TTL {status.Ttl?.ToString() ?? "not set"}. Reapply multicast setup.");
+        var refreshed = local with
+        {
+            Status = status.Configured ? "applied" : "drifted",
+            InUse = status.Configured,
+            Error = error
+        };
+        if (refreshed == local) return;
+
+        await store.UpdateAsync(current =>
+        {
+            if (current.Multicast is null) return current;
+            var assignments = current.Multicast.Assignments
+                .Select(assignment => assignment.EndpointId == "local-pc" ? refreshed : assignment)
+                .ToArray();
+            return current with
+            {
+                Multicast = current.Multicast with
+                {
+                    Assignments = assignments,
+                    Status = assignments.All(assignment => assignment.Status == "applied") ? "completed" : "partial"
+                }
+            };
         });
     }
 }
