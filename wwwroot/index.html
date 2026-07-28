@@ -113,7 +113,7 @@
     </section>
 
     <section id="monitorView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><div class="page-actions"><button class="quiet multicast-setup-link" data-action="multicast">Multicast setup</button><button class="quiet" data-action="new-job">+ New onboarding</button></div></div>
+      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><div class="page-actions"><button class="quiet" data-action="multicast">Multicast setup</button><button class="quiet" data-action="new-job">+ New onboarding</button></div></div>
       <div class="monitor-stats" id="monitorStats"></div>
       <div id="monitorGrid" class="device-groups"></div>
     </section>
@@ -126,8 +126,7 @@
           <h2 id="multicastPool">Generating…</h2>
           <p id="multicastPoolMeta" class="settings-copy">Selecting an organization-local multicast range.</p>
           <div class="settings-row"><span>Per-sender allocation</span><strong id="multicastAllocationMask">/28</strong></div>
-          <div class="settings-row"><span>Conflict policy</span><strong>Unique block per sender</strong></div>
-          <button id="regenerateMulticast" class="quiet" type="button">Generate another range</button>
+          <button id="regenerateMulticast" class="primary multicast-regenerate" type="button"><span>Generate another range</span><b>↻</b></button>
         </article>
         <article class="panel multicast-panel">
           <p class="eyebrow">ENDPOINT OPTIONS</p>
@@ -139,7 +138,7 @@
       <div id="multicastSummary" class="summary-strip"></div>
       <div id="multicastAssignments" class="panel multicast-assignments"></div>
       <div class="warning multicast-warning">⚠ Multicast requires a managed switch with an active IGMP querier and IGMP snooping. Applying changes briefly restarts active NDI senders. Review this plan with the network operator before use on a production LAN.</div>
-      <div class="sticky-action"><div><strong id="multicastApplySummary">Preparing multicast plan</strong><small>Kiloview receivers will be registered with every onboarded sender.</small></div><button id="applyMulticast" class="primary" disabled><span>Apply multicast setup</span><b>→</b></button></div>
+      <div class="sticky-action multicast-apply-bar"><div><strong id="multicastApplySummary">Preparing multicast plan</strong><small>Kiloview receivers will be registered with every onboarded sender.</small></div><button id="applyMulticast" class="primary" disabled><span>Apply multicast setup</span><b>→</b></button></div>
     </section>
 
     <section id="settingsView" class="view hidden">
