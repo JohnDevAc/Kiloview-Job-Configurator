@@ -464,7 +464,8 @@ public sealed class TeleToolFleetService(
             Text(supervisor, "desired_channel_uuid"),
             Text(lastStart, "channel_uuid")) is not null;
         var dante = ReadDanteAudio(audioStatus, audioDevices);
-        var multicastEnabled = Flag(status, "ndi_multicast_enabled", Flag(config, "ndi_multicast_enabled"));
+        var multicastConfigured = Flag(config, "ndi_multicast_enabled");
+        var multicastActive = running && Flag(status, "ndi_multicast_enabled", multicastConfigured);
         var multicastPrefix = Text(status, "ndi_multicast_netprefix")
             ?? Text(status, "ndi_multicast_addr")
             ?? Text(config, "ndi_multicast_netprefix")
@@ -495,11 +496,11 @@ public sealed class TeleToolFleetService(
             DanteAudioDeviceLabel = dante?.DeviceLabel,
             DanteAudioDetails = dante?.Details,
             DanteAudioKind = dante?.Kind,
-            MulticastConfigured = multicastEnabled,
-            MulticastInUse = multicastEnabled && running,
-            MulticastNetPrefix = multicastEnabled ? multicastPrefix : device.MulticastNetPrefix,
-            MulticastNetmask = multicastEnabled ? multicastMask : device.MulticastNetmask,
-            MulticastTtl = multicastEnabled && multicastTtl > 0 ? multicastTtl : device.MulticastTtl,
+            MulticastConfigured = multicastConfigured,
+            MulticastInUse = multicastConfigured && multicastActive,
+            MulticastNetPrefix = multicastConfigured ? multicastPrefix : device.MulticastNetPrefix,
+            MulticastNetmask = multicastConfigured ? multicastMask : device.MulticastNetmask,
+            MulticastTtl = multicastConfigured && multicastTtl > 0 ? multicastTtl : device.MulticastTtl,
             MulticastLastError = null,
             TeleToolControlReady = controlReady,
             ManagementState = adoption is null ? device.ManagementState : adoptionOk ? "managed" : "adopted-other",

@@ -58,6 +58,17 @@ public sealed class DeviceMonitor(
             }
             await store.UpdateAsync(current =>
             {
+                var latest = current.Devices.FirstOrDefault(candidate => candidate.Id == device.Id);
+                if (latest is null) return current;
+                if (!string.Equals(latest.IpAddress, device.IpAddress, StringComparison.Ordinal)
+                    || latest.IsOnboarded != device.IsOnboarded
+                    || latest.IsStatic != device.IsStatic
+                    || latest.Role != device.Role
+                    || !string.Equals(latest.Hostname, device.Hostname, StringComparison.Ordinal)
+                    || !string.Equals(latest.NdiChannelName, device.NdiChannelName, StringComparison.Ordinal)
+                    || !string.Equals(latest.NdiGroup, device.NdiGroup, StringComparison.Ordinal))
+                    return current;
+
                 var monitored = updated;
                 var multicast = current.Multicast;
                 if (!device.IsTeleTool() || multicast is null)
