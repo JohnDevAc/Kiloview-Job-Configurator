@@ -56,7 +56,49 @@ public sealed class DeviceMonitor(
             {
                 updated = device with { Health = DeviceHealth.Offline, MulticastInUse = false, LastError = ex.Message };
             }
-            await store.UpdateAsync(s => s with { Devices = s.Devices.Select(d => d.Id == device.Id ? updated : d).ToArray() });
+            await store.UpdateAsync(current =>
+            {
+                var monitored = updated;
+                var multicast = current.Multicast;
+                if (!device.IsTeleTool() || multicast is null)
+                    return current with { Devices = current.Devices.Select(d => d.Id == device.Id ? monitored : d).ToArray() };
+
+                var assignment = multicast.Assignments.FirstOrDefault(candidate => candidate.EndpointId == device.Id);
+                if (assignment is null)
+                    return current with { Devices = current.Devices.Select(d => d.Id == device.Id ? monitored : d).ToArray() };
+
+                var matches = monitored.Health == DeviceHealth.Online
+                    && monitored.MulticastConfigured
+                    && string.Equals(monitored.MulticastNetPrefix, assignment.NetPrefix, StringComparison.Ordinal)
+                    && string.Equals(monitored.MulticastNetmask, assignment.Netmask, StringComparison.Ordinal)
+                    && monitored.MulticastTtl == assignment.Ttl;
+                var error = matches
+                    ? null
+                    : monitored.Health != DeviceHealth.Online
+                        ? monitored.LastError ?? "TeleTool multicast status is unavailable."
+                        : !monitored.MulticastConfigured
+                            ? "TeleTool reports multicast disabled. Reapply multicast setup."
+                            : $"TeleTool multicast settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}; device reports {monitored.MulticastNetPrefix ?? "unset"}/{monitored.MulticastNetmask ?? "unset"}, TTL {monitored.MulticastTtl?.ToString() ?? "unset"}.";
+                monitored = monitored with { MulticastLastError = error };
+                var refreshed = assignment with
+                {
+                    Status = monitored.Health != DeviceHealth.Online ? "error" : matches ? "applied" : "drifted",
+                    InUse = matches && monitored.MulticastInUse,
+                    Error = error
+                };
+                var assignments = multicast.Assignments
+                    .Select(candidate => candidate.EndpointId == device.Id ? refreshed : candidate)
+                    .ToArray();
+                return current with
+                {
+                    Devices = current.Devices.Select(d => d.Id == device.Id ? monitored : d).ToArray(),
+                    Multicast = multicast with
+                    {
+                        Assignments = assignments,
+                        Status = assignments.All(candidate => candidate.Status == "applied") ? "completed" : "partial"
+                    }
+                };
+            });
         });
         await PollAccessManagerAsync(ct);
     }

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
 
@@ -299,17 +300,20 @@ public sealed class TeleToolFleetService(
             ndi_multicast_ttl = settings.Ttl
         }, TimeSpan.FromSeconds(12), ct);
         var applied = Object(updated, "config");
-        if (!Flag(applied, "ndi_multicast_enabled")
-            || !string.Equals(Text(applied, "ndi_multicast_netprefix") ?? Text(applied, "ndi_multicast_addr"), settings.NetPrefix, StringComparison.Ordinal)
-            || !string.Equals(Text(applied, "ndi_multicast_netmask"), settings.Netmask, StringComparison.Ordinal)
-            || Number(applied, "ndi_multicast_ttl", 0) != settings.Ttl)
+        if (!MatchesMulticast(applied, settings))
             throw new InvalidOperationException("TeleTool did not retain the requested NDI multicast allocation.");
 
         if (Flag(status, "running"))
         {
             var start = BuildStartPayload(status, applied, device.NdiChannelName, device.NdiGroup);
+            ApplyMulticastSettings(start, settings);
             await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(25), ct);
+            await ConfirmRunningMulticastAsync(device, settings, ct);
         }
+
+        var retained = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+        if (!MatchesMulticast(retained, settings))
+            throw new InvalidOperationException("TeleTool multicast configuration changed after the stream restart.");
     }
 
     public async Task<ManagedDevice> StartAsync(ManagedDevice device, CancellationToken ct)
@@ -587,6 +591,57 @@ public sealed class TeleToolFleetService(
             ["ndi_multicast_ttl"] = Number(lastStart, "ndi_multicast_ttl", Number(config, "ndi_multicast_ttl", 1))
         };
     }
+
+    private async Task ConfirmRunningMulticastAsync(
+        ManagedDevice device,
+        MulticastDeviceConfiguration settings,
+        CancellationToken ct)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                var status = await GetAsync(
+                    device.IpAddress,
+                    device.WebPort,
+                    "/api/status?lite=1&rf=0",
+                    TimeSpan.FromSeconds(5),
+                    ct);
+                if (Flag(status, "running") && MatchesMulticast(status, settings)) return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested
+                && ex is HttpRequestException or TaskCanceledException or DeviceApiException or JsonException)
+            {
+                lastError = ex;
+            }
+            if (attempt < 7) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+
+        throw new InvalidOperationException(
+            "TeleTool restarted, but live status did not confirm multicast transmission.",
+            lastError);
+    }
+
+    private static void ApplyMulticastSettings(
+        IDictionary<string, object?> payload,
+        MulticastDeviceConfiguration settings)
+    {
+        payload["ndi_multicast_enabled"] = true;
+        payload["ndi_multicast_netprefix"] = settings.NetPrefix;
+        payload["ndi_multicast_addr"] = settings.NetPrefix;
+        payload["ndi_multicast_netmask"] = settings.Netmask;
+        payload["ndi_multicast_ttl"] = settings.Ttl;
+    }
+
+    private static bool MatchesMulticast(JsonObject source, MulticastDeviceConfiguration settings) =>
+        Flag(source, "ndi_multicast_enabled")
+        && string.Equals(
+            Text(source, "ndi_multicast_netprefix") ?? Text(source, "ndi_multicast_addr"),
+            settings.NetPrefix,
+            StringComparison.Ordinal)
+        && string.Equals(Text(source, "ndi_multicast_netmask"), settings.Netmask, StringComparison.Ordinal)
+        && Number(source, "ndi_multicast_ttl", 0) == settings.Ttl;
 
     private async Task<JsonObject> GetAsync(
         string address,
