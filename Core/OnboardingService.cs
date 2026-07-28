@@ -35,7 +35,11 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         foreach (var device in state.Devices.Where(d => d.IsStatic || d.IsOnboarded))
             if (range.Contains(device.IpAddress)) occupied.TryAdd(device.IpAddress, 0);
 
-        await Parallel.ForEachAsync(range, new ParallelOptions { MaxDegreeOfParallelism = 128, CancellationToken = ct }, async (address, token) =>
+        await Parallel.ForEachAsync(range, new ParallelOptions
+        {
+            MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(range.Length),
+            CancellationToken = ct
+        }, async (address, token) =>
         {
             if (occupied.ContainsKey(address)) return;
             if (await AddressRespondsAsync(address, token)) occupied.TryAdd(address, 0);

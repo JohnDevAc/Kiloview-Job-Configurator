@@ -3,7 +3,10 @@ using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
 
-internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentials) : HttpDeviceApi(ipAddress, credentials), IDeviceApi
+internal sealed class N60DeviceApi(
+    string ipAddress,
+    DeviceCredentials credentials,
+    IHttpClientFactory clients) : HttpDeviceApi(ipAddress, credentials, clients), IDeviceApi
 {
     private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
     {
@@ -18,6 +21,7 @@ internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentia
         Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
         Cookies.Add(uri, new System.Net.Cookie("alias", alias));
         Cookies.Add(uri, new System.Net.Cookie("token", token));
+        ApplyCookies(client);
         return client;
     }
 
@@ -75,7 +79,7 @@ internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentia
             if (last is not null) throw new DeviceApiException("The N60 did not accept the required initial password change.", last);
         }
 
-        var replacement = new N60DeviceApi(IpAddress, targetCredentials);
+        var replacement = new N60DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
         accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
         if (!accepted)

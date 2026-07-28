@@ -357,7 +357,8 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
 
         [StructLayout(LayoutKind.Sequential)] private struct Rect(int left, int top, int right, int bottom) { public int Left = left; public int Top = top; public int Right = right; public int Bottom = bottom; }
         [StructLayout(LayoutKind.Sequential)] private struct BitmapInfo { public BitmapInfoHeader Header; public uint Colors; }
-        [StructLayout(LayoutKind.Sequential)] private struct BitmapInfoHeader
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BitmapInfoHeader
         {
             public uint Size; public int Width; public int Height; public ushort Planes; public ushort BitCount; public uint Compression;
             public int SizeImage; public int XPelsPerMeter; public int YPelsPerMeter; public uint ClrUsed; public uint ClrImportant;

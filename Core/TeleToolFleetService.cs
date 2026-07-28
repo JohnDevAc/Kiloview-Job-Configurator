@@ -448,6 +448,8 @@ public sealed class TeleToolFleetService(
         finally
         {
             gate.Release();
+            if (_adoptionGates.TryGetValue(device.Id, out var current) && ReferenceEquals(current, gate))
+                _adoptionGates.TryRemove(device.Id, out _);
         }
     }
 

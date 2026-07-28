@@ -19,7 +19,7 @@ public sealed class NdiDiscoveryServerClient
 
         await Parallel.ForEachAsync(addresses, new ParallelOptions
         {
-            MaxDegreeOfParallelism = 96,
+            MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(addresses.Length),
             CancellationToken = ct
         }, async (address, token) =>
         {

@@ -6,16 +6,22 @@ using System.Text.Json;
 namespace KiloviewSetup.Core;
 
 /// <summary>Validated against the KiloLink Server Pro 1.08.0034 web API.</summary>
-public sealed class KiloLinkServerClient
+public sealed class KiloLinkServerClient(IHttpClientFactory clients)
 {
     public async Task<IReadOnlyList<KiloLinkServerDiscovery>> DiscoverAsync(int webPort, CancellationToken ct)
     {
         if (webPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
         var found = new ConcurrentDictionary<string, KiloLinkServerDiscovery>(StringComparer.OrdinalIgnoreCase);
         var addresses = NetworkAddressing.GetLocalScanCidrs().SelectMany(NetworkAddressing.ExpandCidr).Distinct().ToArray();
-        await Parallel.ForEachAsync(addresses, new ParallelOptions { MaxDegreeOfParallelism = 96, CancellationToken = ct }, async (address, token) =>
+        await Parallel.ForEachAsync(addresses, new ParallelOptions
         {
-            using var client = new HttpClient { BaseAddress = new Uri($"http://{address}:{webPort}/"), Timeout = TimeSpan.FromMilliseconds(850) };
+            MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(addresses.Length),
+            CancellationToken = ct
+        }, async (address, token) =>
+        {
+            using var client = clients.CreateClient("KiloLinkDiscovery");
+            client.BaseAddress = new Uri($"http://{address}:{webPort}/");
+            client.Timeout = TimeSpan.FromMilliseconds(850);
             try
             {
                 using var response = await client.GetAsync("api/user/version_info.json", token);
@@ -179,11 +185,13 @@ public sealed class KiloLinkServerClient
         throw new InvalidOperationException($"KiloLink accepted the {model} upload but did not list the package afterward.");
     }
 
-    private static async Task<Session> LoginAsync(string serverIp, int webPort, KiloLinkCredential credential, CancellationToken ct)
+    private async Task<Session> LoginAsync(string serverIp, int webPort, KiloLinkCredential credential, CancellationToken ct)
     {
         InputValidation.Ip(serverIp, "KiloLink Server IP");
         if (webPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
-        var client = new HttpClient { BaseAddress = new Uri($"http://{serverIp}:{webPort}/"), Timeout = TimeSpan.FromMinutes(20) };
+        var client = clients.CreateClient("KiloLinkServer");
+        client.BaseAddress = new Uri($"http://{serverIp}:{webPort}/");
+        client.Timeout = TimeSpan.FromMinutes(20);
         try
         {
             using var response = await client.PostAsJsonAsync("api/tools/login.json", new { username = credential.Username, password = credential.Password }, ct);

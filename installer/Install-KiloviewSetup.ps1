@@ -25,6 +25,7 @@ $startMenu = Join-Path $programs 'Kiloview Job Configurator'
 $legacyStartMenu = Join-Path $programs 'Kiloview Setup'
 $scheduledTaskName = 'Kiloview Job Configurator Service'
 $firewallRuleName = 'Kiloview Job Configurator LAN'
+$installedExe = Join-Path $installRoot 'KiloviewSetup.exe'
 
 $sourceExe = Join-Path $Source 'KiloviewSetup.exe'
 if (-not (Test-Path $sourceExe)) { throw "KiloviewSetup.exe was not found in $Source. Run scripts\Publish.ps1 first." }
@@ -41,7 +42,15 @@ if (Test-Path $runtimeConfig) {
     }
 }
 
-$runningProcesses = @(Get-Process KiloviewSetup -ErrorAction SilentlyContinue)
+$runningProcesses = @(Get-Process KiloviewSetup -ErrorAction SilentlyContinue | Where-Object {
+    try {
+        [string]::Equals(
+            [IO.Path]::GetFullPath($_.Path),
+            [IO.Path]::GetFullPath($installedExe),
+            [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch { $false }
+})
 foreach ($runningProcess in $runningProcesses) {
     $runningProcess | Stop-Process -Force
 }
@@ -55,7 +64,31 @@ foreach ($runningProcess in $runningProcesses) {
         $runningProcess.Dispose()
     }
 }
-New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
+
+$resolvedInstallRoot = [IO.Path]::GetFullPath($installRoot).TrimEnd(
+    [IO.Path]::DirectorySeparatorChar,
+    [IO.Path]::AltDirectorySeparatorChar)
+$expectedInstallRoot = [IO.Path]::GetFullPath(
+    (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Kiloview Setup')).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+if (-not [string]::Equals($resolvedInstallRoot, $expectedInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Refusing to clean unexpected installation directory '$resolvedInstallRoot'."
+}
+$resolvedSourceRoot = [IO.Path]::GetFullPath($Source).TrimEnd(
+    [IO.Path]::DirectorySeparatorChar,
+    [IO.Path]::AltDirectorySeparatorChar)
+if ($resolvedSourceRoot.StartsWith(
+        $resolvedInstallRoot + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase) -or
+    [string]::Equals($resolvedSourceRoot, $resolvedInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Run the installer from its downloaded or extracted package, not from inside the existing installation directory.'
+}
+
+if (Test-Path -LiteralPath $resolvedInstallRoot) {
+    Get-ChildItem -LiteralPath $resolvedInstallRoot -Force | Remove-Item -Recurse -Force
+}
+New-Item -ItemType Directory -Path $resolvedInstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
 Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.dll','.json','.pdb','.ico','.md','.txt' | Copy-Item -Destination $installRoot -Force
@@ -64,7 +97,7 @@ if (Test-Path (Join-Path $Source 'THIRD-PARTY-NOTICES')) { Copy-Item -LiteralPat
 Copy-Item -LiteralPath (Join-Path $Source 'Uninstall-KiloviewSetup.ps1') -Destination $installRoot -Force
 Copy-Item -LiteralPath (Join-Path $Source 'Launch-KiloviewJobConfigurator.ps1') -Destination $installRoot -Force
 
-$exe = Join-Path $installRoot 'KiloviewSetup.exe'
+$exe = $installedExe
 $icon = Join-Path $installRoot 'KiloviewSetup.ico'
 $launcher = Join-Path $installRoot 'Launch-KiloviewJobConfigurator.ps1'
 $shell = New-Object -ComObject WScript.Shell

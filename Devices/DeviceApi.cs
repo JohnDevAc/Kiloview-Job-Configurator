@@ -24,20 +24,22 @@ public interface IDeviceApi
     Task BlankAsync(CancellationToken ct);
 }
 
-internal abstract class HttpDeviceApi(string ipAddress, DeviceCredentials credentials)
+internal abstract class HttpDeviceApi(
+    string ipAddress,
+    DeviceCredentials credentials,
+    IHttpClientFactory clients)
 {
     protected string IpAddress { get; } = ipAddress;
     protected DeviceCredentials Credentials { get; } = credentials;
+    protected IHttpClientFactory Clients { get; } = clients;
     protected CookieContainer Cookies { get; } = new();
 
     protected HttpClient NewClient(TimeSpan? timeout = null)
     {
-        var handler = new HttpClientHandler
-        {
-            CookieContainer = Cookies,
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-        };
-        return new HttpClient(handler) { BaseAddress = new Uri($"http://{IpAddress}"), Timeout = timeout ?? TimeSpan.FromSeconds(6) };
+        var client = Clients.CreateClient("KiloviewDevice");
+        client.BaseAddress = new Uri($"http://{IpAddress}");
+        client.Timeout = timeout ?? TimeSpan.FromSeconds(6);
+        return client;
     }
 
     protected static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, string operation, CancellationToken ct)
@@ -61,11 +63,19 @@ internal abstract class HttpDeviceApi(string ipAddress, DeviceCredentials creden
         catch (JsonException ex) { throw new DeviceApiException($"{operation} returned an invalid response.", ex); }
     }
 
-    protected async Task<JsonDocument> GetAsync(HttpClient client, string path, string operation, CancellationToken ct) =>
-        await ReadJsonAsync(await client.GetAsync(path, ct), operation, ct);
+    protected async Task<JsonDocument> GetAsync(HttpClient client, string path, string operation, CancellationToken ct)
+    {
+        ApplyCookies(client);
+        using var response = await client.GetAsync(path, ct);
+        return await ReadJsonAsync(response, operation, ct);
+    }
 
-    protected async Task<JsonDocument> PostAsync(HttpClient client, string path, object? body, string operation, CancellationToken ct) =>
-        await ReadJsonAsync(await client.PostAsJsonAsync(path, body ?? new { }, ct), operation, ct);
+    protected async Task<JsonDocument> PostAsync(HttpClient client, string path, object? body, string operation, CancellationToken ct)
+    {
+        ApplyCookies(client);
+        using var response = await client.PostAsJsonAsync(path, body ?? new { }, ct);
+        return await ReadJsonAsync(response, operation, ct);
+    }
 
     protected async Task<bool> TryMutationAsync(HttpClient client, string path, object body, CancellationToken ct)
     {
@@ -73,6 +83,7 @@ internal abstract class HttpDeviceApi(string ipAddress, DeviceCredentials creden
         catch (DeviceApiException) { }
         try
         {
+            ApplyCookies(client);
             using var response = await client.PostAsync(path, null, ct);
             if (await MutationSucceededAsync(response, ct)) return true;
         }
@@ -80,6 +91,7 @@ internal abstract class HttpDeviceApi(string ipAddress, DeviceCredentials creden
         try
         {
             var separator = path.Contains('?') ? '&' : '?';
+            ApplyCookies(client);
             using var response = await client.GetAsync($"{path}{separator}accept=true&accepted=true&agree=true", ct);
             if (await MutationSucceededAsync(response, ct)) return true;
         }
@@ -113,6 +125,7 @@ internal abstract class HttpDeviceApi(string ipAddress, DeviceCredentials creden
             string text;
             try
             {
+                ApplyCookies(client);
                 using var response = await client.GetAsync(asset, ct);
                 if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > 8_000_000) continue;
                 text = await response.Content.ReadAsStringAsync(ct);
@@ -136,6 +149,14 @@ internal abstract class HttpDeviceApi(string ipAddress, DeviceCredentials creden
             }
         }
         return paths.ToArray();
+    }
+
+    protected void ApplyCookies(HttpClient client)
+    {
+        client.DefaultRequestHeaders.Remove("Cookie");
+        var header = Cookies.GetCookieHeader(new Uri($"http://{IpAddress}"));
+        if (!string.IsNullOrWhiteSpace(header))
+            client.DefaultRequestHeaders.TryAddWithoutValidation("Cookie", header);
     }
 
     protected static string String(JsonElement element, string property, string fallback = "") =>

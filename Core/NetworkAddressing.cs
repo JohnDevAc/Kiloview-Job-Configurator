@@ -6,6 +6,13 @@ namespace KiloviewSetup.Core;
 
 public static class NetworkAddressing
 {
+    public static int DiscoveryParallelism(int addressCount)
+    {
+        if (addressCount <= 0) return 1;
+        var machineLimit = Math.Clamp(Environment.ProcessorCount * 8, 32, 64);
+        return Math.Min(addressCount, machineLimit);
+    }
+
     public static uint ToUInt(IPAddress address)
     {
         var bytes = address.GetAddressBytes();

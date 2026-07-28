@@ -64,7 +64,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon, uses the same icon and identity on the Windows taskbar, and presents a branded logo/title header above the EULA. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in with LAN access enabled, adds a Windows Firewall rule for TCP `8091` limited to `LocalSubnet` on Domain/Private profiles, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. Updates launched from the web UI explicitly hand foreground activation to the elevated installer, which also brings its EULA window forward when shown. Other trusted LAN devices can open `http://<setup-pc-ip>:8091`. Public network profiles remain blocked, and uninstalling removes the firewall rule. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
+Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon, uses the same icon and identity on the Windows taskbar, and presents a branded logo/title header above the EULA. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in with LAN access enabled, adds a Windows Firewall rule for TCP `8091` limited to `LocalSubnet` on Domain/Private profiles, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. During an upgrade it stops only the executable from this product's installation directory and removes the previous application payload before copying the replacement, while preserving `%LOCALAPPDATA%\Kiloview Setup` state, logs, credentials, and firmware. Updates launched from the web UI explicitly hand foreground activation to the elevated installer, which also brings its EULA window forward when shown. Other trusted LAN devices can open `http://<setup-pc-ip>:8091`. Public network profiles remain blocked, and uninstalling removes the firewall rule. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -82,7 +82,7 @@ Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`.
 
 ## Software updates
 
-Open **System settings** from the application header to view the installed version, confirm administrator status, and select an update channel:
+Open **System settings** from the application header to view the installed version, confirm administrator status, download a local diagnostics package, and select an update channel:
 
 - **Main** receives stable GitHub releases targeted to the `main` branch.
 - **Development** receives GitHub prereleases targeted to the `development` branch. Development builds display a persistent warning banner on every UI page.
@@ -91,7 +91,7 @@ The channel selection is stored in the application's shared local state, so it a
 
 ## Branch and release policy
 
-The repository has two long-lived branches. Production changes are released from `main`; active work and prereleases are released from `development`. Stable release tags use `vMAJOR.MINOR.PATCH`. Development tags use `vMAJOR.MINOR.PATCH-dev.NUMBER`, are marked as GitHub prereleases, and must target the `development` branch. Do not publish a prerelease from `main` or a stable release from `development`, because the in-application updater deliberately rejects a mismatched feed.
+The repository has two long-lived branches. Production changes are released from `main`; active work and prereleases are released from `development`. Stable release tags use `vMAJOR.MINOR.PATCH`. Development tags use `vMAJOR.MINOR.PATCH-dev.NUMBER`, are marked as GitHub prereleases, and must target the `development` branch. Do not publish a prerelease from `main` or a stable release from `development`, because the in-application updater deliberately rejects a mismatched feed. Version, channel, company, product, and copyright metadata are defined once in `Directory.Build.props`; every package build validates this metadata and, in GitHub tag builds, requires the tag to match the shared version.
 
 ## License and third-party notices
 
@@ -110,7 +110,8 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 - KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
 - KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. When a stored login is available, onboarding displays its username and a masked password indicator and allows the blank password field to reuse it. An explicit View/Hide control can retrieve the password only through a no-cache, loopback-only endpoint opened from `localhost` on the setup PC; LAN clients cannot retrieve it. Passwords are never written to `state.json`.
 - Device credentials are intentionally stored locally in `state.json`; after first-login provisioning the username is `admin` and the password is the exact Job Name.
-- Persistent state is stored in `%LOCALAPPDATA%\Kiloview Setup\state.json`.
+- Persistent state is stored in `%LOCALAPPDATA%\Kiloview Setup\state.json`, with a last-known-good `state.json.bak`. Invalid primary state is timestamped and quarantined before the backup is restored; it is never silently replaced with an empty configuration.
+- Rotating runtime logs are retained under `%LOCALAPPDATA%\Kiloview Setup\logs`. **System settings → Download diagnostics** packages those logs with runtime details while deliberately excluding device state and credentials; downloads are limited to `localhost`.
 - Staged firmware is stored under `%LOCALAPPDATA%\Kiloview Setup\firmware`, separated by device model, and checked with SHA-256 after upload.
 - The KiloLink web/API port is configured separately from the device-link UDP port. The defaults are web `80` and device link `50000` (with KiloLink using `50000–50001` UDP).
 - Static address conflicts are checked using known inventory, ICMP, HTTP, and HTTPS before a plan is offered.

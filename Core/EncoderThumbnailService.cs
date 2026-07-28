@@ -95,6 +95,20 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
         finally { deviceLock.Release(); }
     }
 
+    public void Forget(string id)
+    {
+        _cache.TryRemove(id, out _);
+        _failures.TryRemove(id, out _);
+        _deviceLocks.TryRemove(id, out _);
+    }
+
+    public void ForgetAll()
+    {
+        _cache.Clear();
+        _failures.Clear();
+        _deviceLocks.Clear();
+    }
+
     /// <summary>
     /// Recreates the embedded NDI receiver after Access Manager changes. NDI reads
     /// its shared configuration when the runtime starts, so existing preview

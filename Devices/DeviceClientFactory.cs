@@ -2,12 +2,15 @@ using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
 
-public sealed class DeviceClientFactory(AppStateStore store, TeleToolFleetService teleTools)
+public sealed class DeviceClientFactory(
+    AppStateStore store,
+    TeleToolFleetService teleTools,
+    IHttpClientFactory clients)
 {
     public IDeviceApi Create(ManagedDevice device) => device.Family switch
     {
-        DeviceFamily.N6 => new N6DeviceApi(device.IpAddress, device.Credentials),
-        DeviceFamily.N60 => new N60DeviceApi(device.IpAddress, device.Credentials),
+        DeviceFamily.N6 => new N6DeviceApi(device.IpAddress, device.Credentials, clients),
+        DeviceFamily.N60 => new N60DeviceApi(device.IpAddress, device.Credentials, clients),
         DeviceFamily.TeleTool => new TeleToolDeviceApi(device, teleTools),
         DeviceFamily.Simulated => new SimulatedDeviceApi(store, device.Id),
         DeviceFamily.SimulatedTeleTool => new TeleToolDeviceApi(device, teleTools),
@@ -29,8 +32,8 @@ public sealed class DeviceClientFactory(AppStateStore store, TeleToolFleetServic
             try
             {
                 IDeviceApi api = attempt.Family == DeviceFamily.N60
-                    ? new N60DeviceApi(ipAddress, attempt.Credentials)
-                    : new N6DeviceApi(ipAddress, attempt.Credentials);
+                    ? new N60DeviceApi(ipAddress, attempt.Credentials, clients)
+                    : new N6DeviceApi(ipAddress, attempt.Credentials, clients);
                 return await api.ReadAsync(ct);
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or KeyNotFoundException)

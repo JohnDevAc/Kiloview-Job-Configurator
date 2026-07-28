@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
@@ -22,104 +23,166 @@ public sealed class DeviceMonitor(
 
     private async Task PollAsync(CancellationToken ct)
     {
-        var state = await store.ReadAsync();
-        await Parallel.ForEachAsync(state.Devices, new ParallelOptions { MaxDegreeOfParallelism = 12, CancellationToken = ct }, async (device, token) =>
-        {
-            ManagedDevice updated;
-            try
+        var snapshot = await store.ReadAsync();
+        var results = new ConcurrentDictionary<string, DevicePollResult>(StringComparer.Ordinal);
+        await Parallel.ForEachAsync(
+            snapshot.Devices,
+            new ParallelOptions { MaxDegreeOfParallelism = 12, CancellationToken = ct },
+            async (device, token) =>
             {
-                if (device.IsSimulation())
+                ManagedDevice updated;
+                try
                 {
-                    updated = device with { Health = DeviceHealth.Online, LastSeenUtc = DateTimeOffset.UtcNow, LastError = null };
-                }
-                else
-                {
-                    var refreshed = await factory.Create(device).ReadAsync(token);
-                    updated = refreshed with
+                    if (device.IsSimulation())
                     {
-                        IsOnboarded = device.IsOnboarded,
-                        NdiGroup = device.NdiGroup,
-                        NdiChannelName = device.NdiChannelName,
-                        HdmiDisplayConnected = device.HdmiDisplayConnected,
-                        HdmiOutputResolution = device.HdmiOutputResolution,
-                        MulticastConfigured = device.IsTeleTool() ? refreshed.MulticastConfigured : device.MulticastConfigured,
-                        MulticastInUse = device.IsTeleTool() ? refreshed.MulticastInUse : device.MulticastConfigured,
-                        MulticastNetPrefix = refreshed.MulticastNetPrefix ?? device.MulticastNetPrefix,
-                        MulticastNetmask = refreshed.MulticastNetmask ?? device.MulticastNetmask,
-                        MulticastTtl = refreshed.MulticastTtl ?? device.MulticastTtl,
-                        MulticastLastError = refreshed.MulticastLastError ?? device.MulticastLastError,
-                        LastError = null
+                        updated = device with
+                        {
+                            Health = DeviceHealth.Online,
+                            LastSeenUtc = DateTimeOffset.UtcNow,
+                            LastError = null
+                        };
+                    }
+                    else
+                    {
+                        var refreshed = await factory.Create(device).ReadAsync(token);
+                        updated = refreshed with
+                        {
+                            IsOnboarded = device.IsOnboarded,
+                            NdiGroup = device.NdiGroup,
+                            NdiChannelName = device.NdiChannelName,
+                            HdmiDisplayConnected = device.HdmiDisplayConnected,
+                            HdmiOutputResolution = device.HdmiOutputResolution,
+                            MulticastConfigured = device.IsTeleTool() ? refreshed.MulticastConfigured : device.MulticastConfigured,
+                            MulticastInUse = device.IsTeleTool() ? refreshed.MulticastInUse : device.MulticastConfigured,
+                            MulticastNetPrefix = refreshed.MulticastNetPrefix ?? device.MulticastNetPrefix,
+                            MulticastNetmask = refreshed.MulticastNetmask ?? device.MulticastNetmask,
+                            MulticastTtl = refreshed.MulticastTtl ?? device.MulticastTtl,
+                            MulticastLastError = refreshed.MulticastLastError ?? device.MulticastLastError,
+                            LastError = null
+                        };
+                    }
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException
+                                               or InvalidOperationException or System.Text.Json.JsonException)
+                {
+                    updated = device with
+                    {
+                        Health = DeviceHealth.Offline,
+                        MulticastInUse = false,
+                        LastError = ex.Message
                     };
                 }
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or System.Text.Json.JsonException)
-            {
-                updated = device with { Health = DeviceHealth.Offline, MulticastInUse = false, LastError = ex.Message };
-            }
-            await store.UpdateAsync(current =>
-            {
-                var latest = current.Devices.FirstOrDefault(candidate => candidate.Id == device.Id);
-                if (latest is null) return current;
-                if (!string.Equals(latest.IpAddress, device.IpAddress, StringComparison.Ordinal)
-                    || latest.IsOnboarded != device.IsOnboarded
-                    || latest.IsStatic != device.IsStatic
-                    || latest.Role != device.Role
-                    || !string.Equals(latest.Hostname, device.Hostname, StringComparison.Ordinal)
-                    || !string.Equals(latest.NdiChannelName, device.NdiChannelName, StringComparison.Ordinal)
-                    || !string.Equals(latest.NdiGroup, device.NdiGroup, StringComparison.Ordinal))
-                    return current;
-
-                var monitored = updated;
-                var multicast = current.Multicast;
-                if (!device.IsTeleTool() || multicast is null)
-                    return current with { Devices = current.Devices.Select(d => d.Id == device.Id ? monitored : d).ToArray() };
-
-                var assignment = multicast.Assignments.FirstOrDefault(candidate => candidate.EndpointId == device.Id);
-                if (assignment is null)
-                    return current with { Devices = current.Devices.Select(d => d.Id == device.Id ? monitored : d).ToArray() };
-
-                var matches = monitored.Health == DeviceHealth.Online
-                    && monitored.MulticastConfigured
-                    && string.Equals(monitored.MulticastNetPrefix, assignment.NetPrefix, StringComparison.Ordinal)
-                    && string.Equals(monitored.MulticastNetmask, assignment.Netmask, StringComparison.Ordinal)
-                    && monitored.MulticastTtl == assignment.Ttl;
-                var error = matches
-                    ? null
-                    : monitored.Health != DeviceHealth.Online
-                        ? monitored.LastError ?? "TeleTool multicast status is unavailable."
-                        : !monitored.MulticastConfigured
-                            ? "TeleTool reports multicast disabled. Reapply multicast setup."
-                            : $"TeleTool multicast settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}; device reports {monitored.MulticastNetPrefix ?? "unset"}/{monitored.MulticastNetmask ?? "unset"}, TTL {monitored.MulticastTtl?.ToString() ?? "unset"}.";
-                monitored = monitored with { MulticastLastError = error };
-                var refreshed = assignment with
-                {
-                    Status = monitored.Health != DeviceHealth.Online ? "error" : matches ? "applied" : "drifted",
-                    InUse = matches && monitored.MulticastInUse,
-                    Error = error
-                };
-                var assignments = multicast.Assignments
-                    .Select(candidate => candidate.EndpointId == device.Id ? refreshed : candidate)
-                    .ToArray();
-                return current with
-                {
-                    Devices = current.Devices.Select(d => d.Id == device.Id ? monitored : d).ToArray(),
-                    Multicast = multicast with
-                    {
-                        Assignments = assignments,
-                        Status = assignments.All(candidate => candidate.Status == "applied") ? "completed" : "partial"
-                    }
-                };
+                results[device.Id] = new(device, updated);
             });
-        });
-        await PollAccessManagerAsync(ct);
+
+        AccessManagerPollResult? accessManagerResult = null;
+        try
+        {
+            accessManagerResult = await PollAccessManagerAsync(snapshot, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not read local NDI Access Manager multicast status");
+        }
+        await store.UpdateAsync(current => ApplyResults(current, results.Values, accessManagerResult));
     }
 
-    private async Task PollAccessManagerAsync(CancellationToken ct)
+    private static AppState ApplyResults(
+        AppState current,
+        IEnumerable<DevicePollResult> results,
+        AccessManagerPollResult? accessManagerResult)
     {
-        var state = await store.ReadAsync();
+        var devices = current.Devices.ToArray();
+        var multicast = current.Multicast;
+        var assignments = multicast?.Assignments.ToArray();
+        var devicesChanged = false;
+        var assignmentsChanged = false;
+
+        foreach (var result in results)
+        {
+            var index = Array.FindIndex(devices, device => device.Id == result.Original.Id);
+            if (index < 0 || !SnapshotStillCurrent(devices[index], result.Original)) continue;
+
+            var monitored = result.Updated;
+            if (result.Original.IsTeleTool() && multicast is not null && assignments is not null)
+            {
+                var assignmentIndex = Array.FindIndex(
+                    assignments,
+                    assignment => assignment.EndpointId == result.Original.Id);
+                if (assignmentIndex >= 0)
+                {
+                    var assignment = assignments[assignmentIndex];
+                    var matches = monitored.Health == DeviceHealth.Online
+                        && monitored.MulticastConfigured
+                        && string.Equals(monitored.MulticastNetPrefix, assignment.NetPrefix, StringComparison.Ordinal)
+                        && string.Equals(monitored.MulticastNetmask, assignment.Netmask, StringComparison.Ordinal)
+                        && monitored.MulticastTtl == assignment.Ttl;
+                    var error = matches
+                        ? null
+                        : monitored.Health != DeviceHealth.Online
+                            ? monitored.LastError ?? "TeleTool multicast status is unavailable."
+                            : !monitored.MulticastConfigured
+                                ? "TeleTool reports multicast disabled. Reapply multicast setup."
+                                : $"TeleTool multicast settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}; device reports {monitored.MulticastNetPrefix ?? "unset"}/{monitored.MulticastNetmask ?? "unset"}, TTL {monitored.MulticastTtl?.ToString() ?? "unset"}.";
+                    monitored = monitored with { MulticastLastError = error };
+                    var refreshed = assignment with
+                    {
+                        Status = monitored.Health != DeviceHealth.Online ? "error" : matches ? "applied" : "drifted",
+                        InUse = matches && monitored.MulticastInUse,
+                        Error = error
+                    };
+                    if (refreshed != assignment)
+                    {
+                        assignments[assignmentIndex] = refreshed;
+                        assignmentsChanged = true;
+                    }
+                }
+            }
+
+            if (monitored != devices[index])
+            {
+                devices[index] = monitored;
+                devicesChanged = true;
+            }
+        }
+
+        if (accessManagerResult is not null && assignments is not null && multicast is not null
+            && string.Equals(multicast.JobName, accessManagerResult.JobName, StringComparison.Ordinal))
+        {
+            var localIndex = Array.FindIndex(assignments, assignment => assignment.EndpointId == "local-pc");
+            if (localIndex >= 0 && assignments[localIndex] == accessManagerResult.Original
+                && assignments[localIndex] != accessManagerResult.Updated)
+            {
+                assignments[localIndex] = accessManagerResult.Updated;
+                assignmentsChanged = true;
+            }
+        }
+
+        if (!devicesChanged && !assignmentsChanged) return current;
+        if (multicast is not null && assignments is not null && assignmentsChanged)
+        {
+            multicast = multicast with
+            {
+                Assignments = assignments,
+                Status = assignments.All(assignment => assignment.Status == "applied") ? "completed" : "partial"
+            };
+        }
+        return current with
+        {
+            Devices = devicesChanged ? devices : current.Devices,
+            Multicast = multicast
+        };
+    }
+
+    private async Task<AccessManagerPollResult?> PollAccessManagerAsync(AppState state, CancellationToken ct)
+    {
         var multicast = state.Multicast;
         var local = multicast?.Assignments.FirstOrDefault(assignment => assignment.EndpointId == "local-pc");
-        if (multicast is null || local is null) return;
+        if (multicast is null || local is null) return null;
 
         var status = await accessManager.ReadStatusAsync(
             local.NetPrefix,
@@ -139,22 +202,21 @@ public sealed class DeviceMonitor(
             InUse = status.Configured,
             Error = error
         };
-        if (refreshed == local) return;
-
-        await store.UpdateAsync(current =>
-        {
-            if (current.Multicast is null) return current;
-            var assignments = current.Multicast.Assignments
-                .Select(assignment => assignment.EndpointId == "local-pc" ? refreshed : assignment)
-                .ToArray();
-            return current with
-            {
-                Multicast = current.Multicast with
-                {
-                    Assignments = assignments,
-                    Status = assignments.All(assignment => assignment.Status == "applied") ? "completed" : "partial"
-                }
-            };
-        });
+        return refreshed == local ? null : new(local, refreshed, multicast.JobName);
     }
+
+    private static bool SnapshotStillCurrent(ManagedDevice latest, ManagedDevice original) =>
+        string.Equals(latest.IpAddress, original.IpAddress, StringComparison.Ordinal)
+        && latest.IsOnboarded == original.IsOnboarded
+        && latest.IsStatic == original.IsStatic
+        && latest.Role == original.Role
+        && string.Equals(latest.Hostname, original.Hostname, StringComparison.Ordinal)
+        && string.Equals(latest.NdiChannelName, original.NdiChannelName, StringComparison.Ordinal)
+        && string.Equals(latest.NdiGroup, original.NdiGroup, StringComparison.Ordinal);
+
+    private sealed record DevicePollResult(ManagedDevice Original, ManagedDevice Updated);
+    private sealed record AccessManagerPollResult(
+        MulticastAssignment Original,
+        MulticastAssignment Updated,
+        string JobName);
 }

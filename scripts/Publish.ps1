@@ -18,6 +18,8 @@ $legacySetups = @(
 
 if ($SetupExe) { $SelfContained = $true }
 
+& (Join-Path $PSScriptRoot 'Test-ReleaseMetadata.ps1') -Root $root
+
 if (Test-Path $publish) { Remove-Item -LiteralPath $publish -Recurse -Force }
 New-Item -ItemType Directory -Path $publish -Force | Out-Null
 

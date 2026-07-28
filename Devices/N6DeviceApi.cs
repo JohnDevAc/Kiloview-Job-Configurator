@@ -3,7 +3,10 @@ using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
 
-internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credentials) : HttpDeviceApi(ipAddress, credentials), IDeviceApi
+internal sealed class N6DeviceApi(
+    string ipAddress,
+    DeviceCredentials credentials,
+    IHttpClientFactory clients) : HttpDeviceApi(ipAddress, credentials, clients), IDeviceApi
 {
     private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
     {
@@ -12,6 +15,7 @@ internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credential
         var data = login.RootElement.GetProperty("data");
         var token = String(data, "token");
         Cookies.Add(new Uri($"http://{IpAddress}"), new System.Net.Cookie("token", token));
+        ApplyCookies(client);
         return client;
     }
 
@@ -61,7 +65,7 @@ internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credential
             }, "set N6 onboarding credentials", ct);
         }
 
-        var replacement = new N6DeviceApi(IpAddress, targetCredentials);
+        var replacement = new N6DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
         accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
         if (!accepted)

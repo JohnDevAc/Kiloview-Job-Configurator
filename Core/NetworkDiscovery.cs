@@ -29,7 +29,11 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
         var credentials = request.Credentials ?? new DeviceCredentials();
         var found = new ConcurrentDictionary<string, ManagedDevice>();
 
-        await Parallel.ForEachAsync(addresses, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = 96 }, async (ip, token) =>
+        await Parallel.ForEachAsync(addresses, new ParallelOptions
+        {
+            CancellationToken = ct,
+            MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(addresses.Length)
+        }, async (ip, token) =>
         {
             var address = ip.ToString();
             var kiloviewTask = ProbeKiloviewAsync(ip, address, credentials, token);

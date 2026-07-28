@@ -154,6 +154,10 @@
           <div class="settings-row"><span>Service privileges</span><strong id="administratorStatus">Checking…</strong></div>
           <div class="settings-row"><span>Startup</span><strong>Elevated at sign-in</strong></div>
           <p class="settings-copy">Kiloview Job Configurator requires administrator rights for hardware discovery, network configuration, and managed startup.</p>
+          <div class="diagnostics-actions">
+            <button id="downloadDiagnostics" class="quiet" type="button">Download diagnostics</button>
+            <small>Includes rotating application logs and system details. Device state and stored credentials are excluded.</small>
+          </div>
         </article>
         <article class="panel settings-panel update-panel">
           <p class="eyebrow">SOFTWARE UPDATE</p>
@@ -193,6 +197,6 @@
   </footer>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

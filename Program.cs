@@ -18,8 +18,10 @@ if (!ownsInstanceMutex)
 }
 
 var builder = WebApplication.CreateBuilder(args);
+var logDirectory = AppDataPaths.ResolveLogDirectory(builder.Environment.ContentRootPath);
 builder.Logging.ClearProviders();
 builder.Logging.AddDebug();
+builder.Logging.AddProvider(new RollingFileLoggerProvider(logDirectory));
 builder.WebHost.UseUrls($"http://{(lanAccess ? "0.0.0.0" : "127.0.0.1")}:{servicePort}");
 builder.Services.ConfigureHttpJsonOptions(o =>
 {
@@ -49,6 +51,7 @@ builder.Services.AddSingleton<NetworkDiscovery>();
 builder.Services.AddSingleton<OnboardingService>();
 builder.Services.AddSingleton<NdiAccessManagerService>();
 builder.Services.AddSingleton<MulticastService>();
+builder.Services.AddSingleton<DiagnosticsService>();
 builder.Services.AddSingleton<SystemTrayService>();
 builder.Services.AddHostedService(services => services.GetRequiredService<SystemTrayService>());
 builder.Services.AddHttpClient<GitHubUpdateService>(client =>
@@ -60,6 +63,33 @@ builder.Services.AddHttpClient<GitHubUpdateService>(client =>
     client.Timeout = TimeSpan.FromMinutes(15);
 });
 builder.Services.AddHttpClient("TeleTool", client => client.Timeout = Timeout.InfiniteTimeSpan);
+builder.Services.AddHttpClient("KiloviewDevice")
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        ConnectTimeout = TimeSpan.FromSeconds(3),
+        MaxConnectionsPerServer = 16,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+        UseCookies = false
+    });
+builder.Services.AddHttpClient("KiloLinkDiscovery")
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        ConnectTimeout = TimeSpan.FromMilliseconds(850),
+        MaxConnectionsPerServer = 4,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30),
+        UseCookies = false
+    });
+builder.Services.AddHttpClient("KiloLinkServer")
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        ConnectTimeout = TimeSpan.FromSeconds(5),
+        MaxConnectionsPerServer = 8,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+        PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+        UseCookies = false
+    });
 builder.Services.AddHostedService<DeviceMonitor>();
 
 var app = builder.Build();
@@ -76,6 +106,16 @@ app.MapGet("/api/system/info", async (GitHubUpdateService updates, AppStateStore
 {
     var state = await store.ReadAsync();
     return Results.Ok(updates.GetSystemInformation(state.UpdateChannel));
+});
+app.MapGet("/api/system/diagnostics", (HttpContext context, DiagnosticsService diagnostics) =>
+{
+    if (context.Connection.RemoteIpAddress is not { } remoteIp || !IPAddress.IsLoopback(remoteIp))
+        return Results.Json(
+            new { error = "Diagnostics can only be downloaded from the setup PC using localhost." },
+            statusCode: StatusCodes.Status403Forbidden);
+    app.Logger.LogInformation("Creating a local diagnostics package");
+    var fileName = $"Kiloview-Job-Configurator-Diagnostics-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.zip";
+    return Results.File(diagnostics.CreateArchive(), "application/zip", fileName);
 });
 app.MapPut("/api/system/update/channel", async (UpdateChannelSelection selection, AppStateStore store) =>
 {
@@ -270,13 +310,20 @@ app.MapPost("/api/teletools/{id}/stop", async (string id, AppStateStore store, T
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
-app.MapDelete("/api/teletools/{id}", async (string id, AppStateStore store, TeleToolFleetService teleTools, CancellationToken ct) =>
+app.MapDelete("/api/teletools/{id}", async (
+    string id,
+    AppStateStore store,
+    TeleToolFleetService teleTools,
+    EncoderThumbnailService thumbnails,
+    CancellationToken ct) =>
 {
     try
     {
         var device = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == id)
             ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
-        return Results.Ok(await teleTools.RemoveAsync(device, ct));
+        var result = await teleTools.RemoveAsync(device, ct);
+        thumbnails.Forget(id);
+        return Results.Ok(result);
     }
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
@@ -286,9 +333,10 @@ app.MapDelete("/api/teletools/{id}", async (string id, AppStateStore store, Tele
 app.MapPost("/api/onboarding/complete", async (OnboardingService onboarding, CancellationToken ct) =>
     Results.Ok(await onboarding.CompleteAsync(ct)));
 
-app.MapPost("/api/simulation/reset", async (AppStateStore store) =>
+app.MapPost("/api/simulation/reset", async (AppStateStore store, EncoderThumbnailService thumbnails) =>
 {
     await store.UpdateAsync(s => s with { Devices = [], LastJob = null });
+    thumbnails.ForgetAll();
     return Results.Ok();
 });
 
@@ -305,10 +353,17 @@ app.MapFallbackToFile("index.html");
 var systemTray = app.Services.GetRequiredService<SystemTrayService>();
 try
 {
+    app.Logger.LogInformation(
+        "Starting Kiloview Job Configurator {Version} ({Channel}) on port {Port}; LAN access: {LanAccess}",
+        BuildIdentity.Version,
+        BuildIdentity.ReleaseChannel,
+        servicePort,
+        lanAccess);
     await app.RunAsync();
 }
 finally
 {
+    app.Logger.LogInformation("Kiloview Job Configurator is stopping");
     instanceMutex.ReleaseMutex();
 }
 
