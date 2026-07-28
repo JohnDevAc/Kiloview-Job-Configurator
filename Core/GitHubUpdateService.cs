@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json.Serialization;
@@ -139,12 +140,18 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                     if (!oldInstaller.Equals(installerPath, StringComparison.OrdinalIgnoreCase))
                         File.Delete(oldInstaller);
 
-                _ = Process.Start(new ProcessStartInfo(installerPath)
+                var installerProcess = Process.Start(new ProcessStartInfo(installerPath)
                 {
                     UseShellExecute = true,
                     Verb = "runas",
-                    WorkingDirectory = updateDirectory
+                    WorkingDirectory = updateDirectory,
+                    WindowStyle = ProcessWindowStyle.Normal,
+                    ErrorDialog = true
                 }) ?? throw new InvalidOperationException("Windows could not start the update installer.");
+                if (!AllowSetForegroundWindow(installerProcess.Id))
+                    logger.LogDebug(
+                        "Windows did not grant foreground activation to update installer process {ProcessId}; the installer will activate its EULA window when shown.",
+                        installerProcess.Id);
 
                 logger.LogInformation(
                     "Verified and launched Kiloview Job Configurator {Channel} update {Version} from GitHub.",
@@ -212,6 +219,10 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         using var identity = WindowsIdentity.GetCurrent();
         return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
     }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AllowSetForegroundWindow(int processId);
 
     private static SoftwareVersion ParseVersion(string value, string field)
     {
