@@ -19,6 +19,7 @@ public interface IDeviceApi
     Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct);
     Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct);
     Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct);
+    Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct);
     Task BlankAsync(CancellationToken ct);
 }
 

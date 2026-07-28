@@ -69,5 +69,15 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
     public Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct) => Task.CompletedTask;
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct) =>
         await Change(d => d with { Hostname = hostname, NdiChannelName = channelName, NdiGroup = group });
+    public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct) =>
+        await Change(d => d with
+        {
+            MulticastConfigured = true,
+            MulticastInUse = d.Role == DeviceRole.Decoder || d.Family == DeviceFamily.Simulated || d.StreamRunning == true,
+            MulticastNetPrefix = settings.NetPrefix,
+            MulticastNetmask = settings.Netmask,
+            MulticastTtl = settings.Ttl,
+            MulticastLastError = null
+        });
     public Task BlankAsync(CancellationToken ct) => Task.CompletedTask;
 }

@@ -266,6 +266,52 @@ public sealed class TeleToolFleetService(
         await ConfigureAsync(device, hostname, ndiName, group, Text(config, "ndi_discovery_server") ?? "", ct);
     }
 
+    public async Task ConfigureMulticastAsync(
+        ManagedDevice device,
+        MulticastDeviceConfiguration settings,
+        CancellationToken ct)
+    {
+        if (settings.NetPrefix is null || settings.Netmask is null)
+            throw new ArgumentException("A TeleTool encoder requires a multicast prefix and subnet mask.");
+        if (device.Family == DeviceFamily.SimulatedTeleTool)
+        {
+            await ChangeSimulationAsync(device.Id, current => current with
+            {
+                MulticastConfigured = true,
+                MulticastInUse = current.StreamRunning == true,
+                MulticastNetPrefix = settings.NetPrefix,
+                MulticastNetmask = settings.Netmask,
+                MulticastTtl = settings.Ttl,
+                MulticastLastError = null
+            });
+            return;
+        }
+
+        var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+        if (!HasDevMulticastFields(config))
+            throw new InvalidOperationException("This TeleTool Dev build does not expose NDI multicast configuration. Update it from the TeleTool Dev channel first.");
+        var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
+        var updated = await PostAsync(device.IpAddress, device.WebPort, "/api/config/ui", new
+        {
+            ndi_multicast_enabled = true,
+            ndi_multicast_netprefix = settings.NetPrefix,
+            ndi_multicast_netmask = settings.Netmask,
+            ndi_multicast_ttl = settings.Ttl
+        }, TimeSpan.FromSeconds(12), ct);
+        var applied = Object(updated, "config");
+        if (!Flag(applied, "ndi_multicast_enabled")
+            || !string.Equals(Text(applied, "ndi_multicast_netprefix") ?? Text(applied, "ndi_multicast_addr"), settings.NetPrefix, StringComparison.Ordinal)
+            || !string.Equals(Text(applied, "ndi_multicast_netmask"), settings.Netmask, StringComparison.Ordinal)
+            || Number(applied, "ndi_multicast_ttl", 0) != settings.Ttl)
+            throw new InvalidOperationException("TeleTool did not retain the requested NDI multicast allocation.");
+
+        if (Flag(status, "running"))
+        {
+            var start = BuildStartPayload(status, applied, device.NdiChannelName, device.NdiGroup);
+            await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(25), ct);
+        }
+    }
+
     public async Task<ManagedDevice> StartAsync(ManagedDevice device, CancellationToken ct)
     {
         if (!device.IsTeleTool()) throw new InvalidOperationException("Only TeleTool encoders support TeleTool fleet controls.");
@@ -414,6 +460,13 @@ public sealed class TeleToolFleetService(
             Text(supervisor, "desired_channel_uuid"),
             Text(lastStart, "channel_uuid")) is not null;
         var dante = ReadDanteAudio(audioStatus, audioDevices);
+        var multicastEnabled = Flag(status, "ndi_multicast_enabled", Flag(config, "ndi_multicast_enabled"));
+        var multicastPrefix = Text(status, "ndi_multicast_netprefix")
+            ?? Text(status, "ndi_multicast_addr")
+            ?? Text(config, "ndi_multicast_netprefix")
+            ?? Text(config, "ndi_multicast_addr");
+        var multicastMask = Text(status, "ndi_multicast_netmask") ?? Text(config, "ndi_multicast_netmask");
+        var multicastTtl = Number(status, "ndi_multicast_ttl", Number(config, "ndi_multicast_ttl", 0));
 
         return device with
         {
@@ -438,6 +491,12 @@ public sealed class TeleToolFleetService(
             DanteAudioDeviceLabel = dante?.DeviceLabel,
             DanteAudioDetails = dante?.Details,
             DanteAudioKind = dante?.Kind,
+            MulticastConfigured = multicastEnabled,
+            MulticastInUse = multicastEnabled && running,
+            MulticastNetPrefix = multicastEnabled ? multicastPrefix : device.MulticastNetPrefix,
+            MulticastNetmask = multicastEnabled ? multicastMask : device.MulticastNetmask,
+            MulticastTtl = multicastEnabled && multicastTtl > 0 ? multicastTtl : device.MulticastTtl,
+            MulticastLastError = null,
             TeleToolControlReady = controlReady,
             ManagementState = adoption is null ? device.ManagementState : adoptionOk ? "managed" : "adopted-other",
             ManagementMessage = adoption is null ? device.ManagementMessage : adoptionOk ? "Managed by this configurator" : "Adopted by another Fleet Manager"
@@ -512,7 +571,19 @@ public sealed class TeleToolFleetService(
             ["buffer_extra_ms"] = Number(lastStart, "buffer_extra_ms", Number(config, "ndi_buffer_extra_ms", 0)),
             ["ndi_qos"] = Flag(lastStart, "ndi_qos", Flag(config, "ndi_qos")),
             ["ndi_multicast_enabled"] = Flag(lastStart, "ndi_multicast_enabled", Flag(config, "ndi_multicast_enabled")),
-            ["ndi_multicast_addr"] = Text(lastStart, "ndi_multicast_addr") ?? Text(config, "ndi_multicast_addr") ?? "",
+            ["ndi_multicast_netprefix"] = Text(lastStart, "ndi_multicast_netprefix")
+                ?? Text(lastStart, "ndi_multicast_addr")
+                ?? Text(config, "ndi_multicast_netprefix")
+                ?? Text(config, "ndi_multicast_addr")
+                ?? "",
+            ["ndi_multicast_netmask"] = Text(lastStart, "ndi_multicast_netmask")
+                ?? Text(config, "ndi_multicast_netmask")
+                ?? "255.255.0.0",
+            ["ndi_multicast_addr"] = Text(lastStart, "ndi_multicast_netprefix")
+                ?? Text(lastStart, "ndi_multicast_addr")
+                ?? Text(config, "ndi_multicast_netprefix")
+                ?? Text(config, "ndi_multicast_addr")
+                ?? "",
             ["ndi_multicast_ttl"] = Number(lastStart, "ndi_multicast_ttl", Number(config, "ndi_multicast_ttl", 1))
         };
     }
@@ -591,6 +662,12 @@ public sealed class TeleToolFleetService(
 
     private static bool HasDevOnboardingFields(JsonObject config) =>
         config.ContainsKey("ndi_groups") && config.ContainsKey("ndi_discovery_server");
+
+    private static bool HasDevMulticastFields(JsonObject config) =>
+        config.ContainsKey("ndi_multicast_enabled")
+        && (config.ContainsKey("ndi_multicast_netprefix") || config.ContainsKey("ndi_multicast_addr"))
+        && config.ContainsKey("ndi_multicast_netmask")
+        && config.ContainsKey("ndi_multicast_ttl");
 
     private static JsonObject Object(JsonObject? source, string name) => source?[name] as JsonObject ?? new();
 

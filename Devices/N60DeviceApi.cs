@@ -197,6 +197,54 @@ internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentia
         await SetIdentityAndDiscoveryAsync(client, hostname, channelName, group, null, ct);
     }
 
+    public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        var mode = (await client.GetStringAsync("/api/codec/mode/get", ct)).Trim().Trim('"');
+        if (string.Equals(mode, "encode", StringComparison.OrdinalIgnoreCase))
+        {
+            if (settings.NetPrefix is null || settings.Netmask is null)
+                throw new ArgumentException("An N60 encoder requires a multicast prefix and subnet mask.");
+            foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
+            {
+                try
+                {
+                    using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", new
+                    {
+                        connection = "multicast",
+                        netprefix = settings.NetPrefix,
+                        netmask = settings.Netmask,
+                        ttl = settings.Ttl,
+                        types = stream.Item2
+                    }, $"configure N60 {stream.Item2} multicast sender", ct);
+                    using var verified = await GetAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/get", $"verify N60 {stream.Item2} multicast sender", ct);
+                    var data = verified.RootElement.TryGetProperty("data", out var wrapped)
+                        ? wrapped
+                        : verified.RootElement;
+                    if (!string.Equals(String(data, "connection"), "multicast", StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
+                        || !string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal))
+                        throw new DeviceApiException($"N60 {stream.Item2} did not retain its multicast allocation.");
+                }
+                catch (DeviceApiException) when (stream.Item1 == "main_full")
+                {
+                    // Full NDI can be disabled on some N60 configurations.
+                }
+            }
+            return;
+        }
+
+        using var connection = await PostAsync(client, "/api/codec/decode/setConnection",
+            new { ndi_connection = "multicast" },
+            "set N60 decoder multicast receive mode",
+            ct);
+        using var targets = await PostAsync(client, "/api/codec/discovery/addManualIpsGroups", new
+        {
+            groups = new[] { settings.Group },
+            manuals = settings.SenderAddresses
+        }, "register every multicast sender on the N60 decoder", ct);
+    }
+
     public async Task BlankAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

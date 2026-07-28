@@ -48,6 +48,12 @@ public sealed record ManagedDevice
     public string? DanteAudioKind { get; init; }
     public bool TeleToolControlReady { get; init; }
     public string? TeleToolReleaseBranch { get; init; }
+    public bool MulticastConfigured { get; init; }
+    public bool MulticastInUse { get; init; }
+    public string? MulticastNetPrefix { get; init; }
+    public string? MulticastNetmask { get; init; }
+    public int? MulticastTtl { get; init; }
+    public string? MulticastLastError { get; init; }
 }
 
 public static class DeviceClassification
@@ -83,7 +89,8 @@ public sealed record AppState(
     LastJob? LastJob = null,
     FirmwareJob? FirmwareJob = null,
     SoftwareReleaseChannel UpdateChannel = SoftwareReleaseChannel.Main,
-    string? TeleToolManagerId = null)
+    string? TeleToolManagerId = null,
+    MulticastConfiguration? Multicast = null)
 {
     public static AppState Empty => new([]);
 }
@@ -129,6 +136,46 @@ public sealed record TeleToolRemovalResult(string Id, string Hostname, int Manag
 public sealed record IdentityUpdate(string Hostname, string NdiChannelName);
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
 public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
+public sealed record MulticastSetupRequest(bool IncludeLocalPc = true, int Ttl = 1, bool Regenerate = false);
+public sealed record MulticastDeviceConfiguration(
+    string Group,
+    string? NetPrefix,
+    string? Netmask,
+    int Ttl,
+    IReadOnlyList<string> SenderAddresses);
+public sealed record MulticastAssignment(
+    string EndpointId,
+    string Hostname,
+    string Address,
+    string Family,
+    DeviceRole Role,
+    bool Sender,
+    bool Receiver,
+    string? NetPrefix,
+    string? Netmask,
+    int Ttl,
+    string Status = "planned",
+    bool InUse = false,
+    string? Error = null);
+public sealed record MulticastConfiguration(
+    Guid PlanId,
+    string JobName,
+    string PoolPrefix,
+    string PoolNetmask,
+    string PoolLastAddress,
+    string AllocationNetmask,
+    int Ttl,
+    bool IncludeLocalPc,
+    bool AccessManagerDetected,
+    IReadOnlyList<MulticastAssignment> Assignments,
+    string Status,
+    DateTimeOffset GeneratedUtc,
+    DateTimeOffset? AppliedUtc = null);
+public sealed record MulticastApplyResult(
+    string Status,
+    int Applied,
+    int Failed,
+    MulticastConfiguration Configuration);
 
 public static class InputValidation
 {

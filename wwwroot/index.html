@@ -113,9 +113,33 @@
     </section>
 
     <section id="monitorView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><button class="quiet" data-action="new-job">+ New onboarding</button></div>
+      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><div class="page-actions"><button class="quiet multicast-setup-link" data-action="multicast">Multicast setup</button><button class="quiet" data-action="new-job">+ New onboarding</button></div></div>
       <div class="monitor-stats" id="monitorStats"></div>
       <div id="monitorGrid" class="device-groups"></div>
+    </section>
+
+    <section id="multicastView" class="view hidden">
+      <div class="page-head"><div><p class="eyebrow">NDI MULTICAST</p><h1>Multicast setup</h1><p>Generate non-overlapping sender ranges, configure every receiver, and onboard this Windows PC through NDI Access Manager.</p></div><button class="quiet" data-action="back-multicast">← Device monitor</button></div>
+      <div class="multicast-layout">
+        <article class="panel multicast-panel">
+          <p class="eyebrow">AUTOMATIC ADDRESS PLAN</p>
+          <h2 id="multicastPool">Generating…</h2>
+          <p id="multicastPoolMeta" class="settings-copy">Selecting an organization-local multicast range.</p>
+          <div class="settings-row"><span>Per-sender allocation</span><strong id="multicastAllocationMask">/28</strong></div>
+          <div class="settings-row"><span>Conflict policy</span><strong>Unique block per sender</strong></div>
+          <button id="regenerateMulticast" class="quiet" type="button">Generate another range</button>
+        </article>
+        <article class="panel multicast-panel">
+          <p class="eyebrow">ENDPOINT OPTIONS</p>
+          <label for="multicastTtl"><span>Multicast TTL</span><input id="multicastTtl" type="number" min="1" max="255" value="1"><small>Use 1 for one routed subnet. Increase only when the network team has enabled multicast routing.</small></label>
+          <label class="check multicast-local-option"><input id="includeLocalPc" type="checkbox" checked><span>Onboard this PC using NDI Access Manager</span></label>
+          <div id="accessManagerStatus" class="access-manager-status">Checking the local NDI configuration…</div>
+        </article>
+      </div>
+      <div id="multicastSummary" class="summary-strip"></div>
+      <div id="multicastAssignments" class="panel multicast-assignments"></div>
+      <div class="warning multicast-warning">⚠ Multicast requires a managed switch with an active IGMP querier and IGMP snooping. Applying changes briefly restarts active NDI senders. Review this plan with the network operator before use on a production LAN.</div>
+      <div class="sticky-action"><div><strong id="multicastApplySummary">Preparing multicast plan</strong><small>Kiloview receivers will be registered with every onboarded sender.</small></div><button id="applyMulticast" class="primary" disabled><span>Apply multicast setup</span><b>→</b></button></div>
     </section>
 
     <section id="settingsView" class="view hidden">

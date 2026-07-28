@@ -21,6 +21,7 @@ This repository contains the **job configurator only**. The separate [Kiloview E
 9. On the **Name the displays** page, the application confirms that the Job Name has been applied as the NDI group, publishes one temporary NDI identity card per decoder, and selects it on that unit. Every connected HDMI display shows its hostname, IP address, `JOB NAME / NDI GROUP`, and NDI channel. Decoder and encoder cards both allow the hostname and NDI channel name to be changed; encoder previews make the associated HDMI input easy to identify. Renaming refreshes the displayed decoder card and synchronizes the KiloLink Alias.
 10. Select **Setup completed** to stop the temporary NDI identity sources and send the black preset to every decoder.
 11. The application becomes a red/green card-based monitor, with Kiloview decoders, Kiloview encoders, and TeleTool encoders in separate groups. Kiloview and TeleTool encoder cards include a 320x240 capture of their current NDI output. When a TeleTool reports that its NDI stream is active but two consecutive frame captures fail, its preview changes to a warning image and the card highlights a likely NDI output, group, or Discovery Server error; the warning clears when a frame is received or the stream stops. TeleTool cards use the TeleTool Fleet Manager snapshot and adoption APIs to show reachability, stream state, TV channel, NDI name/group, RF signal, pipeline health, and Dev version. They also query the TeleTool audio status/device APIs and display a compact green or red Dante audio badge; its text and tooltip identify active, stopped, unavailable, or faulted output without relying on colour alone. Controls include Start NDI, Stop NDI, direct device-UI, and Remove from job. Removing a TeleTool releases this configurator's Fleet Manager adoption and updates the fleet totals immediately; it does not reset the unit's network/NDI configuration or stop an active stream.
+12. Open **Multicast setup** from the monitor to generate a deterministic organization-local address pool. Every NDI sender receives a unique `/28` allocation, every decoder is registered with the complete sender list, and N60 decoders are explicitly switched to multicast receive mode. The optional local-PC endpoint updates NDI Access Manager and appears as an onboarded card. Device cards show a green multicast icon while the transport is in use, amber when configured but inactive, and grey when unconfigured.
 
 TeleTool-only onboarding runs skip the Kiloview firmware and decoder-identification stages, even when an older Kiloview fleet remains in local state. Starting a real network scan with Simulation mode disabled removes all simulated devices and clears any simulated job/firmware state before discovery results are stored.
 
@@ -31,6 +32,16 @@ TeleTool discovery probes port `8000` and validates the `/api/manager/discovery`
 Each selected TeleTool remains an encoder and receives a `JOB-TT-###` hostname, a job-derived NDI channel name, the selected static IPv4 address on `eth0`, the job's NDI Discovery Server, and the exact Job Name as its NDI send group. If its NDI stream is already running, onboarding restarts that stream with the new identity/group so the change takes effect immediately. The configurator then maintains the TeleTool adoption heartbeat while the unit remains in the onboarded fleet.
 
 The advanced setup section contains factory credentials and a simulation mode. Simulation mode exercises the full workflow without changing Kiloview or KiloLink hardware. Each simulation scan starts a fresh synthetic fleet so identities from an earlier run cannot leak into the next job. On the **Name the displays** page it publishes real test-card NDI sources in both `public` and the simulated Job Name group so they are immediately visible in NDI Studio Monitor; every source name includes the same hostname and static IP shown on its decoder card.
+
+## Multicast setup
+
+Multicast is deliberately separate from onboarding. The generated pool stays within the organization-local `239.192.0.0/14` scope and grows with the fleet while preserving a non-overlapping `/28` block per encoder and for the optional local PC. Regenerating selects another aligned pool; applying validates every range again before making changes.
+
+N6/N60 encoders are configured and read back through their documented multicast sender APIs. N60 decoders use their explicit multicast receive endpoint. The N6 API does not expose a separate receiver-transport switch, so N6 decoders receive the sender-advertised transport and are populated with the job group and every onboarded sender address. TeleTool senders require a Dev build that exposes the multicast prefix, mask, and TTL fields; an active TeleTool stream is restarted so its new transport settings take effect.
+
+On Windows, the configurator preserves unrelated settings in `%ProgramData%\NDI\ndi-config.v1.json`, adds the Job Name to the send/receive groups, enables multicast send/receive, and keeps a `.kiloview-backup` copy before replacement. The embedded card-preview receiver is recreated automatically after this change, so encoder previews can follow multicast sources without restarting the configurator. Other NDI applications maintain their own runtimes and must be restarted after Access Manager changes.
+
+Do not enable multicast on an unmanaged or unprepared production LAN. An active IGMP querier and IGMP snooping are required, and routed deployments must be designed with the network operator before increasing TTL above `1`.
 
 ## Build and run
 
@@ -104,6 +115,7 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 - A failed readdress, reconnect, API call, or mode switch is shown per device and does not silently pass.
 - N60 mode changes can take about one minute. Keep displays on until HDMI negotiation completes.
 - Display identity cards use the NDI runtime installed with NDI Tools 6 on the setup PC. The runtime is loaded locally and is not redistributed in the installer.
+- Multicast allocations are conflict-checked within the generated organization-local pool. Applying local-PC settings backs up the existing NDI Access Manager JSON and atomically validates its replacement.
 
 ## Hardware acceptance required
 
@@ -128,3 +140,4 @@ Kiloview's N6 2.00 release notes mention text/image overlay support, but neither
 - [Kiloview N60 Web API v2.01](https://enstatic.kiloview.com/wp-content/uploads/2025/09/N60-WEB-API-EN-Version2.01.pdf)
 - [Kiloview N6/N5 user manual](https://enstatic.kiloview.com/wp-content/uploads/2025/09/N6ampN5-for-NDI%C2%AEUser-ManuelV1.pdf)
 - [NDI sender API](https://docs.ndi.video/all/developing-with-ndi/sdk/ndi-send)
+- [NDI configuration files](https://docs.ndi.video/all/developing-with-ndi/sdk/configuration-files)

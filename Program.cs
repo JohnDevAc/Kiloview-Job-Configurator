@@ -47,6 +47,8 @@ builder.Services.AddSingleton<TeleToolFleetService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
 builder.Services.AddSingleton<OnboardingService>();
+builder.Services.AddSingleton<NdiAccessManagerService>();
+builder.Services.AddSingleton<MulticastService>();
 builder.Services.AddSingleton<SystemTrayService>();
 builder.Services.AddHostedService(services => services.GetRequiredService<SystemTrayService>());
 builder.Services.AddHttpClient<GitHubUpdateService>(client =>
@@ -189,6 +191,19 @@ app.MapPost("/api/onboarding/run", (OnboardingPlan plan, OnboardingService onboa
 app.MapGet("/api/onboarding/progress", (OnboardingService onboarding) => Results.Ok(onboarding.Progress));
 app.MapPost("/api/onboarding/identify", async (OnboardingService onboarding, CancellationToken ct) =>
     Results.Ok(await onboarding.PrepareDecoderIdentificationAsync(ct)));
+
+app.MapPost("/api/multicast/plan", async (MulticastSetupRequest request, MulticastService multicast, CancellationToken ct) =>
+{
+    try { return Results.Ok(await multicast.BuildPlanAsync(request, ct)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
+app.MapPost("/api/multicast/apply", async (MulticastConfiguration plan, MulticastService multicast, CancellationToken ct) =>
+{
+    try { return Results.Ok(await multicast.ApplyAsync(plan, ct)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
 
 app.MapPost("/api/firmware/stage", async (HttpRequest request, FirmwareService firmware, CancellationToken ct) =>
 {

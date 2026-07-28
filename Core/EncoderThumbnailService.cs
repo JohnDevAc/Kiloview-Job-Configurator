@@ -21,6 +21,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
     private readonly ConcurrentDictionary<string, int> _failures = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _deviceLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _captureLimit = new(4, 4);
+    private readonly SemaphoreSlim _runtimeAccess = new(4, 4);
     private readonly object _runtimeGate = new();
     private NdiReceiveRuntime? _runtime;
 
@@ -63,8 +64,10 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                 else
                 {
                     byte[]? frame = null;
+                    await _runtimeAccess.WaitAsync(ct);
                     try { frame = await Runtime().CaptureAsync(device, ct); }
                     catch (Exception ex) { logger.LogWarning(ex, "Could not capture NDI preview for encoder {Device}", device.Id); }
+                    finally { _runtimeAccess.Release(); }
                     if (frame is not null)
                     {
                         _failures.TryRemove(id, out _);
@@ -92,6 +95,32 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
         finally { deviceLock.Release(); }
     }
 
+    /// <summary>
+    /// Recreates the embedded NDI receiver after Access Manager changes. NDI reads
+    /// its shared configuration when the runtime starts, so existing preview
+    /// receivers otherwise continue using the previous transport policy.
+    /// </summary>
+    public async Task ReloadNdiConfigurationAsync(CancellationToken ct)
+    {
+        var acquired = 0;
+        try
+        {
+            for (; acquired < 4; acquired++) await _runtimeAccess.WaitAsync(ct);
+            lock (_runtimeGate)
+            {
+                _runtime?.Dispose();
+                _runtime = null;
+            }
+            _cache.Clear();
+            _failures.Clear();
+            logger.LogInformation("Reloaded the NDI encoder preview runtime after Access Manager configuration changed");
+        }
+        finally
+        {
+            for (var index = 0; index < acquired; index++) _runtimeAccess.Release();
+        }
+    }
+
     private NdiReceiveRuntime Runtime()
     {
         lock (_runtimeGate) return _runtime ??= new NdiReceiveRuntime();
@@ -105,6 +134,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
             _runtime = null;
         }
         foreach (var gate in _deviceLocks.Values) gate.Dispose();
+        _runtimeAccess.Dispose();
         _captureLimit.Dispose();
     }
 

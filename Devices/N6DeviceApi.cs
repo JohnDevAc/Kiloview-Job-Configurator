@@ -178,6 +178,52 @@ internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credential
         }
     }
 
+    public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode for multicast setup", ct);
+        var role = String(mode.RootElement.GetProperty("data"), "mode");
+        if (string.Equals(role, "encoder", StringComparison.OrdinalIgnoreCase))
+        {
+            if (settings.NetPrefix is null || settings.Netmask is null)
+                throw new ArgumentException("An N6 encoder requires a multicast prefix and subnet mask.");
+            foreach (var type in new[] { "ndihx", "ndifull" })
+            {
+                try
+                {
+                    using var configured = await PostAsync(client, "/api/encoder/ndi/set_config.json", new
+                    {
+                        types = type,
+                        ndi_connection = "multicast",
+                        netprefix = settings.NetPrefix,
+                        netmask = settings.Netmask,
+                        ttl = settings.Ttl
+                    }, $"configure N6 {type} multicast sender", ct);
+                    using var verified = await PostAsync(client, "/api/encoder/ndi/get_config.json", new { types = type }, $"verify N6 {type} multicast sender", ct);
+                    var data = verified.RootElement.GetProperty("data");
+                    if (!string.Equals(String(data, "ndi_connection"), "multicast", StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
+                        || !string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal))
+                        throw new DeviceApiException($"N6 {type} did not retain its multicast allocation.");
+                }
+                catch (DeviceApiException) when (type == "ndifull")
+                {
+                    // Full NDI is optional on some N6 firmware/licence combinations.
+                }
+            }
+            return;
+        }
+
+        using var targets = await PostAsync(client, "/api/decoder/discovery/set_manual_targets.json", new
+        {
+            ip = settings.SenderAddresses,
+            group_name = new[] { settings.Group }
+        }, "configure N6 multicast source discovery", ct);
+        // N6 exposes no separate receiver-transport endpoint. Its receiver
+        // negotiates the sender-advertised multicast transport for every source
+        // listed above.
+    }
+
     public async Task BlankAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

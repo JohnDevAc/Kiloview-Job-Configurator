@@ -1,6 +1,6 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),returnView:'setup',systemInfo:null,updateInfo:null};
-const views=['setup','discover','plan','progress','firmware','decoder','monitor','settings'];
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),returnView:'setup',systemInfo:null,updateInfo:null};
+const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
 function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup')setTimeout(detectInfrastructure,0)}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
 async function api(url,options={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...options});const text=await response.text();let data;try{data=text?JSON.parse(text):null}catch{data={error:text}}if(!response.ok)throw new Error(data?.error||data?.detail||`Request failed (${response.status})`);return data}
@@ -10,7 +10,7 @@ function isTeleTool(d){return d?.family==='TeleTool'||d?.family==='SimulatedTele
 function deviceUrl(d){return `http://${d.ipAddress}${d.webPort&&d.webPort!==80?`:${d.webPort}`:''}`}
 
 async function boot(){
-  try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const cidrs=await api('/api/network/subnets');$('#scanCidrs').value=cidrs.join('\n');const app=await api('/api/state');state.devices=app.devices||[];if(app.lastJob&&state.devices.some(d=>d.isOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
+  try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const cidrs=await api('/api/network/subnets');$('#scanCidrs').value=cidrs.join('\n');const app=await api('/api/state');state.devices=app.devices||[];const localOnboarded=app.multicast?.assignments?.some(a=>a.endpointId==='local-pc'&&a.status==='applied');if(app.lastJob&&(state.devices.some(d=>d.isOnboarded)||localOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
   catch(e){toast(`Service unavailable: ${e.message}`,true)}
 }
 
@@ -95,20 +95,79 @@ function danteAudioBadge(d){
   const active=d.danteAudioActive===true,status=d.danteAudioStatus||'Unknown',device=d.danteAudioDeviceLabel?` on ${d.danteAudioDeviceLabel}`:'',details=d.danteAudioDetails||`Dante audio status is ${status.toLowerCase()}.`;
   return `<span class="dante-status ${active?'active':'inactive'}" role="img" aria-label="${esc(`Dante audio ${status}${device}`)}" title="${esc(details)}"><b class="dante-mark" aria-hidden="true">D</b><span><strong>DANTE</strong><small>${esc(status.toUpperCase())}</small></span></span>`;
 }
+function multicastIcon(endpoint){
+  const configured=endpoint.multicastConfigured===true||endpoint.status==='applied',active=endpoint.multicastInUse===true||endpoint.inUse===true,prefix=endpoint.multicastNetPrefix||endpoint.netPrefix,title=active?`Multicast active${prefix?` · ${prefix}`:''}`:configured?`Multicast configured but not currently active${prefix?` · ${prefix}`:''}`:'Multicast is not configured';
+  return `<span class="multicast-status ${active?'active':configured?'configured':'inactive'}" role="img" aria-label="${esc(title)}" title="${esc(title)}"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="2.5"/><path d="M9.7 9.7a6.1 6.1 0 0 0 0 8.6M18.3 9.7a6.1 6.1 0 0 1 0 8.6M6.2 6.2a11 11 0 0 0 0 15.6M21.8 6.2a11 11 0 0 1 0 15.6"/></svg></span>`;
+}
 function renderMonitor(app){
   state.devices=app.devices||[];
-  const devices=state.devices.filter(d=>d.isOnboarded),teletools=devices.filter(isTeleTool),kiloviews=devices.filter(d=>!isTeleTool(d)),decoderDevices=kiloviews.filter(d=>d.role==='Decoder'),encoderDevices=kiloviews.filter(d=>d.role==='Encoder'),online=devices.filter(d=>d.health==='Online').length,running=teletools.filter(d=>d.streamRunning).length;
+  const devices=state.devices.filter(d=>d.isOnboarded),teletools=devices.filter(isTeleTool),kiloviews=devices.filter(d=>!isTeleTool(d)),decoderDevices=kiloviews.filter(d=>d.role==='Decoder'),encoderDevices=kiloviews.filter(d=>d.role==='Encoder'),localPc=app.multicast?.assignments?.find(a=>a.endpointId==='local-pc'&&a.status==='applied'),online=devices.filter(d=>d.health==='Online').length+(localPc?1:0),running=teletools.filter(d=>d.streamRunning).length,multicastActive=devices.filter(d=>d.multicastInUse).length+(localPc?.inUse?1:0),onboarded=devices.length+(localPc?1:0);
   $('#monitorTitle').textContent=app.lastJob?.jobName||'Device status';
   $('#monitorMeta').textContent=app.lastJob?`${app.lastJob.staticStart} – ${app.lastJob.staticEnd} · NDI discovery ${app.lastJob.ndiDiscoveryServerIp}`:'Health and stream state refresh every 15 seconds.';
-  $('#monitorStats').innerHTML=`<div class="stat"><strong>${devices.length}</strong><small>Onboarded</small></div><div class="stat"><strong>${online}</strong><small>Online</small></div><div class="stat"><strong>${devices.length-online}</strong><small>Needs attention</small></div><div class="stat"><strong>${running}/${teletools.length}</strong><small>TeleTool streams live</small></div>`;
-  const kiloviewCard=d=>`<article class="device-card"><header><span class="model">${esc(d.model)} · ${esc(d.role)}</span><i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></header>${d.role==='Encoder'?encoderPreview(d):''}<h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}</div><div class="meta"><span class="pill ${roleClass(d.role)}">${esc(d.role)}</span><span class="pill">${esc(d.ndiGroup)}</span>${d.firmwareVersion?`<span class="pill">FW ${esc(d.firmwareVersion)}</span>`:''}${d.hdmiOutputResolution?`<span class="pill">${esc(d.hdmiOutputResolution)}</span>`:''}</div>${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">Device UI ↗</a></div></article>`;
+  $('#monitorStats').innerHTML=`<div class="stat"><strong>${onboarded}</strong><small>Onboarded</small></div><div class="stat"><strong>${online}</strong><small>Online</small></div><div class="stat"><strong>${onboarded-online}</strong><small>Needs attention</small></div><div class="stat"><strong>${running}/${teletools.length}</strong><small>TeleTool streams live</small></div><div class="stat multicast-stat"><strong>${multicastActive}/${onboarded}</strong><small>Multicast in use</small></div>`;
+  const multicastMeta=d=>d.multicastNetPrefix?`<span class="pill multicast-pill">MC ${esc(d.multicastNetPrefix)}/${d.multicastNetmask==='255.255.255.240'?'28':esc(d.multicastNetmask||'')}</span>`:'';
+  const kiloviewCard=d=>`<article class="device-card"><header><span class="model">${esc(d.model)} · ${esc(d.role)}</span><span class="card-indicators">${multicastIcon(d)}<i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></span></header>${d.role==='Encoder'?encoderPreview(d):''}<h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}</div><div class="meta"><span class="pill ${roleClass(d.role)}">${esc(d.role)}</span><span class="pill">${esc(d.ndiGroup)}</span>${multicastMeta(d)}${d.firmwareVersion?`<span class="pill">FW ${esc(d.firmwareVersion)}</span>`:''}${d.hdmiOutputResolution?`<span class="pill">${esc(d.hdmiOutputResolution)}</span>`:''}</div>${d.multicastLastError?`<div class="error-text">Multicast: ${esc(d.multicastLastError)}</div>`:''}${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">Device UI ↗</a></div></article>`;
   const teleToolCard=d=>{
     const channel=[d.activeChannelNumber,d.activeChannelName].filter(Boolean).join(' ')||'No active TV channel',stream=d.streamRunning?'STREAM RUNNING':'STREAM STOPPED',startDisabled=d.health!=='Online'||d.streamRunning||!d.teleToolControlReady,stopDisabled=d.health!=='Online'||!d.streamRunning;
-    return `<article class="device-card teletool-card"><header><span class="model">TELETOOL · ENCODER</span><i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></header>${encoderPreview(d)}<h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}:${d.webPort||8000}</div><div class="meta"><span class="pill teletool ${d.streamRunning?'live':''}">${stream}</span>${danteAudioBadge(d)}<span class="pill rf-${esc(d.rfSignalKind||'bad')}">RF ${esc(d.rfSignal||'N/A')}</span><span class="pill">${esc(channel)}</span><span class="pill">NDI ${esc(d.ndiChannelName)}</span><span class="pill">GROUP ${esc(d.ndiGroup)}</span>${d.pipelineStatus?`<span class="pill">${esc(d.pipelineStatus)}</span>`:''}${d.firmwareVersion?`<span class="pill">${esc(d.firmwareVersion)} ${esc(d.teleToolReleaseBranch||'')}</span>`:''}</div>${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">TeleTool UI ↗</a><button data-teletool-action="start" data-device-id="${esc(d.id)}" ${startDisabled?'disabled':''}>Start NDI</button><button data-teletool-action="stop" data-device-id="${esc(d.id)}" ${stopDisabled?'disabled':''}>Stop NDI</button><button class="remove-teletool" data-teletool-action="remove" data-device-id="${esc(d.id)}" data-device-name="${esc(d.hostname)}">Remove from job</button></div></article>`;
+    return `<article class="device-card teletool-card"><header><span class="model">TELETOOL · ENCODER</span><span class="card-indicators">${multicastIcon(d)}<i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></span></header>${encoderPreview(d)}<h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}:${d.webPort||8000}</div><div class="meta"><span class="pill teletool ${d.streamRunning?'live':''}">${stream}</span>${danteAudioBadge(d)}<span class="pill rf-${esc(d.rfSignalKind||'bad')}">RF ${esc(d.rfSignal||'N/A')}</span><span class="pill">${esc(channel)}</span><span class="pill">NDI ${esc(d.ndiChannelName)}</span><span class="pill">GROUP ${esc(d.ndiGroup)}</span>${multicastMeta(d)}${d.pipelineStatus?`<span class="pill">${esc(d.pipelineStatus)}</span>`:''}${d.firmwareVersion?`<span class="pill">${esc(d.firmwareVersion)} ${esc(d.teleToolReleaseBranch||'')}</span>`:''}</div>${d.multicastLastError?`<div class="error-text">Multicast: ${esc(d.multicastLastError)}</div>`:''}${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">TeleTool UI ↗</a><button data-teletool-action="start" data-device-id="${esc(d.id)}" ${startDisabled?'disabled':''}>Start NDI</button><button data-teletool-action="stop" data-device-id="${esc(d.id)}" ${stopDisabled?'disabled':''}>Stop NDI</button><button class="remove-teletool" data-teletool-action="remove" data-device-id="${esc(d.id)}" data-device-name="${esc(d.hostname)}">Remove from job</button></div></article>`;
   };
-  const monitorGrid=$('#monitorGrid');releasePreviewObjectUrls(monitorGrid);monitorGrid.innerHTML=devices.length?deviceGroup('Kiloview decoders',decoderDevices,decoderDevices.map(kiloviewCard).join(''))+deviceGroup('Kiloview encoders',encoderDevices,encoderDevices.map(kiloviewCard).join(''))+deviceGroup('TeleTool encoders · Fleet Manager',teletools,teletools.map(teleToolCard).join('')):'<div class="empty">No onboarded devices yet.</div>';
+  const localCard=localPc?`<article class="device-card local-pc-card"><header><span class="model">WINDOWS PC · NDI ACCESS MANAGER</span><span class="card-indicators">${multicastIcon(localPc)}<i class="health online" title="Onboarded"></i></span></header><h3>${esc(localPc.hostname)}</h3><div class="ip">${esc(localPc.address)}</div><div class="meta"><span class="pill encoder">ONBOARDED</span><span class="pill">${esc(app.multicast.jobName)}</span><span class="pill multicast-pill">MC ${esc(localPc.netPrefix)}/28</span><span class="pill">TTL ${esc(localPc.ttl)}</span></div><div class="local-pc-note">Settings are managed through the local NDI Access Manager configuration.</div></article>`:'';
+  const monitorGrid=$('#monitorGrid');releasePreviewObjectUrls(monitorGrid);monitorGrid.innerHTML=onboarded?deviceGroup('Local NDI endpoint',localPc?[localPc]:[],localCard)+deviceGroup('Kiloview decoders',decoderDevices,decoderDevices.map(kiloviewCard).join(''))+deviceGroup('Kiloview encoders',encoderDevices,encoderDevices.map(kiloviewCard).join(''))+deviceGroup('TeleTool encoders · Fleet Manager',teletools,teletools.map(teleToolCard).join('')):'<div class="empty">No onboarded devices yet.</div>';
   setTimeout(refreshEncoderPreviews,0);
 }
+function prefixLength(mask){
+  if(!mask)return'';
+  return mask.split('.').reduce((total,octet)=>total+(Number(octet)>>>0).toString(2).replace(/0/g,'').length,0);
+}
+function renderMulticastPlan(plan){
+  state.multicastPlan=plan;
+  const assignments=plan.assignments||[],senders=assignments.filter(a=>a.sender),receivers=assignments.filter(a=>a.receiver),applied=assignments.filter(a=>a.status==='applied').length,errors=assignments.filter(a=>a.status==='error').length;
+  $('#multicastPool').textContent=`${plan.poolPrefix}/${prefixLength(plan.poolNetmask)}`;
+  $('#multicastPoolMeta').textContent=`${plan.poolPrefix} – ${plan.poolLastAddress} · organization-local scope · TTL ${plan.ttl}`;
+  $('#multicastAllocationMask').textContent=`/${prefixLength(plan.allocationNetmask)} per sender`;
+  const access=$('#accessManagerStatus');
+  access.className=`access-manager-status ${plan.includeLocalPc?(plan.accessManagerDetected?'ready':'warning-state'):'disabled-state'}`;
+  access.innerHTML=plan.includeLocalPc
+    ? plan.accessManagerDetected
+      ? '<strong>NDI Access Manager detected</strong><span>This PC will be configured as a sender and receiver. The in-app card preview receiver will reload automatically.</span>'
+      : '<strong>NDI configuration will be created</strong><span>Access Manager was not detected. The shared NDI configuration will still be written; install NDI Tools if the runtime is missing.</span>'
+    : '<strong>Local PC excluded</strong><span>No Access Manager changes will be made.</span>';
+  $('#multicastSummary').innerHTML=`<div><strong>${assignments.length}</strong><span>ENDPOINTS</span></div><div><strong>${senders.length}</strong><span>SENDERS</span></div><div><strong>${receivers.length}</strong><span>RECEIVERS</span></div><div><strong>${applied}</strong><span>APPLIED</span></div>`;
+  $('#multicastAssignments').innerHTML=`<div class="multicast-list-head"><div><p class="eyebrow">ENDPOINT PLAN</p><h2>${esc(plan.jobName)}</h2></div><span>${esc(plan.status.toUpperCase())}</span></div><div class="multicast-list">${assignments.map(a=>{
+    const stateClass=a.status==='error'?'error':a.status==='applied'?'applied':'planned',role=[a.sender?'SEND':'',a.receiver?'RECEIVE':''].filter(Boolean).join(' + ');
+    return `<article class="multicast-assignment ${stateClass}"><div class="multicast-assignment-icon">${multicastIcon(a)}</div><div class="multicast-assignment-name"><strong>${esc(a.hostname)}</strong><span>${esc(a.family)} · ${esc(a.address)}</span></div><div><small>ROLE</small><strong>${esc(role||a.role)}</strong></div><div><small>ALLOCATION</small><strong>${a.netPrefix?`${esc(a.netPrefix)}/${prefixLength(a.netmask)}`:'Uses sender ranges'}</strong></div><div><small>STATUS</small><strong>${esc(a.status.toUpperCase())}</strong>${a.error?`<span class="assignment-error">${esc(a.error)}</span>`:''}</div></article>`;
+  }).join('')}</div>`;
+  $('#multicastApplySummary').textContent=errors?`${errors} endpoint${errors===1?'':'s'} need attention`:`${senders.length} sender range${senders.length===1?'':'s'} · ${receivers.length} receiver${receivers.length===1?'':'s'}`;
+  const apply=$('#applyMulticast');
+  apply.disabled=plan.status==='running'||plan.status==='completed';
+  apply.querySelector('span').textContent=plan.status==='completed'?'Multicast configured':plan.status==='partial'?'Retry multicast setup':'Apply multicast setup';
+}
+async function loadMulticastSetup(regenerate=false){
+  const ttl=Math.max(1,Math.min(255,Number($('#multicastTtl').value)||1)),includeLocalPc=$('#includeLocalPc').checked,apply=$('#applyMulticast');
+  $('#multicastPool').textContent='Generating…';$('#multicastPoolMeta').textContent='Checking onboarded endpoints and selecting conflict-free ranges.';apply.disabled=true;
+  try{
+    const plan=await api('/api/multicast/plan',{method:'POST',body:JSON.stringify({includeLocalPc,ttl,regenerate})});
+    renderMulticastPlan(plan);
+  }catch(err){
+    state.multicastPlan=null;$('#multicastPool').textContent='Plan unavailable';$('#multicastPoolMeta').textContent=err.message;$('#multicastAssignments').innerHTML=`<div class="empty">${esc(err.message)}</div>`;toast(err.message,true);
+  }
+}
+async function applyMulticastSetup(){
+  if(!state.multicastPlan)return;
+  const button=$('#applyMulticast');
+  if(!confirm(`Apply multicast setup to ${state.multicastPlan.assignments.length} endpoint${state.multicastPlan.assignments.length===1?'':'s'}?\n\nActive NDI senders may restart briefly. The local in-app preview receiver will reload automatically; other running NDI applications on this PC must be restarted.`))return;
+  try{
+    button.disabled=true;button.querySelector('span').textContent='Applying…';
+    const result=await api('/api/multicast/apply',{method:'POST',body:JSON.stringify(state.multicastPlan)});
+    renderMulticastPlan(result.configuration);
+    const app=await api('/api/state');renderMonitor(app);
+    toast(result.failed?`Multicast applied to ${result.applied}; ${result.failed} endpoint${result.failed===1?'':'s'} need attention`:`Multicast configured on all ${result.applied} endpoints`,result.failed>0);
+  }catch(err){toast(err.message,true);button.disabled=false;button.querySelector('span').textContent='Retry multicast setup'}
+}
+$('#regenerateMulticast').onclick=()=>loadMulticastSetup(true);
+$('#multicastTtl').onchange=()=>loadMulticastSetup(false);
+$('#includeLocalPc').onchange=()=>loadMulticastSetup(false);
+$('#applyMulticast').onclick=applyMulticastSetup;
 async function refreshMonitor(){if($('#monitorView').classList.contains('hidden'))return;try{renderMonitor(await api('/api/state'))}catch{}}
 async function controlTeleTool(button){
   const action=button.dataset.teletoolAction,id=button.dataset.deviceId;
@@ -150,5 +209,5 @@ $('#installUpdate').onclick=async()=>{if(!state.updateInfo?.updateAvailable)retu
 setInterval(refreshMonitor,15000);
 setInterval(refreshEncoderPreviews,5000);
 document.addEventListener('click',e=>{const button=e.target.closest('[data-teletool-action]');if(button){e.preventDefault();controlTeleTool(button)}});
-document.addEventListener('click',e=>{const a=e.target.closest('[data-action]');if(!a)return;e.preventDefault();if(a.dataset.action==='back-setup'||a.dataset.action==='new-job')show('setup');if(a.dataset.action==='back-devices')show('discover');if(a.dataset.action==='monitor')api('/api/state').then(x=>{renderMonitor(x);show('monitor')});if(a.dataset.action==='settings'){state.returnView=views.find(v=>!$(`#${v}View`).classList.contains('hidden'))||'setup';show('settings');loadSystemSettings()}if(a.dataset.action==='back-settings')show(state.returnView||'setup')});
+document.addEventListener('click',e=>{const a=e.target.closest('[data-action]');if(!a)return;e.preventDefault();if(a.dataset.action==='back-setup'||a.dataset.action==='new-job')show('setup');if(a.dataset.action==='back-devices')show('discover');if(a.dataset.action==='monitor'||a.dataset.action==='back-multicast')api('/api/state').then(x=>{renderMonitor(x);show('monitor')});if(a.dataset.action==='multicast'){show('multicast');loadMulticastSetup(false)}if(a.dataset.action==='settings'){state.returnView=views.find(v=>!$(`#${v}View`).classList.contains('hidden'))||'setup';show('settings');loadSystemSettings()}if(a.dataset.action==='back-settings')show(state.returnView||'setup')});
 boot();
