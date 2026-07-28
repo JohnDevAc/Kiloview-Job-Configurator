@@ -204,6 +204,11 @@ app.MapPost("/api/multicast/apply", async (MulticastConfiguration plan, Multicas
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
+app.MapPost("/api/multicast/revert", async (MulticastService multicast, CancellationToken ct) =>
+{
+    try { return Results.Ok(await multicast.RevertToUnicastAsync(ct)); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+});
 
 app.MapPost("/api/firmware/stage", async (HttpRequest request, FirmwareService firmware, CancellationToken ct) =>
 {

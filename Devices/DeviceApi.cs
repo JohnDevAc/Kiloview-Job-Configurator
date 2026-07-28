@@ -20,6 +20,7 @@ public interface IDeviceApi
     Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct);
     Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct);
     Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct);
+    Task DisableMulticastAsync(CancellationToken ct);
     Task BlankAsync(CancellationToken ct);
 }
 

@@ -1,5 +1,5 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),returnView:'setup',systemInfo:null,updateInfo:null};
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),returnView:'setup',systemInfo:null,updateInfo:null};
 const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
 function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup')setTimeout(detectInfrastructure,0)}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
@@ -129,6 +129,12 @@ function multicastIcon(endpoint){
 }
 function renderMonitor(app){
   state.devices=app.devices||[];
+  state.multicastConfigured=app.multicast!=null;
+  const revert=$('#revertMulticast'),revertSummary=$('#multicastRevertSummary');
+  if(revert)revert.disabled=!state.multicastConfigured;
+  if(revertSummary)revertSummary.textContent=state.multicastConfigured
+    ? 'This disables multicast transport on every onboarded device and this Windows PC without changing names, groups, or discovery settings.'
+    : 'No applied multicast configuration is currently stored for this job.';
   const devices=state.devices.filter(d=>d.isOnboarded),teletools=devices.filter(isTeleTool),kiloviews=devices.filter(d=>!isTeleTool(d)),decoderDevices=kiloviews.filter(d=>d.role==='Decoder'),encoderDevices=kiloviews.filter(d=>d.role==='Encoder'),localPc=app.multicast?.assignments?.find(a=>a.endpointId==='local-pc'),localApplied=localPc?.status==='applied',online=devices.filter(d=>d.health==='Online').length+(localApplied?1:0),running=teletools.filter(d=>d.streamRunning).length,onboarded=devices.length+(localPc?1:0);
   const activeTeleToolIds=new Set(teletools.filter(d=>d.streamRunning).map(d=>d.id));[...state.previewWarnings.keys()].filter(id=>!activeTeleToolIds.has(id)).forEach(clearPreviewWarning);
   $('#monitorTitle').textContent=app.lastJob?.jobName||'Device status';
@@ -196,10 +202,33 @@ async function applyMulticastSetup(){
     toast(result.failed?`Multicast applied to ${result.applied}; ${result.failed} endpoint${result.failed===1?'':'s'} need attention`:`Multicast configured on all ${result.applied} endpoints`,result.failed>0);
   }catch(err){toast(err.message,true);button.disabled=false;button.querySelector('span').textContent='Retry multicast setup'}
 }
+async function revertMulticastSetup(){
+  if(!state.multicastConfigured)return;
+  const button=$('#revertMulticast');
+  if(!confirm('Revert every onboarded endpoint to unicast?\n\nMulticast send and receive will be disabled on all devices and this Windows PC. Active TeleTool streams will restart briefly. Device names, NDI groups, and discovery-server settings will be preserved.'))return;
+  try{
+    button.disabled=true;button.querySelector('span').textContent='Reverting…';
+    const result=await api('/api/multicast/revert',{method:'POST',body:'{}'});
+    const app=await api('/api/state');renderMonitor(app);
+    if(!result.failed){
+      show('monitor');
+      toast(`All ${result.reverted} endpoints reverted to unicast`);
+      return;
+    }
+    if(result.configuration)renderMulticastPlan(result.configuration);
+    toast(`${result.reverted} endpoints reverted; ${result.failed} need attention${result.errors?.length?`: ${result.errors.join(' · ')}`:''}`,true);
+  }catch(err){
+    toast(err.message,true);
+  }finally{
+    button.querySelector('span').textContent='Revert all to unicast';
+    button.disabled=!state.multicastConfigured;
+  }
+}
 $('#regenerateMulticast').onclick=()=>loadMulticastSetup(true);
 $('#multicastTtl').onchange=()=>loadMulticastSetup(false);
 $('#includeLocalPc').onchange=()=>loadMulticastSetup(false);
 $('#applyMulticast').onclick=applyMulticastSetup;
+$('#revertMulticast').onclick=revertMulticastSetup;
 async function refreshMonitor(){if($('#monitorView').classList.contains('hidden'))return;try{renderMonitor(await api('/api/state'))}catch{}}
 async function controlTeleTool(button){
   const action=button.dataset.teletoolAction,id=button.dataset.deviceId;

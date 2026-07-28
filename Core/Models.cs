@@ -177,6 +177,12 @@ public sealed record MulticastApplyResult(
     int Applied,
     int Failed,
     MulticastConfiguration Configuration);
+public sealed record MulticastRevertResult(
+    string Status,
+    int Reverted,
+    int Failed,
+    MulticastConfiguration? Configuration,
+    IReadOnlyList<string> Errors);
 
 public static class InputValidation
 {

@@ -231,6 +231,124 @@ public sealed class MulticastService(
         return new(completed.Status, completedAssignments.Length - failed, failed, completed);
     }
 
+    public async Task<MulticastRevertResult> RevertToUnicastAsync(CancellationToken ct)
+    {
+        var state = await store.ReadAsync();
+        var current = state.Multicast
+            ?? throw new InvalidOperationException("Multicast is not currently configured for this job.");
+        var devices = state.Devices
+            .Where(device => device.IsOnboarded)
+            .ToDictionary(device => device.Id, StringComparer.Ordinal);
+        var includeLocalPc = current.IncludeLocalPc
+            || current.Assignments.Any(assignment => assignment.EndpointId == "local-pc");
+        if (devices.Count == 0 && !includeLocalPc)
+            throw new InvalidOperationException("There are no multicast endpoints to revert.");
+
+        await store.UpdateAsync(app => app with
+        {
+            Multicast = app.Multicast is null ? null : app.Multicast with { Status = "reverting" }
+        });
+
+        var results = new ConcurrentDictionary<string, string?>(StringComparer.Ordinal);
+        await Parallel.ForEachAsync(
+            devices.Values,
+            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+            async (device, token) =>
+            {
+                try
+                {
+                    await factory.Create(device).DisableMulticastAsync(token);
+                    results[device.Id] = null;
+                }
+                catch (Exception ex) when (ex is HttpRequestException
+                    or TaskCanceledException
+                    or DeviceApiException
+                    or InvalidOperationException
+                    or IOException
+                    or UnauthorizedAccessException)
+                {
+                    logger.LogWarning(ex, "Reverting multicast failed for {EndpointId}", device.Id);
+                    results[device.Id] = ex.Message;
+                }
+            });
+
+        if (includeLocalPc)
+        {
+            try
+            {
+                await accessManager.DisableMulticastAsync(ct);
+                await thumbnails.ReloadNdiConfigurationAsync(ct);
+                results["local-pc"] = null;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException
+                or IOException
+                or TaskCanceledException
+                or UnauthorizedAccessException)
+            {
+                logger.LogWarning(ex, "Reverting local NDI Access Manager multicast settings failed");
+                results["local-pc"] = ex.Message;
+            }
+        }
+
+        var failedResults = results
+            .Where(result => result.Value is not null)
+            .ToDictionary(result => result.Key, result => result.Value!, StringComparer.Ordinal);
+        var failed = failedResults.Count;
+        var reverted = results.Count - failed;
+        if (failed == 0)
+        {
+            await store.UpdateAsync(app => app with
+            {
+                Multicast = null,
+                Devices = app.Devices.Select(ClearMulticast).ToArray()
+            });
+            return new("completed", reverted, 0, null, []);
+        }
+
+        var assignments = current.Assignments.Select(assignment =>
+        {
+            if (!results.TryGetValue(assignment.EndpointId, out var error)) return assignment;
+            return error is null
+                ? assignment with { Status = "unicast", InUse = false, Error = null }
+                : assignment with { Status = "error", InUse = false, Error = error };
+        }).ToArray();
+        var partial = current with
+        {
+            Status = "revert-partial",
+            Assignments = assignments,
+            AppliedUtc = DateTimeOffset.UtcNow
+        };
+        await store.UpdateAsync(app => app with
+        {
+            Multicast = partial,
+            Devices = app.Devices.Select(device =>
+            {
+                if (!results.TryGetValue(device.Id, out var error)) return device;
+                return error is null
+                    ? ClearMulticast(device)
+                    : device with { MulticastInUse = false, MulticastLastError = error };
+            }).ToArray()
+        });
+        var errors = failedResults.Select(result =>
+        {
+            var name = result.Key == "local-pc"
+                ? Environment.MachineName
+                : devices.TryGetValue(result.Key, out var device) ? device.Hostname : result.Key;
+            return $"{name}: {result.Value}";
+        }).ToArray();
+        return new("partial", reverted, failed, partial, errors);
+    }
+
+    private static ManagedDevice ClearMulticast(ManagedDevice device) => device with
+    {
+        MulticastConfigured = false,
+        MulticastInUse = false,
+        MulticastNetPrefix = null,
+        MulticastNetmask = null,
+        MulticastTtl = null,
+        MulticastLastError = null
+    };
+
     private static int PoolPrefixLength(int slots)
     {
         var requiredAddresses = Math.Max(256, Math.Max(1, slots) * 16);

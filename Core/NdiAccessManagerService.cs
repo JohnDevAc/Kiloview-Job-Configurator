@@ -121,6 +121,59 @@ public sealed class NdiAccessManagerService
         return await ReadStatusAsync(netPrefix, netmask, ttl, ct, group, discoveryServer);
     }
 
+    public async Task<NdiAccessManagerStatus> DisableMulticastAsync(CancellationToken ct)
+    {
+        if (IsRunning)
+            throw new InvalidOperationException(
+                "Close NDI Access Manager before reverting to unicast. It keeps an in-memory copy and can overwrite externally applied changes when it exits.");
+
+        if (!File.Exists(_configPath))
+            return new(Detected, false, false, _configPath, null, null, null);
+
+        JsonObject root;
+        try
+        {
+            await using var input = File.OpenRead(_configPath);
+            root = await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject
+                ?? throw new JsonException("The configuration root is not a JSON object.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"NDI Access Manager configuration at '{_configPath}' is not valid JSON. Open Access Manager once to repair it before reverting to unicast.",
+                ex);
+        }
+
+        var multicast = Object(Object(root, "ndi"), "multicast");
+        Object(multicast, "send")["enable"] = false;
+        Object(multicast, "recv")["enable"] = false;
+
+        var directory = Path.GetDirectoryName(_configPath)
+            ?? throw new InvalidOperationException("The NDI Access Manager configuration directory could not be resolved.");
+        File.Copy(_configPath, _configPath + ".kiloview-backup", true);
+        var temporary = Path.Combine(directory, $".ndi-config.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(
+                temporary,
+                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
+                ct);
+            await using (var verificationStream = File.OpenRead(temporary))
+                _ = await JsonNode.ParseAsync(verificationStream, cancellationToken: ct)
+                    ?? throw new InvalidOperationException("The generated NDI Access Manager configuration could not be validated.");
+            File.Move(temporary, _configPath, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+
+        var status = await ReadStatusAsync(ct: ct);
+        if (status.InUse)
+            throw new InvalidOperationException("NDI Access Manager still reports multicast as enabled.");
+        return status;
+    }
+
     public async Task<NdiAccessManagerStatus> ReadStatusAsync(
         string? expectedPrefix = null,
         string? expectedMask = null,

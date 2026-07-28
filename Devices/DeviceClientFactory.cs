@@ -79,5 +79,15 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
             MulticastTtl = settings.Ttl,
             MulticastLastError = null
         });
+    public async Task DisableMulticastAsync(CancellationToken ct) =>
+        await Change(d => d with
+        {
+            MulticastConfigured = false,
+            MulticastInUse = false,
+            MulticastNetPrefix = null,
+            MulticastNetmask = null,
+            MulticastTtl = null,
+            MulticastLastError = null
+        });
     public Task BlankAsync(CancellationToken ct) => Task.CompletedTask;
 }

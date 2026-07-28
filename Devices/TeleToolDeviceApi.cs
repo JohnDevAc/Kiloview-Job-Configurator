@@ -30,5 +30,8 @@ internal sealed class TeleToolDeviceApi(ManagedDevice device, TeleToolFleetServi
     public Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct) =>
         fleet.ConfigureMulticastAsync(device, settings, ct);
 
+    public Task DisableMulticastAsync(CancellationToken ct) =>
+        fleet.DisableMulticastAsync(device, ct);
+
     public Task BlankAsync(CancellationToken ct) => Task.CompletedTask;
 }

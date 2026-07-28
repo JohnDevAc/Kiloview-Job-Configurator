@@ -224,6 +224,39 @@ internal sealed class N6DeviceApi(string ipAddress, DeviceCredentials credential
         // listed above.
     }
 
+    public async Task DisableMulticastAsync(CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode for unicast setup", ct);
+        var role = String(mode.RootElement.GetProperty("data"), "mode");
+        if (!string.Equals(role, "encoder", StringComparison.OrdinalIgnoreCase))
+        {
+            // N6 decoders negotiate the transport advertised by each sender and
+            // do not expose a separate receiver transport switch.
+            return;
+        }
+
+        foreach (var type in new[] { "ndihx", "ndifull" })
+        {
+            try
+            {
+                using var configured = await PostAsync(client, "/api/encoder/ndi/set_config.json", new
+                {
+                    types = type,
+                    ndi_connection = "unicast"
+                }, $"configure N6 {type} unicast sender", ct);
+                using var verified = await PostAsync(client, "/api/encoder/ndi/get_config.json", new { types = type }, $"verify N6 {type} unicast sender", ct);
+                var data = verified.RootElement.GetProperty("data");
+                if (!string.Equals(String(data, "ndi_connection"), "unicast", StringComparison.OrdinalIgnoreCase))
+                    throw new DeviceApiException($"N6 {type} did not confirm unicast mode.");
+            }
+            catch (DeviceApiException) when (type == "ndifull")
+            {
+                // Full NDI is optional on some N6 firmware/licence combinations.
+            }
+        }
+    }
+
     public async Task BlankAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

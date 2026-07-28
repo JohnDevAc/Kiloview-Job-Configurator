@@ -41,6 +41,8 @@ N6/N60 encoders are configured and read back through their documented multicast 
 
 On Windows, the configurator preserves unrelated settings in `%ProgramData%\NDI\ndi-config.v1.json`, adds the Job Name to the send/receive groups, enables multicast send/receive, and keeps a `.kiloview-backup` copy before replacement. NDI Access Manager must be closed while applying because an open instance retains an in-memory copy and can overwrite external changes when it exits. The configurator checks the live multicast range, TTL, send/receive groups, receive mode, and Discovery Server every 15 seconds. If any setting changes, the local-PC card is marked as needing attention until multicast setup is reapplied. The embedded card-preview receiver is recreated automatically after this change, so encoder previews can follow multicast sources without restarting the configurator. Other NDI applications maintain their own runtimes and must be restarted after Access Manager changes.
 
+**Revert all to unicast** safely disables multicast across the onboarded fleet and the optional local PC while preserving device names, NDI groups, Discovery Server settings, and saved address details. Active TeleTool streams restart with unicast transport and are verified through live status readback. Successful endpoints are cleared immediately; unreachable endpoints remain visible with an error so the operation can be retried without losing the multicast plan.
+
 Do not enable multicast on an unmanaged or unprepared production LAN. An active IGMP querier and IGMP snooping are required, and routed deployments must be designed with the network operator before increasing TTL above `1`.
 
 ## Build and run

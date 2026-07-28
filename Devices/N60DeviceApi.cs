@@ -245,6 +245,42 @@ internal sealed class N60DeviceApi(string ipAddress, DeviceCredentials credentia
         }, "register every multicast sender on the N60 decoder", ct);
     }
 
+    public async Task DisableMulticastAsync(CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        var mode = (await client.GetStringAsync("/api/codec/mode/get", ct)).Trim().Trim('"');
+        if (!string.Equals(mode, "encode", StringComparison.OrdinalIgnoreCase))
+        {
+            using var connection = await PostAsync(client, "/api/codec/decode/setConnection",
+                new { ndi_connection = "unicast" },
+                "set N60 decoder unicast receive mode",
+                ct);
+            return;
+        }
+
+        foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
+        {
+            try
+            {
+                using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", new
+                {
+                    connection = "unicast",
+                    types = stream.Item2
+                }, $"configure N60 {stream.Item2} unicast sender", ct);
+                using var verified = await GetAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/get", $"verify N60 {stream.Item2} unicast sender", ct);
+                var data = verified.RootElement.TryGetProperty("data", out var wrapped)
+                    ? wrapped
+                    : verified.RootElement;
+                if (!string.Equals(String(data, "connection"), "unicast", StringComparison.OrdinalIgnoreCase))
+                    throw new DeviceApiException($"N60 {stream.Item2} did not confirm unicast mode.");
+            }
+            catch (DeviceApiException) when (stream.Item1 == "main_full")
+            {
+                // Full NDI can be disabled on some N60 configurations.
+            }
+        }
+    }
+
     public async Task BlankAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);

@@ -316,6 +316,47 @@ public sealed class TeleToolFleetService(
             throw new InvalidOperationException("TeleTool multicast configuration changed after the stream restart.");
     }
 
+    public async Task DisableMulticastAsync(ManagedDevice device, CancellationToken ct)
+    {
+        if (device.Family == DeviceFamily.SimulatedTeleTool)
+        {
+            await ChangeSimulationAsync(device.Id, current => current with
+            {
+                MulticastConfigured = false,
+                MulticastInUse = false,
+                MulticastNetPrefix = null,
+                MulticastNetmask = null,
+                MulticastTtl = null,
+                MulticastLastError = null
+            });
+            return;
+        }
+
+        var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+        if (!HasDevMulticastFields(config))
+            throw new InvalidOperationException("This TeleTool Dev build does not expose NDI multicast configuration. Update it from the TeleTool Dev channel first.");
+        var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
+        var updated = await PostAsync(device.IpAddress, device.WebPort, "/api/config/ui", new
+        {
+            ndi_multicast_enabled = false
+        }, TimeSpan.FromSeconds(12), ct);
+        var applied = Object(updated, "config");
+        if (Flag(applied, "ndi_multicast_enabled"))
+            throw new InvalidOperationException("TeleTool did not retain unicast mode.");
+
+        if (Flag(status, "running"))
+        {
+            var start = BuildStartPayload(status, applied, device.NdiChannelName, device.NdiGroup);
+            start["ndi_multicast_enabled"] = false;
+            await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(25), ct);
+            await ConfirmRunningUnicastAsync(device, ct);
+        }
+
+        var retained = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+        if (Flag(retained, "ndi_multicast_enabled"))
+            throw new InvalidOperationException("TeleTool returned to multicast mode after the stream restart.");
+    }
+
     public async Task<ManagedDevice> StartAsync(ManagedDevice device, CancellationToken ct)
     {
         if (!device.IsTeleTool()) throw new InvalidOperationException("Only TeleTool encoders support TeleTool fleet controls.");
@@ -621,6 +662,34 @@ public sealed class TeleToolFleetService(
 
         throw new InvalidOperationException(
             "TeleTool restarted, but live status did not confirm multicast transmission.",
+            lastError);
+    }
+
+    private async Task ConfirmRunningUnicastAsync(ManagedDevice device, CancellationToken ct)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                var status = await GetAsync(
+                    device.IpAddress,
+                    device.WebPort,
+                    "/api/status?lite=1&rf=0",
+                    TimeSpan.FromSeconds(5),
+                    ct);
+                if (Flag(status, "running") && !Flag(status, "ndi_multicast_enabled")) return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested
+                && ex is HttpRequestException or TaskCanceledException or DeviceApiException or JsonException)
+            {
+                lastError = ex;
+            }
+            if (attempt < 7) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+
+        throw new InvalidOperationException(
+            "TeleTool restarted, but live status did not confirm unicast transmission.",
             lastError);
     }
 
