@@ -174,7 +174,8 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         SoftwareReleaseChannel channel,
         CancellationToken cancellationToken)
     {
-        GitHubRelease release;
+        GitHubRelease? release = null;
+        SoftwareVersion? selectedVersion = null;
         if (channel == SoftwareReleaseChannel.Main)
         {
             using var response = await httpClient.GetAsync(
@@ -197,14 +198,30 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
             response.EnsureSuccessStatusCode();
             var releases = await response.Content.ReadFromJsonAsync<List<GitHubRelease>>(cancellationToken)
                 ?? throw new InvalidOperationException("GitHub returned an empty Development release response.");
-            release = releases.FirstOrDefault(candidate =>
-                    !candidate.Draft
-                    && candidate.Prerelease
-                    && string.Equals(candidate.TargetCommitish, "development", StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException("No Development prerelease has been published yet.");
+            foreach (var candidate in releases.Where(candidate =>
+                         !candidate.Draft
+                         && candidate.Prerelease
+                         && string.Equals(candidate.TargetCommitish, "development", StringComparison.OrdinalIgnoreCase)))
+            {
+                SoftwareVersion candidateVersion;
+                try
+                {
+                    candidateVersion = ParseVersion(candidate.TagName, "Development release tag");
+                }
+                catch (InvalidOperationException exception)
+                {
+                    logger.LogWarning(exception, "Ignoring invalid Development release tag {TagName}.", candidate.TagName);
+                    continue;
+                }
+
+                if (selectedVersion is not null && candidateVersion.CompareTo(selectedVersion) <= 0) continue;
+                release = candidate;
+                selectedVersion = candidateVersion;
+            }
         }
 
-        var version = ParseVersion(release.TagName, $"latest {channel} release tag");
+        if (release is null) throw new InvalidOperationException($"No {channel} release has been published yet.");
+        var version = selectedVersion ?? ParseVersion(release.TagName, $"latest {channel} release tag");
         var asset = release.Assets.FirstOrDefault(candidate =>
             candidate.Name.Equals(InstallerAssetName, StringComparison.OrdinalIgnoreCase)
             && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
