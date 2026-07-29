@@ -105,7 +105,7 @@ internal sealed class N60DeviceApi(
         return false;
     }
 
-    public async Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct)
+    public async Task SetNetworkAsync(string address, string mask, string gateway, string dns, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
         using var network = await GetAsync(client, "/api/networkmanager/network/GetLinkinfo", "read N60 network", ct);
@@ -113,7 +113,7 @@ internal sealed class N60DeviceApi(
         if (active.ValueKind == JsonValueKind.Undefined) active = network.RootElement.GetProperty("data")[0];
         var ifname = String(active, "device", "eth0");
         using var _ = await PostAsync(client, "/api/networkmanager/network/SetEthernets",
-            new { ifname, address, netmask = mask, gw = gateway, mac = String(active, "mac"), method = "static", dns = String(active, "dns") },
+            new { ifname, address, netmask = mask, gw = gateway, mac = String(active, "mac"), method = "static", dns },
             "set N60 static address", ct);
     }
 

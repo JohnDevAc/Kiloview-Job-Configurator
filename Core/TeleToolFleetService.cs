@@ -228,7 +228,7 @@ public sealed class TeleToolFleetService(
         }
     }
 
-    public async Task SetNetworkAsync(ManagedDevice device, string address, string mask, string gateway, CancellationToken ct)
+    public async Task SetNetworkAsync(ManagedDevice device, string address, string mask, string gateway, string dns, CancellationToken ct)
     {
         if (device.Family == DeviceFamily.SimulatedTeleTool)
         {
@@ -244,7 +244,7 @@ public sealed class TeleToolFleetService(
                 ip_address = address,
                 subnet_mask = mask,
                 gateway = string.IsNullOrWhiteSpace(gateway) ? null : gateway,
-                dns = ""
+                dns
             }, TimeSpan.FromSeconds(30), ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)

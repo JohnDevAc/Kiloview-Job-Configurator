@@ -56,6 +56,7 @@
         <label><span>Static range end</span><input name="staticEnd" placeholder="192.168.10.199" required inputmode="decimal"></label>
         <label><span>Subnet mask</span><input name="subnetMask" value="255.255.255.0" required inputmode="decimal"></label>
         <label><span>Gateway</span><input name="gateway" placeholder="192.168.10.1" inputmode="decimal"></label>
+        <label><span>DNS server</span><input name="dns" value="8.8.8.8" required inputmode="decimal"><small>Applied when assigning a new static address; existing in-range devices are not changed.</small></label>
 
         <div class="section-title"><span>03</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
         <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required maxlength="32"></label>

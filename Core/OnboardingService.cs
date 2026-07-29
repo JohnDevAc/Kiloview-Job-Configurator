@@ -125,12 +125,23 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
                     await SaveDeviceAsync(device);
                     CompleteStep(device, "Access & license", "EULA accepted; admin password set to Job Name");
 
-                    Step(device, "Static IP", "running", $"Assigning {item.TargetIp}");
+                    Step(device, "Static IP & DNS", "running", item.ExistingStaticDevice
+                        ? $"Retaining existing network settings at {item.TargetIp}"
+                        : $"Assigning {item.TargetIp}; DNS {plan.Settings.Dns}");
                     if (!item.ExistingStaticDevice)
-                        await factory.Create(device).SetNetworkAsync(item.TargetIp, plan.Settings.SubnetMask, plan.Settings.Gateway, CancellationToken.None);
+                    {
+                        await factory.Create(device).SetNetworkAsync(
+                            item.TargetIp,
+                            plan.Settings.SubnetMask,
+                            plan.Settings.Gateway,
+                            plan.Settings.Dns,
+                            CancellationToken.None);
+                    }
                     device = device with { IpAddress = item.TargetIp, IsStatic = true, Health = DeviceHealth.Configuring };
                     await SaveDeviceAsync(device);
-                    CompleteStep(device, "Static IP", item.ExistingStaticDevice ? "Already in static range" : "Address assigned");
+                    CompleteStep(device, "Static IP & DNS", item.ExistingStaticDevice
+                        ? "Already in static range; network settings unchanged"
+                        : $"Address assigned; DNS {plan.Settings.Dns} applied");
 
                     Step(device, "Reconnect", "running");
                     device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45));
@@ -276,12 +287,23 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         await SaveDeviceAsync(device);
         CompleteStep(device, "Identity & NDI", $"Discovery Server {settings.NdiDiscoveryServerIp}; group '{settings.JobName}'");
 
-        Step(device, "Static IP", "running", $"Assigning {item.TargetIp} on TeleTool eth0");
+        Step(device, "Static IP & DNS", "running", item.ExistingStaticDevice
+            ? $"Retaining existing network settings at {item.TargetIp}"
+            : $"Assigning {item.TargetIp} on TeleTool eth0; DNS {settings.Dns}");
         if (!item.ExistingStaticDevice)
-            await factory.Create(device).SetNetworkAsync(item.TargetIp, settings.SubnetMask, settings.Gateway, CancellationToken.None);
+        {
+            await factory.Create(device).SetNetworkAsync(
+                item.TargetIp,
+                settings.SubnetMask,
+                settings.Gateway,
+                settings.Dns,
+                CancellationToken.None);
+        }
         device = device with { IpAddress = item.TargetIp, IsStatic = true, Health = DeviceHealth.Configuring };
         await SaveDeviceAsync(device);
-        CompleteStep(device, "Static IP", item.ExistingStaticDevice ? "Already in static range" : "Address assigned");
+        CompleteStep(device, "Static IP & DNS", item.ExistingStaticDevice
+            ? "Already in static range; network settings unchanged"
+            : $"Address assigned; DNS {settings.Dns} applied");
 
         Step(device, "Reconnect", "running", $"Waiting for TeleTool at {item.TargetIp}:{device.WebPort}");
         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(60));

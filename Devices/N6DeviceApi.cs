@@ -90,13 +90,13 @@ internal sealed class N6DeviceApi(
         return false;
     }
 
-    public async Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct)
+    public async Task SetNetworkAsync(string address, string mask, string gateway, string dns, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
         var net = network.RootElement.GetProperty("data")[0];
         var device = String(net, "device", "eth0");
-        using var _ = await PostAsync(client, "/api/network/set.json", new { device, dynamic = "n", ip = address, mask, gw = gateway, dns = "" }, "set N6 static address", ct);
+        using var _ = await PostAsync(client, "/api/network/set.json", new { device, dynamic = "n", ip = address, mask, gw = gateway, dns }, "set N6 static address", ct);
     }
 
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct)

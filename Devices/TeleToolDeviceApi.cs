@@ -8,8 +8,8 @@ internal sealed class TeleToolDeviceApi(ManagedDevice device, TeleToolFleetServi
 
     public Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct) => Task.CompletedTask;
 
-    public Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct) =>
-        fleet.SetNetworkAsync(device, address, mask, gateway, ct);
+    public Task SetNetworkAsync(string address, string mask, string gateway, string dns, CancellationToken ct) =>
+        fleet.SetNetworkAsync(device, address, mask, gateway, dns, ct);
 
     public Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct) =>
         fleet.ConfigureAsync(device, hostname, channelName, settings.JobName, settings.NdiDiscoveryServerIp, ct);

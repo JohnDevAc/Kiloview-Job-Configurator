@@ -13,7 +13,7 @@ public interface IDeviceApi
 {
     Task<ManagedDevice> ReadAsync(CancellationToken ct);
     Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct);
-    Task SetNetworkAsync(string address, string mask, string gateway, CancellationToken ct);
+    Task SetNetworkAsync(string address, string mask, string gateway, string dns, CancellationToken ct);
     Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct);
     Task SetRoleAsync(DeviceRole role, CancellationToken ct);
     Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct);

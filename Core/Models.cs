@@ -116,7 +116,8 @@ public sealed record OnboardingRequest(
     IReadOnlyList<string> DeviceIds,
     IReadOnlyDictionary<string, DeviceRole>? RoleOverrides = null,
     int KiloLinkPort = 50000,
-    int KiloLinkWebPort = 80);
+    int KiloLinkWebPort = 80,
+    string Dns = "8.8.8.8");
 
 public sealed record DevicePlan(
     string DeviceId,
@@ -201,6 +202,7 @@ public static class InputValidation
         Ip(request.NdiDiscoveryServerIp, "NDI Discovery Server IP");
         Ip(request.SubnetMask, "Subnet mask");
         if (!string.IsNullOrWhiteSpace(request.Gateway)) Ip(request.Gateway, "Gateway");
+        Ip(request.Dns, "DNS server");
         if (NetworkAddressing.ToUInt(start) > NetworkAddressing.ToUInt(end))
             throw new ArgumentException("Static range start must be before or equal to its end.");
         if (NetworkAddressing.ToUInt(end) - NetworkAddressing.ToUInt(start) > 4095)
