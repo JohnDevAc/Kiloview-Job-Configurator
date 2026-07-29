@@ -96,7 +96,7 @@ function danteAudioBadge(d){
 }
 function multicastIcon(endpoint){
   const configured=endpoint.multicastConfigured===true||endpoint.status==='applied',active=endpoint.multicastInUse===true||endpoint.inUse===true,prefix=endpoint.multicastNetPrefix||endpoint.netPrefix,title=active?`Multicast active${prefix?` · ${prefix}`:''}`:configured?`Multicast configured but not currently active${prefix?` · ${prefix}`:''}`:'Multicast is not configured';
-  return `<span class="multicast-status ${active?'active':configured?'configured':'inactive'}" role="img" aria-label="${esc(title)}" title="${esc(title)}"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="2.5"/><path d="M9.7 9.7a6.1 6.1 0 0 0 0 8.6M18.3 9.7a6.1 6.1 0 0 1 0 8.6M6.2 6.2a11 11 0 0 0 0 15.6M21.8 6.2a11 11 0 0 1 0 15.6"/></svg></span>`;
+  return `<svg class="multicast-status ${active?'active':configured?'configured':'inactive'}" viewBox="0 0 32 32" role="img" aria-label="${esc(title)}" title="${esc(title)}"><title>${esc(title)}</title><circle class="multicast-icon-shell" cx="16" cy="16" r="15"/><circle class="multicast-icon-dot" cx="16" cy="16" r="2.5"/><path class="multicast-icon-waves" d="M11.7 11.7a6.1 6.1 0 0 0 0 8.6M20.3 11.7a6.1 6.1 0 0 1 0 8.6M8.2 8.2a11 11 0 0 0 0 15.6M23.8 8.2a11 11 0 0 1 0 15.6"/></svg>`;
 }
 function renderMonitor(app){
   state.devices=app.devices||[];
