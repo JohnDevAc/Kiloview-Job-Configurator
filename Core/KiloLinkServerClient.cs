@@ -50,6 +50,47 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         return new(versionText, ReadStrings(Data(deviceTypes)), ReadStrings(Data(firmwareTypes), "list"), CountObjects(Data(devices), "list"));
     }
 
+    public async Task<bool> AuthenticateAsync(string serverIp, int webPort, KiloLinkCredential credential, CancellationToken ct)
+    {
+        using var session = await LoginAsync(serverIp, webPort, credential, ct);
+        return session.Identity.PasswordChanged;
+    }
+
+    public async Task ChangeInitialPasswordAsync(
+        string serverIp,
+        int webPort,
+        KiloLinkCredential factoryCredential,
+        string newPassword,
+        CancellationToken ct)
+    {
+        using var session = await LoginAsync(serverIp, webPort, factoryCredential, ct);
+        var identity = session.Identity;
+        if (string.IsNullOrWhiteSpace(identity.Dn) ||
+            string.IsNullOrWhiteSpace(identity.Uid) ||
+            string.IsNullOrWhiteSpace(identity.Cn))
+            throw new InvalidOperationException("KiloLink Server did not return the administrator identity required for initial password setup.");
+
+        var dn = Uri.EscapeDataString(identity.Dn);
+        var uid = Uri.EscapeDataString(identity.Uid);
+        var cn = Uri.EscapeDataString(identity.Cn);
+        var type = Uri.EscapeDataString(string.IsNullOrWhiteSpace(identity.Type) ? "user" : identity.Type);
+        var encodedPassword = Uri.EscapeDataString(newPassword);
+        using var response = await PostAsync(session.Client, "api/tools/changeSelfPassword.json", new
+        {
+            dn,
+            type,
+            cfg = new
+            {
+                dn,
+                uid,
+                cn,
+                userPassword = encodedPassword,
+                confirmNewPassword = encodedPassword,
+                type
+            }
+        }, ct);
+    }
+
     public async Task<KiloLinkAuthorizationResult> AuthorizeDeviceAsync(
         string serverIp,
         int webPort,
@@ -205,7 +246,12 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
             header["language"] = "en";
             header["software"] = "true";
             client.DefaultRequestHeaders.TryAddWithoutValidation("app", JsonSerializer.Serialize(header));
-            return new Session(client);
+            return new Session(client, new(
+                GetString(data, "dn") ?? "",
+                GetString(data, "uid") ?? credential.Username,
+                GetString(data, "cn") ?? credential.Username,
+                GetString(data, "type") ?? "user",
+                GetBoolean(data, "changed")));
         }
         catch { client.Dispose(); throw; }
     }
@@ -330,6 +376,18 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
 
     private static JsonElement Data(JsonDocument body) => body.RootElement.TryGetProperty("data", out var data) ? data : body.RootElement;
     private static string? GetString(JsonElement value, string name) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.String ? property.GetString() : null;
+    private static bool GetBoolean(JsonElement value, string name)
+    {
+        if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(name, out var property)) return false;
+        return property.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Number => property.TryGetInt32(out var number) && number != 0,
+            JsonValueKind.String => bool.TryParse(property.GetString(), out var parsed) && parsed,
+            _ => false
+        };
+    }
     private static string Normalize(string value) => new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
     private static string ModelOf(ManagedDevice device) => device.Model.StartsWith("N60", StringComparison.OrdinalIgnoreCase) ? "N60" : "N6";
 
@@ -357,9 +415,12 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         }
     }
 
-    private sealed class Session(HttpClient client) : IDisposable
+    private sealed record LoginIdentity(string Dn, string Uid, string Cn, string Type, bool PasswordChanged);
+
+    private sealed class Session(HttpClient client, LoginIdentity identity) : IDisposable
     {
         public HttpClient Client { get; } = client;
+        public LoginIdentity Identity { get; } = identity;
         public void Dispose() => Client.Dispose();
     }
 }

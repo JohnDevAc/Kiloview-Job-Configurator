@@ -33,6 +33,14 @@ public sealed class KiloLinkCredentialStore
             ?? throw new ArgumentException("No stored KiloLink credentials exist for this server IP.");
     }
 
+    public void StoreVerified(string serverIp, KiloLinkCredential credential)
+    {
+        InputValidation.Ip(serverIp, "KiloLink Server IP");
+        if (string.IsNullOrWhiteSpace(credential.Username)) throw new ArgumentException("KiloLink server username is required.");
+        if (string.IsNullOrEmpty(credential.Password)) throw new ArgumentException("KiloLink server password is required.");
+        Write(serverIp, credential with { Username = credential.Username.Trim() });
+    }
+
     public KiloLinkCredential ResolveAndStore(string serverIp, string? username, string? password)
     {
         InputValidation.Ip(serverIp, "KiloLink Server IP");

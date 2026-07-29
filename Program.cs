@@ -40,6 +40,7 @@ builder.Services.ConfigureHttpJsonOptions(o =>
 builder.Services.AddSingleton<AppStateStore>();
 builder.Services.AddSingleton<KiloLinkCredentialStore>();
 builder.Services.AddSingleton<KiloLinkServerClient>();
+builder.Services.AddSingleton<KiloLinkConnectionService>();
 builder.Services.AddSingleton<NdiDiscoveryServerClient>();
 builder.Services.AddSingleton<NdiTitleCardService>();
 builder.Services.AddSingleton<EncoderThumbnailService>();
@@ -199,15 +200,15 @@ app.MapGet("/api/ndi/discover", async (int? port, NdiDiscoveryServerClient clien
     try { return Results.Ok(await client.DiscoverAsync(port ?? NdiDiscoveryServerClient.DefaultPort, ct)); }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
-app.MapPost("/api/kilolink/test", async (KiloLinkConnectionRequest request, KiloLinkCredentialStore credentials, KiloLinkServerClient client, CancellationToken ct) =>
+app.MapPost("/api/kilolink/test", async (KiloLinkConnectionRequest request, KiloLinkConnectionService connections, CancellationToken ct) =>
 {
     try
     {
-        var credential = credentials.ResolveAndStore(request.ServerIp, request.Username, request.Password);
-        return Results.Ok(await client.TestAsync(request.ServerIp, request.WebPort, credential, ct));
+        return Results.Ok(await connections.ConnectAsync(request, ct));
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (System.ComponentModel.Win32Exception ex) { return Results.Problem(ex.Message, statusCode: 500); }
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 

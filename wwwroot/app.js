@@ -3,7 +3,7 @@ import { createPreviewController } from './js/previews.js';
 import { createSystemSettingsController } from './js/system-settings.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null};
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false};
 const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
 function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup')setTimeout(detectInfrastructure,0)}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
@@ -13,6 +13,25 @@ function isTeleTool(d){return d?.family==='TeleTool'||d?.family==='SimulatedTele
 function deviceUrl(d){return `http://${d.ipAddress}${d.webPort&&d.webPort!==80?`:${d.webPort}`:''}`}
 const {clearPreviewWarning,encoderPreview,refreshEncoderPreviews,releasePreviewObjectUrls}=createPreviewController({state,$,$$,esc,isTeleTool});
 const {loadSystemSettings}=createSystemSettingsController({api,$,state,toast});
+const serviceConnections=$('#serviceConnections'),serviceConnectionsStateText=$('#serviceConnectionsStateText'),toggleServiceConnections=$('#toggleServiceConnections'),serviceChecks={kiloLinkFound:false,kiloLinkAuthenticated:false,ndiDiscoveryFound:false};
+function setServiceConnectionsExpanded(expanded){
+  serviceConnections.classList.toggle('is-collapsed',!expanded);
+  toggleServiceConnections.setAttribute('aria-expanded',String(expanded));
+  $('#serviceConnectionsBody').setAttribute('aria-hidden',String(!expanded));
+  toggleServiceConnections.querySelector('span').textContent=expanded?'Minimize':'Show details';
+}
+function setServiceConnectionsStatus(mode,message){
+  serviceConnections.classList.remove('is-checking','is-ready','needs-attention');
+  serviceConnections.classList.add(mode);
+  serviceConnectionsStateText.textContent=message;
+}
+function updateServiceConnectionsStatus(checking=false){
+  if(checking){setServiceConnectionsStatus('is-checking','Checking services…');return}
+  const ready=serviceChecks.kiloLinkFound&&serviceChecks.kiloLinkAuthenticated&&serviceChecks.ndiDiscoveryFound;
+  if(ready){setServiceConnectionsStatus('is-ready','All services connected');setServiceConnectionsExpanded(false)}
+  else{setServiceConnectionsStatus('needs-attention','Service attention required');setServiceConnectionsExpanded(true)}
+}
+toggleServiceConnections.onclick=()=>setServiceConnectionsExpanded(serviceConnections.classList.contains('is-collapsed'));
 
 async function boot(){
   try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const cidrs=await api('/api/network/subnets');$('#scanCidrs').value=cidrs.join('\n');const app=await api('/api/state');state.devices=app.devices||[];const localOnboarded=app.multicast?.assignments?.some(a=>a.endpointId==='local-pc');if(app.lastJob&&(state.devices.some(d=>d.isOnboarded)||localOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
@@ -30,17 +49,19 @@ function maskStoredKiloLinkPassword(){storedPassword.textContent='••••�
 function hideStoredKiloLinkCredential(){storedCredential.classList.add('hidden');storedCredential.dataset.serverIp='';storedUsername.textContent='';maskStoredKiloLinkPassword()}
 async function refreshKiloLinkCredentials(){
   const serverIp=kiloLinkIp.value.trim();
-  if(!serverIp){hideStoredKiloLinkCredential();credentialHint.textContent='Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.';return}
+  if(!serverIp){hideStoredKiloLinkCredential();credentialHint.textContent='Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.';return false}
   try{
     const status=await api(`/api/kilolink/credentials?serverIp=${encodeURIComponent(serverIp)}`);
     if(status.stored){
       const username=status.username||'Stored user';
       kiloLinkUser.value=username;kiloLinkPassword.value='';storedUsername.textContent=username;maskStoredKiloLinkPassword();revealStoredPassword.classList.toggle('hidden',status.canReveal!==true);storedSecurityNote.textContent=status.canReveal===true?'The password remains protected until View is selected. Leave the password field blank to use it.':'To view the password, open this page on the setup PC using localhost.';storedCredential.dataset.serverIp=serverIp;storedCredential.classList.remove('hidden');
       credentialHint.textContent=`Stored login found for ${username}. Leave the password blank to reuse it.`;
+      return true;
     }else{
       hideStoredKiloLinkCredential();credentialHint.textContent='No stored login was found for this server. Enter a username and password.';
+      return false;
     }
-  }catch{hideStoredKiloLinkCredential();credentialHint.textContent='Enter a valid KiloLink server IP to check stored credentials.'}
+  }catch{hideStoredKiloLinkCredential();credentialHint.textContent='Enter a valid KiloLink server IP to check stored credentials.';return false}
 }
 revealStoredPassword.onclick=async()=>{
   if(storedPassword.dataset.revealed==='true'){maskStoredKiloLinkPassword();return}
@@ -54,14 +75,95 @@ revealStoredPassword.onclick=async()=>{
   }catch(err){maskStoredKiloLinkPassword();toast(err.message,true)}
   finally{revealStoredPassword.disabled=false}
 };
-async function detectInfrastructure(){await detectKiloLink(true);await detectNdiDiscovery(true)}
-async function detectKiloLink(automatic=false){const button=$('#findKiloLink'),result=$('#kiloLinkDiscoveryResult'),port=+$('input[name="kiloLinkWebPort"]').value||80;if(button.disabled)return;const initial=kiloLinkIp.value.trim();try{button.disabled=true;button.textContent='Searching…';result.className='';result.textContent='Scanning local networks…';const servers=await api(`/api/kilolink/discover?webPort=${port}`);if(!servers.length){result.className='error-text';result.textContent='No KiloLink Server found';return}const server=servers.find(candidate=>candidate.serverIp===initial)||servers[0];if(kiloLinkIp.value.trim()===initial)kiloLinkIp.value=server.serverIp;result.className='ok';result.textContent=`Found ${server.serverIp} · ${server.version}`;await refreshKiloLinkCredentials()}catch(err){result.className='error-text';result.textContent=automatic?'Automatic search failed':err.message}finally{button.disabled=false;button.textContent='Find KiloLink Server'}}
+async function detectInfrastructure(){
+  if(state.infrastructureDetecting)return;
+  state.infrastructureDetecting=true;
+  Object.assign(serviceChecks,{kiloLinkFound:false,kiloLinkAuthenticated:false,ndiDiscoveryFound:false});
+  setServiceConnectionsExpanded(false);
+  updateServiceConnectionsStatus(true);
+  try{
+    const kiloLinkFound=await detectKiloLink(true,true);
+    if(kiloLinkFound)await testKiloLinkConnection(true,true);
+    await detectNdiDiscovery(true,true);
+  }finally{
+    state.infrastructureDetecting=false;
+    updateServiceConnectionsStatus();
+  }
+}
+async function detectKiloLink(automatic=false,deferStatus=false){
+  const button=$('#findKiloLink'),result=$('#kiloLinkDiscoveryResult'),port=+$('input[name="kiloLinkWebPort"]').value||80;
+  if(button.disabled)return false;
+  const initial=kiloLinkIp.value.trim();
+  serviceChecks.kiloLinkFound=false;
+  serviceChecks.kiloLinkAuthenticated=false;
+  try{
+    button.disabled=true;button.textContent='Searching…';result.className='';result.textContent='Scanning local networks…';
+    const servers=await api(`/api/kilolink/discover?webPort=${port}`);
+    if(!servers.length){result.className='error-text';result.textContent='No KiloLink Server found';return false}
+    const server=servers.find(candidate=>candidate.serverIp===initial)||servers[0];
+    if(kiloLinkIp.value.trim()===initial)kiloLinkIp.value=server.serverIp;
+    serviceChecks.kiloLinkFound=true;
+    result.className='ok';result.textContent=`Found ${server.serverIp} · ${server.version}`;
+    await refreshKiloLinkCredentials();
+    return true;
+  }catch(err){
+    result.className='error-text';result.textContent=automatic?'Automatic search failed':err.message;
+    return false;
+  }finally{
+    button.disabled=false;button.textContent='Find KiloLink Server';
+    if(!deferStatus)updateServiceConnectionsStatus();
+  }
+}
 $('#findKiloLink').onclick=()=>detectKiloLink(false);
-async function detectNdiDiscovery(automatic=false){const button=$('#findNdiDiscovery'),result=$('#ndiDiscoveryResult'),input=$('input[name="ndiDiscoveryServerIp"]');if(button.disabled)return;const initial=input.value.trim();try{button.disabled=true;button.textContent='Searching…';result.className='';result.textContent='Scanning TCP 5959…';const servers=await api('/api/ndi/discover');if(!servers.length){result.className='error-text';result.textContent='No NDI Discovery Server found';return}const kilolink=kiloLinkIp.value.trim(),prefix=kilolink.split('.').slice(0,3).join('.')+'.',server=servers.find(candidate=>candidate.serverIp===initial)||servers.find(candidate=>candidate.serverIp===kilolink)||servers.find(candidate=>prefix!=='.'&&candidate.serverIp.startsWith(prefix))||servers[0];if(input.value.trim()===initial)input.value=server.serverIp;result.className='ok';result.textContent=`Found ${server.serverIp}:${server.port}`}catch(err){result.className='error-text';result.textContent=automatic?'Automatic search failed':err.message}finally{button.disabled=false;button.textContent='Find NDI Discovery Server'}}
+async function detectNdiDiscovery(automatic=false,deferStatus=false){
+  const button=$('#findNdiDiscovery'),result=$('#ndiDiscoveryResult'),input=$('input[name="ndiDiscoveryServerIp"]');
+  if(button.disabled)return false;
+  const initial=input.value.trim();
+  serviceChecks.ndiDiscoveryFound=false;
+  try{
+    button.disabled=true;button.textContent='Searching…';result.className='';result.textContent='Scanning TCP 5959…';
+    const servers=await api('/api/ndi/discover');
+    if(!servers.length){result.className='error-text';result.textContent='No NDI Discovery Server found';return false}
+    const kilolink=kiloLinkIp.value.trim(),prefix=kilolink.split('.').slice(0,3).join('.')+'.',server=servers.find(candidate=>candidate.serverIp===initial)||servers.find(candidate=>candidate.serverIp===kilolink)||servers.find(candidate=>prefix!=='.'&&candidate.serverIp.startsWith(prefix))||servers[0];
+    if(input.value.trim()===initial)input.value=server.serverIp;
+    serviceChecks.ndiDiscoveryFound=true;
+    result.className='ok';result.textContent=`Found ${server.serverIp}:${server.port}`;
+    return true;
+  }catch(err){
+    result.className='error-text';result.textContent=automatic?'Automatic search failed':err.message;
+    return false;
+  }finally{
+    button.disabled=false;button.textContent='Find NDI Discovery Server';
+    if(!deferStatus)updateServiceConnectionsStatus();
+  }
+}
 $('#findNdiDiscovery').onclick=()=>detectNdiDiscovery(false);
-kiloLinkIp.addEventListener('input',()=>{if(storedCredential.dataset.serverIp!==kiloLinkIp.value.trim())hideStoredKiloLinkCredential()});
+kiloLinkIp.addEventListener('input',()=>{serviceChecks.kiloLinkFound=false;serviceChecks.kiloLinkAuthenticated=false;if(storedCredential.dataset.serverIp!==kiloLinkIp.value.trim())hideStoredKiloLinkCredential();if(!state.infrastructureDetecting)updateServiceConnectionsStatus()});
+[kiloLinkUser,kiloLinkPassword,$('input[name="kiloLinkWebPort"]')].forEach(input=>input.addEventListener('input',()=>{serviceChecks.kiloLinkAuthenticated=false;if(!state.infrastructureDetecting)updateServiceConnectionsStatus()}));
+$('input[name="ndiDiscoveryServerIp"]').addEventListener('input',()=>{serviceChecks.ndiDiscoveryFound=false;if(!state.infrastructureDetecting)updateServiceConnectionsStatus()});
+$('input[name="jobName"]').addEventListener('blur',()=>{if(serviceChecks.kiloLinkFound&&!serviceChecks.kiloLinkAuthenticated&&$('input[name="jobName"]').value.trim())testKiloLinkConnection(true)});
 kiloLinkIp.addEventListener('blur',refreshKiloLinkCredentials);
-$('#testKiloLink').onclick=async()=>{const button=$('#testKiloLink'),result=$('#kiloLinkTestResult'),f=new FormData($('#setupForm'));try{button.disabled=true;button.textContent='Testing…';const status=await api('/api/kilolink/test',{method:'POST',body:JSON.stringify({serverIp:f.get('kiloLinkServerIp').trim(),webPort:+f.get('kiloLinkWebPort'),username:f.get('kiloLinkUsername').trim(),password:f.get('kiloLinkPassword')})});kiloLinkPassword.value='';result.className='ok';result.textContent=`Connected · Server ${status.version} · ${status.deviceCount} registered device${status.deviceCount===1?'':'s'}`;await refreshKiloLinkCredentials()}catch(err){result.className='error-text';result.textContent=err.message}finally{button.disabled=false;button.textContent='Test KiloLink login'}};
+async function testKiloLinkConnection(automatic=false,deferStatus=false){
+  const button=$('#testKiloLink'),result=$('#kiloLinkTestResult'),f=new FormData($('#setupForm'));
+  serviceChecks.kiloLinkAuthenticated=false;
+  try{
+    button.disabled=true;button.textContent='Testing…';result.className='';result.textContent=automatic?'Authenticating stored KiloLink login…':'Testing KiloLink login…';
+    const status=await api('/api/kilolink/test',{method:'POST',body:JSON.stringify({serverIp:f.get('kiloLinkServerIp').trim(),webPort:+f.get('kiloLinkWebPort'),username:f.get('kiloLinkUsername').trim(),password:f.get('kiloLinkPassword'),jobName:f.get('jobName').trim()})});
+    kiloLinkPassword.value='';
+    serviceChecks.kiloLinkFound=true;
+    serviceChecks.kiloLinkAuthenticated=true;
+    result.className='ok';result.textContent=status.passwordChanged?`KiloLink onboarded · password set to Job Name · Server ${status.version}`:`Connected · Server ${status.version} · ${status.deviceCount} registered device${status.deviceCount===1?'':'s'}`;
+    await refreshKiloLinkCredentials();
+    return true;
+  }catch(err){
+    result.className='error-text';result.textContent=err.message;
+    return false;
+  }finally{
+    button.disabled=false;button.textContent='Test KiloLink login';
+    if(!deferStatus)updateServiceConnectionsStatus();
+  }
+}
+$('#testKiloLink').onclick=()=>testKiloLinkConnection(false);
 function ipn(ip){return ip.split('.').reduce((n,x)=>n*256+(+x),0)}function inRange(ip,a,b){return ipn(ip)>=ipn(a)&&ipn(ip)<=ipn(b)}
 function renderDiscovery(result){
   const fresh=result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)),teletools=result.devices.filter(isTeleTool),kiloviews=result.devices.length-teletools.length;

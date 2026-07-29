@@ -32,24 +32,38 @@
         <p>Discover Kiloview N6/N60 converters and TeleTool encoders, reserve safe static addresses, connect NDI services, and monitor the complete job fleet.</p>
       </div>
       <form id="setupForm" class="panel setup-grid">
-        <div class="section-title"><span>01</span><div><h2>Service connections</h2><p>Where every unit should register.</p></div></div>
-        <label><span>KiloLink Server IP <small>(Kiloview only)</small></span><input name="kiloLinkServerIp" placeholder="Auto-detecting…" inputmode="decimal"><small>Required when onboarding Kiloview units; TeleTools do not use KiloLink.</small></label>
-        <div class="connection-test"><button id="findKiloLink" class="quiet" type="button">Find KiloLink Server</button><span id="kiloLinkDiscoveryResult"></span></div>
-        <label><span>KiloLink Server username</span><input name="kiloLinkUsername" autocomplete="username"><small>Stored for this server IP on the local Windows PC.</small></label>
-        <label><span>KiloLink Server password</span><input name="kiloLinkPassword" type="password" autocomplete="current-password"><small id="kiloLinkCredentialHint">Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.</small></label>
-        <div id="kiloLinkStoredCredential" class="stored-credential wide hidden" role="status" aria-live="polite">
-          <span class="stored-credential-icon" aria-hidden="true">✓</span>
-          <div>
-            <strong>Stored KiloLink Server credentials available</strong>
-            <span>Username <b id="kiloLinkStoredUsername"></b><i aria-hidden="true">·</i> Password <b id="kiloLinkStoredPassword">••••••••</b><button id="showKiloLinkStoredPassword" class="stored-credential-reveal" type="button">View</button></span>
-            <small id="kiloLinkStoredSecurityNote">The password remains protected until View is selected. Leave the password field blank to use it.</small>
+        <section id="serviceConnections" class="service-connections wide is-collapsed is-checking" aria-labelledby="serviceConnectionsTitle">
+          <div class="section-title service-connections-header">
+            <span>01</span>
+            <div><h2 id="serviceConnectionsTitle">Service connections</h2><p>Where every unit should register.</p></div>
+            <div id="serviceConnectionsState" class="service-connections-state" role="status" aria-live="polite">
+              <i class="service-state-icon" aria-hidden="true"></i>
+              <strong id="serviceConnectionsStateText">Checking services…</strong>
+            </div>
+            <button id="toggleServiceConnections" class="service-connections-toggle" type="button" aria-controls="serviceConnectionsBody" aria-expanded="false">
+              <span>Show details</span><i aria-hidden="true"></i>
+            </button>
           </div>
-        </div>
-        <label><span>KiloLink web port</span><input name="kiloLinkWebPort" type="number" value="80" min="1" max="65535" required><small>Server Pro web/API interface.</small></label>
-        <label><span>KiloLink device-link UDP port</span><input name="kiloLinkPort" type="number" value="50000" min="1" max="65535" required><small>Devices register on 50000–50001 UDP.</small></label>
-        <div class="wide connection-test"><button id="testKiloLink" class="quiet" type="button">Test KiloLink login</button><span id="kiloLinkTestResult"></span></div>
-        <label><span>NDI® Discovery Server IP</span><input name="ndiDiscoveryServerIp" placeholder="Auto-detecting…" required inputmode="decimal"></label>
-        <div class="connection-test"><button id="findNdiDiscovery" class="quiet" type="button">Find NDI Discovery Server</button><span id="ndiDiscoveryResult"></span></div>
+          <div id="serviceConnectionsBody" class="service-connections-body" aria-hidden="true">
+            <label><span>KiloLink Server IP <small>(Kiloview only)</small></span><input name="kiloLinkServerIp" placeholder="Auto-detecting…" inputmode="decimal"><small>Required when onboarding Kiloview units; TeleTools do not use KiloLink.</small></label>
+            <div class="connection-test"><button id="findKiloLink" class="quiet" type="button">Find KiloLink Server</button><span id="kiloLinkDiscoveryResult"></span></div>
+            <label><span>KiloLink Server username</span><input name="kiloLinkUsername" value="admin" autocomplete="username"><small>Stored for this server IP. Automatic setup also checks the official admin/Kiloview001 factory login.</small></label>
+            <label><span>KiloLink Server password</span><input name="kiloLinkPassword" type="password" autocomplete="current-password"><small id="kiloLinkCredentialHint">Stored locally in Windows Credential Manager. Leave blank when reusing a stored login.</small></label>
+            <div id="kiloLinkStoredCredential" class="stored-credential wide hidden" role="status" aria-live="polite">
+              <span class="stored-credential-icon" aria-hidden="true">✓</span>
+              <div>
+                <strong>Stored KiloLink Server credentials available</strong>
+                <span>Username <b id="kiloLinkStoredUsername"></b><i aria-hidden="true">·</i> Password <b id="kiloLinkStoredPassword">••••••••</b><button id="showKiloLinkStoredPassword" class="stored-credential-reveal" type="button">View</button></span>
+                <small id="kiloLinkStoredSecurityNote">The password remains protected until View is selected. Leave the password field blank to use it.</small>
+              </div>
+            </div>
+            <label><span>KiloLink web port</span><input name="kiloLinkWebPort" type="number" value="80" min="1" max="65535" required><small>Server Pro web/API interface.</small></label>
+            <label><span>KiloLink device-link UDP port</span><input name="kiloLinkPort" type="number" value="50000" min="1" max="65535" required><small>Devices register on 50000–50001 UDP.</small></label>
+            <div class="wide connection-test"><button id="testKiloLink" class="quiet" type="button">Test KiloLink login</button><span id="kiloLinkTestResult"></span></div>
+            <label><span>NDI® Discovery Server IP</span><input name="ndiDiscoveryServerIp" placeholder="Auto-detecting…" required inputmode="decimal"></label>
+            <div class="connection-test"><button id="findNdiDiscovery" class="quiet" type="button">Find NDI Discovery Server</button><span id="ndiDiscoveryResult"></span></div>
+          </div>
+        </section>
 
         <div class="section-title"><span>02</span><div><h2>Address pool</h2><p>Assigned from the first free address above existing units.</p></div></div>
         <label><span>Static range start</span><input name="staticStart" placeholder="192.168.10.150" required inputmode="decimal"></label>
