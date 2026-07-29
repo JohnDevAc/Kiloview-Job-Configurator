@@ -28,6 +28,47 @@ button{border:0;cursor:pointer}.primary,.danger{min-width:230px;background:var(-
 .preview-alert strong,.preview-alert span{display:block}
 .preview-alert strong{color:var(--amber);font:800 9px var(--mono);letter-spacing:.08em;margin-bottom:2px}
 .multicast-revert-bar{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-top:18px;padding:16px 18px 16px 21px;border:1px solid #56302e;border-radius:12px;background:linear-gradient(135deg,rgba(53,24,23,.72),rgba(19,17,16,.95))}
+
+/* Keep the onboarding introduction editorial, but shallow enough that the form
+   remains visible on a 1080p display. */
+#setupView .hero{
+  grid-template-columns:minmax(250px,.78fr) minmax(0,1.22fr);
+  grid-template-areas:"eyebrow headline" "copy headline";
+  align-items:center;
+  column-gap:clamp(40px,6vw,90px);
+  row-gap:8px;
+  margin:0 0 30px
+}
+#setupView .hero .eyebrow{grid-area:eyebrow;align-self:end}
+#setupView .hero h1{
+  grid-area:headline;
+  max-width:680px;
+  margin:0;
+  font-size:clamp(36px,4.2vw,58px);
+  line-height:.94
+}
+#setupView .hero>p:last-child{
+  grid-area:copy;
+  align-self:start;
+  max-width:500px;
+  margin:0;
+  font-size:14px;
+  line-height:1.55
+}
+@media(max-width:850px){
+  #setupView .hero{
+    grid-template-columns:1fr;
+    grid-template-areas:"eyebrow" "headline" "copy";
+    gap:10px;
+    margin-bottom:30px
+  }
+  #setupView .hero h1{font-size:clamp(36px,10vw,48px)}
+}
+@media(min-width:2560px){
+  #setupView .hero{column-gap:120px;margin-bottom:44px}
+  #setupView .hero h1{max-width:980px;font-size:clamp(64px,3vw,92px)}
+  #setupView .hero>p:last-child{max-width:720px;font-size:19px}
+}
 .multicast-revert-bar strong,.multicast-revert-bar small{display:block}
 .multicast-revert-bar strong{color:#ffaaa4}
 .multicast-revert-bar small{max-width:720px;margin-top:4px;color:var(--muted);font-size:11px;line-height:1.5}
