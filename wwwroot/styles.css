@@ -32,6 +32,7 @@ button{border:0;cursor:pointer}.primary,.danger{min-width:230px;background:var(-
 /* Keep the onboarding introduction editorial, but shallow enough that the form
    remains visible on a 1080p display. */
 #setupView .hero{
+  width:100%;
   grid-template-columns:minmax(250px,.78fr) minmax(0,1.22fr);
   grid-template-areas:"eyebrow headline" "copy headline";
   align-items:center;
@@ -42,10 +43,12 @@ button{border:0;cursor:pointer}.primary,.danger{min-width:230px;background:var(-
 #setupView .hero .eyebrow{grid-area:eyebrow;align-self:end}
 #setupView .hero h1{
   grid-area:headline;
+  justify-self:end;
   max-width:680px;
   margin:0;
   font-size:clamp(36px,4.2vw,58px);
-  line-height:.94
+  line-height:.94;
+  text-align:right
 }
 #setupView .hero>p:last-child{
   grid-area:copy;
@@ -62,7 +65,11 @@ button{border:0;cursor:pointer}.primary,.danger{min-width:230px;background:var(-
     gap:10px;
     margin-bottom:30px
   }
-  #setupView .hero h1{font-size:clamp(36px,10vw,48px)}
+  #setupView .hero h1{
+    justify-self:start;
+    font-size:clamp(36px,10vw,48px);
+    text-align:left
+  }
 }
 @media(min-width:2560px){
   #setupView .hero{column-gap:120px;margin-bottom:44px}
