@@ -102,9 +102,95 @@ app.UseStaticFiles();
 app.MapGet("/api/health", () => Results.Ok(new
 {
     status = "ok",
+    product = "Kiloview Job Configurator",
     version = BuildIdentity.Version,
     channel = BuildIdentity.ReleaseChannel
 }));
+app.MapGet("/api/pc-onboarding/profile", async (AppStateStore store) =>
+{
+    var state = await store.ReadAsync();
+    if (state.LastJob is null)
+        return Results.Conflict(new { error = "This Job Configurator has no active job to join." });
+    return Results.Ok(new
+    {
+        product = "Kiloview Job Configurator",
+        version = BuildIdentity.Version,
+        channel = BuildIdentity.ReleaseChannel,
+        jobName = state.LastJob.JobName,
+        ndiDiscoveryServerIp = state.LastJob.NdiDiscoveryServerIp,
+        serverAddress = state.SelectedNetworkAddress
+    });
+});
+app.MapPost("/api/pc-onboarding/register", async (
+    WindowsPcRegistration registration,
+    HttpContext context,
+    AppStateStore store) =>
+{
+    static string? RemoteIpv4(HttpContext httpContext)
+    {
+        var remote = httpContext.Connection.RemoteIpAddress;
+        if (remote?.IsIPv4MappedToIPv6 == true) remote = remote.MapToIPv4();
+        return remote?.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? remote.ToString()
+            : null;
+    }
+
+    var remoteAddress = RemoteIpv4(context);
+    if (remoteAddress is null || IPAddress.IsLoopback(IPAddress.Parse(remoteAddress)))
+        return Results.BadRequest(new { error = "Remote Windows PC registration must come from the selected LAN." });
+    if (!string.Equals(remoteAddress, registration.Address, StringComparison.Ordinal))
+        return Results.BadRequest(new { error = $"Registration address {registration.Address} does not match the connecting PC address {remoteAddress}." });
+    if (!Guid.TryParse(registration.EndpointId, out _))
+        return Results.BadRequest(new { error = "The Windows PC endpoint identifier is invalid." });
+    if (string.IsNullOrWhiteSpace(registration.Hostname) || registration.Hostname.Length > 63)
+        return Results.BadRequest(new { error = "The Windows PC hostname is required and must be at most 63 characters." });
+    if (registration.PrefixLength is < 1 or > 30)
+        return Results.BadRequest(new { error = "The Windows PC network prefix must be between /1 and /30." });
+    if (!registration.PreferredInterfaceConfigured)
+        return Results.BadRequest(new { error = "Apply the preferred NDI interface before registering this PC." });
+    if (string.IsNullOrWhiteSpace(registration.AdapterName) || registration.AdapterName.Length > 256)
+        return Results.BadRequest(new { error = "The Windows PC adapter name is required and must be at most 256 characters." });
+    if (string.IsNullOrWhiteSpace(registration.NdiToolsVersion) || registration.NdiToolsVersion.Length > 40
+        || string.IsNullOrWhiteSpace(registration.UtilityVersion) || registration.UtilityVersion.Length > 40)
+        return Results.BadRequest(new { error = "The NDI Tools and onboarding utility versions are required." });
+    if (!string.Equals(registration.EulaVersion, "1.0", StringComparison.Ordinal))
+        return Results.BadRequest(new { error = "The current Kiloview Job Configurator EULA must be accepted." });
+
+    var now = DateTimeOffset.UtcNow;
+    var endpoint = new RemoteWindowsPcEndpoint(
+        registration.EndpointId,
+        registration.Hostname.Trim(),
+        registration.Address,
+        registration.AdapterName.Trim(),
+        registration.PrefixLength,
+        registration.PreferredInterfaceConfigured,
+        registration.NdiToolsVersion.Trim(),
+        registration.UtilityVersion.Trim(),
+        registration.EulaVersion,
+        now,
+        now,
+        "onboarded");
+    var state = await store.UpdateAsync(current =>
+    {
+        if (current.LastJob is null)
+            throw new InvalidOperationException("This Job Configurator has no active job to join.");
+        var endpoints = (current.RemoteWindowsPcs ?? [])
+            .Where(item => !string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(item.Address, endpoint.Address, StringComparison.Ordinal))
+            .ToList();
+        var existing = (current.RemoteWindowsPcs ?? []).FirstOrDefault(item =>
+            string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(item.Address, endpoint.Address, StringComparison.Ordinal));
+        endpoints.Add(endpoint with { RegisteredUtc = existing?.RegisteredUtc ?? now });
+        return current with { RemoteWindowsPcs = endpoints.OrderBy(item => item.Hostname, StringComparer.OrdinalIgnoreCase).ToArray() };
+    });
+    return Results.Ok(new
+    {
+        status = "onboarded",
+        endpoint,
+        jobName = state.LastJob!.JobName
+    });
+});
 app.MapGet("/api/system/info", async (GitHubUpdateService updates, AppStateStore store) =>
 {
     var state = await store.ReadAsync();

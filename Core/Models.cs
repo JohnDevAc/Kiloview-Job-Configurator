@@ -99,7 +99,8 @@ public sealed record AppState(
     MulticastConfiguration? Multicast = null,
     string? SelectedNetworkAdapterId = null,
     string? SelectedNetworkAddress = null,
-    LocalPcEndpoint? LocalPc = null)
+    LocalPcEndpoint? LocalPc = null,
+    IReadOnlyList<RemoteWindowsPcEndpoint>? RemoteWindowsPcs = null)
 {
     public static AppState Empty => new([]);
 }
@@ -174,6 +175,30 @@ public sealed record LocalPcEndpoint(
     bool PreferredInterfaceConfigured,
     string Status,
     string? Error = null);
+public sealed record RemoteWindowsPcEndpoint(
+    string EndpointId,
+    string Hostname,
+    string Address,
+    string AdapterName,
+    int PrefixLength,
+    bool PreferredInterfaceConfigured,
+    string NdiToolsVersion,
+    string UtilityVersion,
+    string EulaVersion,
+    DateTimeOffset RegisteredUtc,
+    DateTimeOffset LastSeenUtc,
+    string Status,
+    string? Error = null);
+public sealed record WindowsPcRegistration(
+    string EndpointId,
+    string Hostname,
+    string Address,
+    string AdapterName,
+    int PrefixLength,
+    bool PreferredInterfaceConfigured,
+    string NdiToolsVersion,
+    string UtilityVersion,
+    string EulaVersion);
 public sealed record MulticastDeviceConfiguration(
     string Group,
     string? NetPrefix,

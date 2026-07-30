@@ -56,6 +56,17 @@ dotnet run --project .\Kiloview.Setup.csproj
 
 Open `http://localhost:8091`. Use **Simulation mode** for the first acceptance run.
 
+## Windows PC onboarding companion
+
+The Windows PC Onboarding Utility is maintained as a separate project. This
+repository retains only the compatible registration API, remote Windows-PC
+state, and device-monitor cards required by that companion.
+
+After it finds an active Job Configurator on TCP `8091`, the utility backs up
+the local NDI configuration, applies the selected preferred interface, Job Name
+send/receive group, and NDI Discovery Server, verifies the result, and
+registers the PC in the main device monitor.
+
 ## Create the Windows package
 
 Recommended single-file installer (self-contained, no separate .NET installation required):
