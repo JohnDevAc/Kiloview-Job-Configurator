@@ -11,6 +11,7 @@ public sealed partial class KiloLinkConnectionService(
     KiloLinkServerClient client)
 {
     private static readonly KiloLinkCredential FactoryCredential = new("admin", "Kiloview001");
+    private sealed record CredentialCandidate(KiloLinkCredential Credential, bool StoreOnSuccess);
 
     public async Task<KiloLinkConnectionStatus> ConnectAsync(KiloLinkConnectionRequest request, CancellationToken ct)
     {
@@ -21,11 +22,11 @@ public sealed partial class KiloLinkConnectionService(
         Exception? previousFailure = null;
         foreach (var candidate in candidates)
         {
-            if (IsFactoryCredential(candidate))
+            if (IsFactoryCredential(candidate.Credential))
             {
                 try
                 {
-                    _ = await client.AuthenticateAsync(request.ServerIp, request.WebPort, candidate, ct);
+                    _ = await client.AuthenticateAsync(request.ServerIp, request.WebPort, candidate.Credential, ct);
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
                 {
@@ -38,14 +39,15 @@ public sealed partial class KiloLinkConnectionService(
             KiloLinkConnectionStatus status;
             try
             {
-                status = await client.TestAsync(request.ServerIp, request.WebPort, candidate, ct);
+                status = await client.TestAsync(request.ServerIp, request.WebPort, candidate.Credential, ct);
             }
             catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException)
             {
                 previousFailure = ex;
                 continue;
             }
-            credentials.StoreVerified(request.ServerIp, candidate);
+            if (candidate.StoreOnSuccess)
+                credentials.StoreVerified(request.ServerIp, candidate.Credential);
             return status;
         }
 
@@ -82,13 +84,13 @@ public sealed partial class KiloLinkConnectionService(
         return verified with { PasswordChanged = true, UsedFactoryCredentials = true };
     }
 
-    private IEnumerable<KiloLinkCredential> CandidateCredentials(KiloLinkConnectionRequest request)
+    private IEnumerable<CredentialCandidate> CandidateCredentials(KiloLinkConnectionRequest request)
     {
         if (!string.IsNullOrEmpty(request.Password))
         {
             if (string.IsNullOrWhiteSpace(request.Username))
                 throw new ArgumentException("KiloLink server username is required when entering a password.");
-            yield return new(request.Username.Trim(), request.Password);
+            yield return new(new(request.Username.Trim(), request.Password), StoreOnSuccess: true);
             yield break;
         }
 
@@ -97,7 +99,7 @@ public sealed partial class KiloLinkConnectionService(
         if (!string.IsNullOrWhiteSpace(request.Username) &&
             !string.Equals(request.Username.Trim(), stored.Username, StringComparison.Ordinal))
             throw new ArgumentException("Enter the password for the new KiloLink username, or use the stored username shown by the application.");
-        yield return stored;
+        yield return new(stored, StoreOnSuccess: false);
     }
 
     private static bool IsFactoryCredential(KiloLinkCredential credential) =>
