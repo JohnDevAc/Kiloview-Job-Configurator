@@ -159,15 +159,63 @@ app.MapGet("/api/network/subnets", async (AppStateStore store) =>
     return Results.Ok(selected is null ? [] : new[] { NetworkAddressing.GetScanCidr(selected) });
 });
 app.MapGet("/api/network/interfaces", () => Results.Ok(NetworkAddressing.GetLocalInterfaces()));
-app.MapPut("/api/network/selection", async (NetworkAdapterSelection selection, AppStateStore store) =>
+app.MapPut("/api/network/selection", async (
+    NetworkAdapterSelection selection,
+    AppStateStore store,
+    NdiAccessManagerService accessManager,
+    EncoderThumbnailService thumbnails,
+    CancellationToken ct) =>
 {
     var selected = NetworkAddressing.ResolveLocalInterface(selection.AdapterId, selection.Address);
     if (selected is null)
         return Results.BadRequest(new { error = "Select an active IPv4 network adapter." });
+
+    var preferredInterfaceConfigured = false;
+    string? localError = null;
+    try
+    {
+        var status = await accessManager.ReadPreferredInterfaceStatusAsync(selected.Address, ct);
+        if (!status.Configured)
+        {
+            status = await accessManager.ApplyPreferredInterfaceAsync(selected.Address, ct);
+            preferredInterfaceConfigured = status.Configured;
+            try
+            {
+                await thumbnails.ReloadNdiConfigurationAsync(ct);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException)
+            {
+                localError = $"The preferred NDI interface was applied, but the in-app preview receiver could not reload: {ex.Message}";
+            }
+        }
+        else preferredInterfaceConfigured = true;
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+        throw;
+    }
+    catch (Exception ex) when (ex is InvalidOperationException
+        or IOException
+        or UnauthorizedAccessException)
+    {
+        localError = ex.Message;
+    }
+
+    var localPc = new LocalPcEndpoint(
+        "local-pc",
+        Environment.MachineName,
+        selected.Id,
+        selected.Name,
+        selected.Address,
+        selected.PrefixLength,
+        preferredInterfaceConfigured,
+        preferredInterfaceConfigured ? "applied" : "error",
+        localError);
     await store.UpdateAsync(state => state with
     {
         SelectedNetworkAdapterId = selected.Id,
-        SelectedNetworkAddress = selected.Address
+        SelectedNetworkAddress = selected.Address,
+        LocalPc = localPc
     });
     return Results.Ok(new
     {
@@ -177,7 +225,8 @@ app.MapPut("/api/network/selection", async (NetworkAdapterSelection selection, A
         selected.Address,
         selected.PrefixLength,
         selected.Type,
-        ScanCidr = NetworkAddressing.GetScanCidr(selected)
+        ScanCidr = NetworkAddressing.GetScanCidr(selected),
+        LocalPc = localPc
     });
 });
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));

@@ -88,13 +88,32 @@ public sealed class DeviceMonitor(
         {
             logger.LogWarning(ex, "Could not read local NDI Access Manager multicast status");
         }
-        await store.UpdateAsync(current => ApplyResults(current, results.Values, accessManagerResult));
+
+        LocalPcPollResult? localPcResult = null;
+        try
+        {
+            localPcResult = await PollLocalPcAsync(snapshot, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not read the preferred local NDI interface");
+        }
+        await store.UpdateAsync(current => ApplyResults(
+            current,
+            results.Values,
+            accessManagerResult,
+            localPcResult));
     }
 
     private static AppState ApplyResults(
         AppState current,
         IEnumerable<DevicePollResult> results,
-        AccessManagerPollResult? accessManagerResult)
+        AccessManagerPollResult? accessManagerResult,
+        LocalPcPollResult? localPcResult)
     {
         var devices = current.Devices.ToArray();
         var multicast = current.Multicast;
@@ -162,7 +181,17 @@ public sealed class DeviceMonitor(
             }
         }
 
-        if (!devicesChanged && !assignmentsChanged) return current;
+        var localPc = current.LocalPc;
+        var localPcChanged = false;
+        if (localPcResult is not null
+            && localPc == localPcResult.Original
+            && localPc != localPcResult.Updated)
+        {
+            localPc = localPcResult.Updated;
+            localPcChanged = true;
+        }
+
+        if (!devicesChanged && !assignmentsChanged && !localPcChanged) return current;
         if (multicast is not null && assignments is not null && assignmentsChanged)
         {
             multicast = multicast with
@@ -174,8 +203,42 @@ public sealed class DeviceMonitor(
         return current with
         {
             Devices = devicesChanged ? devices : current.Devices,
-            Multicast = multicast
+            Multicast = multicast,
+            LocalPc = localPc
         };
+    }
+
+    private async Task<LocalPcPollResult?> PollLocalPcAsync(AppState state, CancellationToken ct)
+    {
+        var localPc = state.LocalPc;
+        if (localPc is null) return null;
+
+        var selected = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress);
+        if (selected is null)
+        {
+            var unavailable = localPc with
+            {
+                PreferredInterfaceConfigured = false,
+                Status = "drifted",
+                Error = "The selected onboarding network adapter is no longer active."
+            };
+            return unavailable == localPc ? null : new(localPc, unavailable);
+        }
+
+        var status = await accessManager.ReadPreferredInterfaceStatusAsync(selected.Address, ct);
+        var updated = localPc with
+        {
+            AdapterId = selected.Id,
+            AdapterName = selected.Name,
+            Address = selected.Address,
+            PrefixLength = selected.PrefixLength,
+            PreferredInterfaceConfigured = status.Configured,
+            Status = status.Configured ? "applied" : "drifted",
+            Error = status.Configured ? null : status.Error
+        };
+        return updated == localPc ? null : new(localPc, updated);
     }
 
     private async Task<AccessManagerPollResult?> PollAccessManagerAsync(AppState state, CancellationToken ct)
@@ -190,12 +253,13 @@ public sealed class DeviceMonitor(
             local.Ttl,
             ct,
             multicast.JobName,
-            state.LastJob?.NdiDiscoveryServerIp);
+            state.LastJob?.NdiDiscoveryServerIp,
+            state.LocalPc?.Address ?? local.Address);
         var error = status.Configured
             ? null
             : status.Error ?? (status.AccessManagerRunning
                 ? "NDI Access Manager is open and its multicast settings do not match this job. Close it, then reapply multicast setup."
-                : $"NDI Access Manager multicast, NDI group, or Discovery Server settings changed. Current send range: {status.NetPrefix ?? "disabled"} / {status.Netmask ?? "not set"}, TTL {status.Ttl?.ToString() ?? "not set"}. Reapply multicast setup.");
+                : $"NDI Access Manager preferred interface, multicast, NDI group, or Discovery Server settings changed. Current send range: {status.NetPrefix ?? "disabled"} / {status.Netmask ?? "not set"}, TTL {status.Ttl?.ToString() ?? "not set"}. Reapply multicast setup.");
         var refreshed = local with
         {
             Status = status.Configured ? "applied" : "drifted",
@@ -219,4 +283,7 @@ public sealed class DeviceMonitor(
         MulticastAssignment Original,
         MulticastAssignment Updated,
         string JobName);
+    private sealed record LocalPcPollResult(
+        LocalPcEndpoint Original,
+        LocalPcEndpoint Updated);
 }

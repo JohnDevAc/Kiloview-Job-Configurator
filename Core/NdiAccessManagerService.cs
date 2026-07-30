@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 
 namespace KiloviewSetup.Core;
 
@@ -15,8 +16,21 @@ public sealed record NdiAccessManagerStatus(
     bool AccessManagerRunning = false,
     string? Error = null);
 
+public sealed record NdiPreferredInterfaceStatus(
+    bool Detected,
+    bool Configured,
+    string ConfigPath,
+    IReadOnlyList<string> AllowedAddresses,
+    bool AccessManagerRunning = false,
+    string? Error = null);
+
 public sealed class NdiAccessManagerService
 {
+    private static readonly JsonSerializerOptions IndentedJson = new()
+    {
+        WriteIndented = true,
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+    };
     private readonly string _configPath = Environment.GetEnvironmentVariable("KILOVIEW_NDI_CONFIG_PATH") is { Length: > 0 } overridePath
         ? Path.GetFullPath(overridePath)
         : Path.Combine(
@@ -43,44 +57,83 @@ public sealed class NdiAccessManagerService
         }
     });
 
+    public async Task<NdiPreferredInterfaceStatus> ApplyPreferredInterfaceAsync(
+        string address,
+        CancellationToken ct)
+    {
+        var selectedAddress = InputValidation.Ip(address, "Preferred NDI interface").ToString();
+        if (IsRunning)
+            throw new InvalidOperationException(
+                "Close NDI Access Manager before selecting the onboarding network adapter. It keeps an in-memory copy and can overwrite the preferred interface when it exits.");
+
+        var root = await ReadConfigurationForUpdateAsync("applying the preferred NDI interface", ct);
+        var adapters = Object(Object(root, "ndi"), "adapters");
+        var allowed = new JsonArray();
+        allowed.Add(selectedAddress);
+        adapters["allowed"] = allowed;
+        await WriteConfigurationAsync(root, ct);
+
+        var status = await ReadPreferredInterfaceStatusAsync(selectedAddress, ct);
+        if (!status.Configured)
+            throw new InvalidOperationException("NDI Access Manager did not retain the selected preferred interface.");
+        return status;
+    }
+
+    public async Task<NdiPreferredInterfaceStatus> ReadPreferredInterfaceStatusAsync(
+        string expectedAddress,
+        CancellationToken ct = default)
+    {
+        var selectedAddress = InputValidation.Ip(expectedAddress, "Preferred NDI interface").ToString();
+        var running = IsRunning;
+        if (!File.Exists(_configPath))
+            return new(
+                Detected,
+                false,
+                _configPath,
+                [],
+                running,
+                "The NDI Access Manager configuration file is missing.");
+
+        try
+        {
+            await using var input = File.OpenRead(_configPath);
+            var root = await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject;
+            var allowed = AllowedAddresses(root?["ndi"]?["adapters"] as JsonObject);
+            var configured = allowed.Count == 1
+                && string.Equals(allowed[0], selectedAddress, StringComparison.Ordinal);
+            return new(
+                Detected,
+                configured,
+                _configPath,
+                allowed,
+                running,
+                configured
+                    ? null
+                    : allowed.Count == 0
+                        ? "NDI Access Manager has no preferred interface selected."
+                        : $"NDI Access Manager prefers {string.Join(", ", allowed)} instead of {selectedAddress}.");
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return new(Detected, false, _configPath, [], running, ex.Message);
+        }
+    }
+
     public async Task<NdiAccessManagerStatus> ApplyAsync(
         string netPrefix,
         string netmask,
         int ttl,
         string group,
         string discoveryServer,
+        string preferredAddress,
         CancellationToken ct)
     {
+        var selectedAddress = InputValidation.Ip(preferredAddress, "Preferred NDI interface").ToString();
         if (IsRunning)
             throw new InvalidOperationException(
                 "Close NDI Access Manager before applying multicast settings. It keeps an in-memory copy and can overwrite externally applied changes when it exits.");
 
-        var directory = Path.GetDirectoryName(_configPath)
-            ?? throw new InvalidOperationException("The NDI Access Manager configuration directory could not be resolved.");
-        Directory.CreateDirectory(directory);
-
-        JsonObject root;
-        if (File.Exists(_configPath))
-        {
-            try
-            {
-                await using var input = File.OpenRead(_configPath);
-                root = await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject
-                    ?? throw new JsonException("The configuration root is not a JSON object.");
-            }
-            catch (JsonException ex)
-            {
-                throw new InvalidOperationException(
-                    $"NDI Access Manager configuration at '{_configPath}' is not valid JSON. Open Access Manager once to repair it before applying multicast settings.",
-                    ex);
-            }
-
-            File.Copy(_configPath, _configPath + ".kiloview-backup", true);
-        }
-        else
-        {
-            root = new JsonObject();
-        }
+        var root = await ReadConfigurationForUpdateAsync("applying multicast settings", ct);
 
         var ndi = Object(root, "ndi");
         var groups = Object(ndi, "groups");
@@ -90,6 +143,11 @@ public sealed class NdiAccessManagerService
         var networks = Object(ndi, "networks");
         if (!string.IsNullOrWhiteSpace(discoveryServer))
             networks["discovery"] = discoveryServer.Trim();
+
+        var adapters = Object(ndi, "adapters");
+        var allowed = new JsonArray();
+        allowed.Add(selectedAddress);
+        adapters["allowed"] = allowed;
 
         var multicast = Object(ndi, "multicast");
         var send = Object(multicast, "send");
@@ -101,24 +159,16 @@ public sealed class NdiAccessManagerService
         receive["enable"] = true;
         receive["subnets"] ??= new JsonArray();
 
-        var temporary = Path.Combine(directory, $".ndi-config.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await File.WriteAllTextAsync(
-                temporary,
-                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
-                ct);
-            await using (var verificationStream = File.OpenRead(temporary))
-                _ = await JsonNode.ParseAsync(verificationStream, cancellationToken: ct)
-                    ?? throw new InvalidOperationException("The generated NDI Access Manager configuration could not be validated.");
-            File.Move(temporary, _configPath, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-        }
+        await WriteConfigurationAsync(root, ct);
 
-        return await ReadStatusAsync(netPrefix, netmask, ttl, ct, group, discoveryServer);
+        return await ReadStatusAsync(
+            netPrefix,
+            netmask,
+            ttl,
+            ct,
+            group,
+            discoveryServer,
+            selectedAddress);
     }
 
     public async Task<NdiAccessManagerStatus> DisableMulticastAsync(CancellationToken ct)
@@ -130,43 +180,12 @@ public sealed class NdiAccessManagerService
         if (!File.Exists(_configPath))
             return new(Detected, false, false, _configPath, null, null, null);
 
-        JsonObject root;
-        try
-        {
-            await using var input = File.OpenRead(_configPath);
-            root = await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject
-                ?? throw new JsonException("The configuration root is not a JSON object.");
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidOperationException(
-                $"NDI Access Manager configuration at '{_configPath}' is not valid JSON. Open Access Manager once to repair it before reverting to unicast.",
-                ex);
-        }
+        var root = await ReadConfigurationForUpdateAsync("reverting to unicast", ct);
 
         var multicast = Object(Object(root, "ndi"), "multicast");
         Object(multicast, "send")["enable"] = false;
         Object(multicast, "recv")["enable"] = false;
-
-        var directory = Path.GetDirectoryName(_configPath)
-            ?? throw new InvalidOperationException("The NDI Access Manager configuration directory could not be resolved.");
-        File.Copy(_configPath, _configPath + ".kiloview-backup", true);
-        var temporary = Path.Combine(directory, $".ndi-config.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
-        try
-        {
-            await File.WriteAllTextAsync(
-                temporary,
-                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + Environment.NewLine,
-                ct);
-            await using (var verificationStream = File.OpenRead(temporary))
-                _ = await JsonNode.ParseAsync(verificationStream, cancellationToken: ct)
-                    ?? throw new InvalidOperationException("The generated NDI Access Manager configuration could not be validated.");
-            File.Move(temporary, _configPath, true);
-        }
-        finally
-        {
-            if (File.Exists(temporary)) File.Delete(temporary);
-        }
+        await WriteConfigurationAsync(root, ct);
 
         var status = await ReadStatusAsync(ct: ct);
         if (status.InUse)
@@ -180,7 +199,8 @@ public sealed class NdiAccessManagerService
         int? expectedTtl = null,
         CancellationToken ct = default,
         string? expectedGroup = null,
-        string? expectedDiscoveryServer = null)
+        string? expectedDiscoveryServer = null,
+        string? expectedPreferredAddress = null)
     {
         var running = IsRunning;
         if (!File.Exists(_configPath))
@@ -194,6 +214,7 @@ public sealed class NdiAccessManagerService
             var receive = root?["ndi"]?["multicast"]?["recv"] as JsonObject;
             var groups = root?["ndi"]?["groups"] as JsonObject;
             var networks = root?["ndi"]?["networks"] as JsonObject;
+            var allowed = AllowedAddresses(root?["ndi"]?["adapters"] as JsonObject);
             var enabled = Bool(send, "enable");
             var prefix = Text(send, "netprefix");
             var mask = Text(send, "netmask");
@@ -207,13 +228,73 @@ public sealed class NdiAccessManagerService
                     || ContainsValue(Text(groups, "send"), expectedGroup)
                     && ContainsValue(Text(groups, "recv"), expectedGroup))
                 && (string.IsNullOrWhiteSpace(expectedDiscoveryServer)
-                    || ContainsValue(Text(networks, "discovery"), expectedDiscoveryServer));
+                    || ContainsValue(Text(networks, "discovery"), expectedDiscoveryServer))
+                && (string.IsNullOrWhiteSpace(expectedPreferredAddress)
+                    || allowed.Count == 1
+                    && string.Equals(allowed[0], expectedPreferredAddress, StringComparison.Ordinal));
             return new(Detected, matches, matches, _configPath, prefix, mask, ttl, running);
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
             return new(Detected, false, false, _configPath, null, null, null, running, ex.Message);
         }
+    }
+
+    private async Task<JsonObject> ReadConfigurationForUpdateAsync(
+        string operation,
+        CancellationToken ct)
+    {
+        if (!File.Exists(_configPath)) return new JsonObject();
+        try
+        {
+            await using var input = File.OpenRead(_configPath);
+            return await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject
+                ?? throw new JsonException("The configuration root is not a JSON object.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"NDI Access Manager configuration at '{_configPath}' is not valid JSON. Open Access Manager once to repair it before {operation}.",
+                ex);
+        }
+    }
+
+    private async Task WriteConfigurationAsync(JsonObject root, CancellationToken ct)
+    {
+        var directory = Path.GetDirectoryName(_configPath)
+            ?? throw new InvalidOperationException("The NDI Access Manager configuration directory could not be resolved.");
+        Directory.CreateDirectory(directory);
+        if (File.Exists(_configPath))
+            File.Copy(_configPath, _configPath + ".kiloview-backup", true);
+
+        var temporary = Path.Combine(directory, $".ndi-config.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(
+                temporary,
+                root.ToJsonString(IndentedJson) + Environment.NewLine,
+                ct);
+            await using (var verificationStream = File.OpenRead(temporary))
+                _ = await JsonNode.ParseAsync(verificationStream, cancellationToken: ct)
+                    ?? throw new InvalidOperationException("The generated NDI Access Manager configuration could not be validated.");
+            File.Move(temporary, _configPath, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private static IReadOnlyList<string> AllowedAddresses(JsonObject? adapters)
+    {
+        if (adapters?["allowed"] is not JsonArray allowed) return [];
+        return allowed
+            .SelectMany(value => value is JsonValue item && item.TryGetValue<string>(out var text)
+                ? text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                : [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static JsonObject Object(JsonObject parent, string name)

@@ -3,7 +3,7 @@ import { createPreviewController } from './js/previews.js';
 import { createSystemSettingsController } from './js/system-settings.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,infrastructureRerun:false,localInterfaces:[],selectedNetwork:null,networkReady:false};
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,infrastructureRerun:false,localInterfaces:[],selectedNetwork:null,networkReady:false,localPc:null};
 const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
 function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup'&&state.networkReady)setTimeout(detectInfrastructure,0)}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
@@ -46,16 +46,23 @@ function selectedNetworkOption(){
 }
 function showSelectedNetwork(network){
   state.selectedNetwork=network;state.networkReady=!!network;
+  const localStatus=state.localPc
+    ? state.localPc.preferredInterfaceConfigured
+      ? ' · local PC onboarded in NDI Access Manager'
+      : ` · local PC needs attention: ${state.localPc.error||'preferred interface not applied'}`
+    : '';
   onboardingNetworkMeta.textContent=network
-    ? `${network.name} · ${network.address}/${network.prefixLength} · device scan ${network.scanCidr||'uses this subnet'}`
+    ? `${network.name} · ${network.address}/${network.prefixLength} · device scan ${network.scanCidr||'uses this subnet'}${localStatus}`
     : 'Choose the interface connected to the Kiloview, TeleTool, KiloLink, and NDI network.';
 }
 async function persistNetworkSelection(network=selectedNetworkOption()){
   if(!network){showSelectedNetwork(null);throw new Error('Select the network adapter connected to the devices.')}
   const selected=await api('/api/network/selection',{method:'PUT',body:JSON.stringify({adapterId:network.id,address:network.address})});
+  state.localPc=selected.localPc||null;
   const merged={...network,...selected};showSelectedNetwork(merged);return merged;
 }
 async function loadNetworkSelection(app){
+  state.localPc=app.localPc||null;
   state.localInterfaces=await api('/api/network/interfaces');
   onboardingNetworkAdapter.innerHTML='<option value="">Select an active network adapter</option>'+state.localInterfaces.map((candidate,index)=>`<option value="${index}">${esc(candidate.name)} · ${esc(candidate.address)}/${candidate.prefixLength} · ${esc(candidate.type)}</option>`).join('');
   let selected=state.localInterfaces.find(candidate=>candidate.id===app.selectedNetworkAdapterId&&candidate.address===app.selectedNetworkAddress)
@@ -68,7 +75,10 @@ async function loadNetworkSelection(app){
   }
   if(!selected&&state.localInterfaces.length===1)selected=state.localInterfaces[0];
   onboardingNetworkAdapter.value=selected?String(state.localInterfaces.indexOf(selected)):'';
-  if(selected)await persistNetworkSelection(selected);
+  if(selected){
+    await persistNetworkSelection(selected);
+    app.localPc=state.localPc;
+  }
   else{
     showSelectedNetwork(null);
     setServiceConnectionsStatus('needs-attention','Select network adapter');
@@ -77,7 +87,9 @@ async function loadNetworkSelection(app){
 }
 onboardingNetworkAdapter.onchange=async()=>{
   try{
-    await persistNetworkSelection();
+    const selected=await persistNetworkSelection();
+    if(!selected.localPc?.preferredInterfaceConfigured)
+      toast(selected.localPc?.error||'The preferred NDI interface could not be applied.',true);
     Object.assign(serviceChecks,{kiloLinkFound:false,kiloLinkAuthenticated:false,ndiDiscoveryFound:false});
     if(state.infrastructureDetecting){state.infrastructureRerun=true;return}
     await detectInfrastructure();
@@ -85,14 +97,14 @@ onboardingNetworkAdapter.onchange=async()=>{
 };
 
 async function boot(){
-  try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const app=await api('/api/state');state.devices=app.devices||[];await loadNetworkSelection(app);const localOnboarded=app.multicast?.assignments?.some(a=>a.endpointId==='local-pc');if(app.lastJob&&(state.devices.some(d=>d.isOnboarded)||localOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
+  try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const app=await api('/api/state');state.devices=app.devices||[];await loadNetworkSelection(app);const localOnboarded=app.localPc||app.multicast?.assignments?.some(a=>a.endpointId==='local-pc');if(app.lastJob&&(state.devices.some(d=>d.isOnboarded)||localOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
   catch(e){toast(`Service unavailable: ${e.message}`,true)}
 }
 
 $('#setupForm').addEventListener('submit',async e=>{
   e.preventDefault();const f=new FormData(e.currentTarget);state.settings={kiloLinkServerIp:f.get('kiloLinkServerIp').trim(),kiloLinkOnboardingCode:'',kiloLinkUsername:f.get('kiloLinkUsername').trim(),kiloLinkPassword:f.get('kiloLinkPassword'),kiloLinkPort:+f.get('kiloLinkPort'),kiloLinkWebPort:+f.get('kiloLinkWebPort'),ndiDiscoveryServerIp:f.get('ndiDiscoveryServerIp').trim(),staticStart:f.get('staticStart').trim(),staticEnd:f.get('staticEnd').trim(),subnetMask:f.get('subnetMask').trim(),gateway:f.get('gateway').trim(),dns:f.get('dns').trim(),jobName:f.get('jobName').trim(),deviceIds:[]};
   const simulation=f.get('simulation')==='on';
-  try{e.submitter.disabled=true;e.submitter.querySelector('span').textContent='Scanning…';await persistNetworkSelection();const result=await api('/api/discovery',{method:'POST',body:JSON.stringify({credentials:{username:f.get('username')||'admin',password:f.get('password')||'admin'},simulation})});state.devices=result.devices;state.discovery=result;state.skipped=new Set();state.selected=new Set(result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)).map(d=>d.id));renderDiscovery(result);show('discover')}
+  try{e.submitter.disabled=true;e.submitter.querySelector('span').textContent='Scanning…';const network=await persistNetworkSelection();if(!network.localPc?.preferredInterfaceConfigured)throw new Error(network.localPc?.error||'Apply the preferred NDI interface before continuing.');const result=await api('/api/discovery',{method:'POST',body:JSON.stringify({credentials:{username:f.get('username')||'admin',password:f.get('password')||'admin'},simulation})});state.devices=result.devices;state.discovery=result;state.skipped=new Set();state.selected=new Set(result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)).map(d=>d.id));renderDiscovery(result);show('discover')}
   catch(err){toast(err.message,true)}finally{e.submitter.disabled=false;e.submitter.querySelector('span').textContent='Scan network'}
 });
 const kiloLinkIp=$('input[name="kiloLinkServerIp"]'),kiloLinkUser=$('input[name="kiloLinkUsername"]'),kiloLinkPassword=$('input[name="kiloLinkPassword"]'),credentialHint=$('#kiloLinkCredentialHint'),storedCredential=$('#kiloLinkStoredCredential'),storedUsername=$('#kiloLinkStoredUsername'),storedPassword=$('#kiloLinkStoredPassword'),revealStoredPassword=$('#showKiloLinkStoredPassword'),storedSecurityNote=$('#kiloLinkStoredSecurityNote');
@@ -254,13 +266,14 @@ function multicastIcon(endpoint){
 }
 function renderMonitor(app){
   state.devices=app.devices||[];
+  state.localPc=app.localPc||state.localPc;
   state.multicastConfigured=app.multicast!=null;
   const revert=$('#revertMulticast'),revertSummary=$('#multicastRevertSummary');
   if(revert)revert.disabled=!state.multicastConfigured;
   if(revertSummary)revertSummary.textContent=state.multicastConfigured
     ? 'This disables multicast transport on every onboarded device and this Windows PC without changing names, groups, or discovery settings.'
     : 'No applied multicast configuration is currently stored for this job.';
-  const devices=state.devices.filter(d=>d.isOnboarded),teletools=devices.filter(isTeleTool),kiloviews=devices.filter(d=>!isTeleTool(d)),decoderDevices=kiloviews.filter(d=>d.role==='Decoder'),encoderDevices=kiloviews.filter(d=>d.role==='Encoder'),localPc=app.multicast?.assignments?.find(a=>a.endpointId==='local-pc'),localApplied=localPc?.status==='applied',online=devices.filter(d=>d.health==='Online').length+(localApplied?1:0),running=teletools.filter(d=>d.streamRunning).length,onboarded=devices.length+(localPc?1:0);
+  const devices=state.devices.filter(d=>d.isOnboarded),teletools=devices.filter(isTeleTool),kiloviews=devices.filter(d=>!isTeleTool(d)),decoderDevices=kiloviews.filter(d=>d.role==='Decoder'),encoderDevices=kiloviews.filter(d=>d.role==='Encoder'),localAssignment=app.multicast?.assignments?.find(a=>a.endpointId==='local-pc'),localPc=app.localPc||(localAssignment?{...localAssignment,preferredInterfaceConfigured:true,adapterName:'Previously selected adapter'}:null),preferredApplied=localPc?.preferredInterfaceConfigured===true,localMulticastApplied=!localAssignment||localAssignment.status==='applied',localHealthy=preferredApplied&&localMulticastApplied,online=devices.filter(d=>d.health==='Online').length+(localHealthy?1:0),running=teletools.filter(d=>d.streamRunning).length,onboarded=devices.length+(localPc?1:0);
   const activeTeleToolIds=new Set(teletools.filter(d=>d.streamRunning).map(d=>d.id));[...state.previewWarnings.keys()].filter(id=>!activeTeleToolIds.has(id)).forEach(clearPreviewWarning);
   $('#monitorTitle').textContent=app.lastJob?.jobName||'Device status';
   $('#monitorMeta').textContent=app.lastJob?`${app.lastJob.staticStart} – ${app.lastJob.staticEnd} · NDI discovery ${app.lastJob.ndiDiscoveryServerIp}`:'Health and stream state refresh every 15 seconds.';
@@ -271,12 +284,28 @@ function renderMonitor(app){
     const channel=[d.activeChannelNumber,d.activeChannelName].filter(Boolean).join(' ')||'No active TV channel',startDisabled=d.health!=='Online'||d.streamRunning||!d.teleToolControlReady,stopDisabled=d.health!=='Online'||!d.streamRunning,release=[d.firmwareVersion,d.teleToolReleaseBranch].filter(Boolean).join(' ')||'Unknown',previewError=d.streamRunning&&state.previewWarnings.has(d.id);
     return `<article class="device-card teletool-card${previewError?' preview-error':''}"><header><span class="model">TELETOOL · ENCODER</span><span class="card-indicators">${multicastIcon(d)}<i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></span></header>${encoderPreview(d)}<div class="teletool-heading"><h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}:${d.webPort||8000}</div></div><div class="teletool-status-row">${danteAudioBadge(d)}<span class="pill rf-${esc(d.rfSignalKind||'bad')}">RF ${esc(d.rfSignal||'N/A')}</span></div><dl class="teletool-details"><div><dt>TV CHANNEL</dt><dd>${esc(channel)}</dd></div><div><dt>NDI SOURCE</dt><dd>${esc(d.ndiChannelName)}</dd></div><div><dt>NDI GROUP</dt><dd>${esc(d.ndiGroup)}</dd></div><div><dt>PIPELINE</dt><dd>${esc(d.pipelineStatus||'Unknown')}</dd></div><div class="teletool-release"><dt>RELEASE</dt><dd>${esc(release)}</dd></div></dl>${d.multicastLastError?`<div class="error-text">Multicast: ${esc(d.multicastLastError)}</div>`:''}${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">TeleTool UI ↗</a><button data-teletool-action="start" data-device-id="${esc(d.id)}" ${startDisabled?'disabled':''}>Start NDI</button><button data-teletool-action="stop" data-device-id="${esc(d.id)}" ${stopDisabled?'disabled':''}>Stop NDI</button><button class="remove-teletool" data-teletool-action="remove" data-device-id="${esc(d.id)}" data-device-name="${esc(d.hostname)}">Remove from job</button></div></article>`;
   };
-  const localCard=localPc?`<article class="device-card local-pc-card ${localApplied?'':'configuration-drift'}"><header><span class="model">WINDOWS PC · NDI ACCESS MANAGER</span><span class="card-indicators">${multicastIcon(localPc)}<i class="health ${localApplied?'online':'error'}" title="${localApplied?'Applied':'Configuration changed'}"></i></span></header><h3>${esc(localPc.hostname)}</h3><div class="ip">${esc(localPc.address)}</div><div class="meta"><span class="pill ${localApplied?'encoder':'standalone'}">${localApplied?'APPLIED':'CONFIGURATION CHANGED'}</span><span class="pill">${esc(app.multicast.jobName)}</span><span class="pill ${localApplied?'multicast-pill':'standalone'}">MC ${esc(localPc.netPrefix)}/28</span><span class="pill">TTL ${esc(localPc.ttl)}</span></div>${localPc.error?`<div class="local-pc-drift"><strong>Access Manager no longer matches this job</strong><span>${esc(localPc.error)}</span></div>`:`<div class="local-pc-note">Live settings match NDI Access Manager and are checked every 15 seconds.</div>`}</article>`:'';
-  const cardDevices=devices.map(({lastSeenUtc,...device})=>device),cardSignature=JSON.stringify({devices:cardDevices,localPc,jobName:app.multicast?.jobName});
+  const localError=localPc?.error||localAssignment?.error,localCard=localPc?`<article class="device-card local-pc-card ${localHealthy?'':'configuration-drift'}"><header><span class="model">WINDOWS PC · NDI ACCESS MANAGER</span><span class="card-indicators">${multicastIcon(localAssignment||{})}<i class="health ${localHealthy?'online':'error'}" title="${localHealthy?'Applied':'Configuration changed'}"></i></span></header><h3>${esc(localPc.hostname)}</h3><div class="ip">${esc(localPc.address)}/${esc(localPc.prefixLength)}</div><div class="meta"><span class="pill ${preferredApplied?'encoder':'standalone'}">${preferredApplied?'PREFERRED NDI INTERFACE':'INTERFACE ATTENTION'}</span>${localPc.adapterName?`<span class="pill">${esc(localPc.adapterName)}</span>`:''}${localAssignment?`<span class="pill">${esc(app.multicast.jobName)}</span><span class="pill ${localMulticastApplied?'multicast-pill':'standalone'}">MC ${esc(localAssignment.netPrefix)}/28</span><span class="pill">TTL ${esc(localAssignment.ttl)}</span>`:'<span class="pill">UNICAST READY</span>'}</div>${localError?`<div class="local-pc-drift"><strong>NDI Access Manager needs attention</strong><span>${esc(localError)}</span></div>`:`<div class="local-pc-note">${localAssignment?'Preferred interface and multicast settings match NDI Access Manager.':'Preferred interface is applied. Multicast setup will update this same endpoint card.'}</div>`}${!preferredApplied?'<div class="card-actions"><button type="button" data-local-pc-action="reapply">Reapply preferred interface</button></div>':''}</article>`:'';
+  const cardDevices=devices.map(({lastSeenUtc,...device})=>device),cardSignature=JSON.stringify({devices:cardDevices,localPc,localAssignment,jobName:app.multicast?.jobName});
   if(cardSignature!==state.monitorCardSignature){
     const monitorGrid=$('#monitorGrid');releasePreviewObjectUrls(monitorGrid);monitorGrid.innerHTML=onboarded?deviceGroup('Kiloview encoders',encoderDevices,encoderDevices.map(kiloviewCard).join(''))+deviceGroup('TeleTool Encoders',teletools,teletools.map(teleToolCard).join(''))+deviceGroup('Kiloview decoders',decoderDevices,decoderDevices.map(kiloviewCard).join(''))+deviceGroup('Local NDI endpoint',localPc?[localPc]:[],localCard):'<div class="empty">No onboarded devices yet.</div>';
     state.monitorCardSignature=cardSignature;
+    const reapplyLocalPc=monitorGrid.querySelector('[data-local-pc-action="reapply"]');
+    if(reapplyLocalPc)reapplyLocalPc.onclick=()=>reapplyPreferredInterface(reapplyLocalPc);
     setTimeout(refreshEncoderPreviews,0);
+  }
+}
+async function reapplyPreferredInterface(button){
+  if(!state.selectedNetwork){toast('Return to New onboarding and select an active network adapter.',true);return}
+  try{
+    button.disabled=true;button.textContent='Applying…';
+    const selected=await persistNetworkSelection(state.selectedNetwork);
+    if(!selected.localPc?.preferredInterfaceConfigured)throw new Error(selected.localPc?.error||'NDI Access Manager did not retain the preferred interface.');
+    renderMonitor(await api('/api/state'));
+    toast('Preferred NDI interface reapplied');
+  }catch(err){
+    button.disabled=false;button.textContent='Reapply preferred interface';
+    toast(err.message,true);
+    try{renderMonitor(await api('/api/state'))}catch{}
   }
 }
 function prefixLength(mask){
@@ -311,9 +340,12 @@ function renderMulticastPlan(plan){
 async function loadMulticastSetup(regenerate=false){
   const ttl=Math.max(1,Math.min(255,Number($('#multicastTtl').value)||1)),includeLocalPc=$('#includeLocalPc').checked,apply=$('#applyMulticast');
   const networkStatus=$('#multicastNetworkAdapter');
-  networkStatus.className=`access-manager-status ${includeLocalPc&&state.selectedNetwork?'ready':'disabled-state'}`;
-  networkStatus.innerHTML=includeLocalPc&&state.selectedNetwork
-    ? `<strong>Onboarding network adapter</strong><span>${esc(state.selectedNetwork.name)} · ${esc(state.selectedNetwork.address)}/${state.selectedNetwork.prefixLength}</span>`
+  const preferredApplied=state.localPc?.preferredInterfaceConfigured===true;
+  networkStatus.className=`access-manager-status ${includeLocalPc&&state.selectedNetwork&&preferredApplied?'ready':includeLocalPc?'warning-state':'disabled-state'}`;
+  networkStatus.innerHTML=includeLocalPc&&state.selectedNetwork&&preferredApplied
+    ? `<strong>Preferred NDI interface</strong><span>${esc(state.selectedNetwork.name)} · ${esc(state.selectedNetwork.address)}/${state.selectedNetwork.prefixLength} · local PC already onboarded</span>`
+    : includeLocalPc&&state.selectedNetwork
+      ? `<strong>Preferred NDI interface needs attention</strong><span>${esc(state.localPc?.error||'Return to New onboarding and reapply the selected adapter.')}</span>`
     : includeLocalPc
       ? '<strong>Network adapter required</strong><span>Return to New onboarding and select an active adapter.</span>'
       : '<strong>Local PC excluded</strong><span>No local network adapter is required.</span>';

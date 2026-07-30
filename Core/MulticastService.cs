@@ -112,6 +112,13 @@ public sealed class MulticastService(
             throw new InvalidOperationException("The onboarded fleet changed after this multicast plan was generated. Generate a new plan.");
         if (localAssignments.Length != (plan.IncludeLocalPc ? 1 : 0))
             throw new InvalidOperationException("The local-PC selection changed after this multicast plan was generated. Generate a new plan.");
+        var selectedNetwork = plan.IncludeLocalPc
+            ? NetworkAddressing.ResolveLocalInterface(
+                state.SelectedNetworkAdapterId,
+                state.SelectedNetworkAddress)
+                ?? throw new InvalidOperationException(
+                    "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.")
+            : null;
         foreach (var assignment in deviceAssignments)
         {
             var device = devices[assignment.EndpointId];
@@ -125,7 +132,11 @@ public sealed class MulticastService(
                 throw new InvalidOperationException($"The multicast plan for {device.Hostname} no longer matches the onboarded device. Generate a new plan.");
         }
         if (localAssignments is [{ } local]
-            && (!local.Sender || !local.Receiver || local.Role != DeviceRole.Encoder || local.Ttl != plan.Ttl))
+            && (!local.Sender
+                || !local.Receiver
+                || local.Role != DeviceRole.Encoder
+                || local.Ttl != plan.Ttl
+                || !string.Equals(local.Address, selectedNetwork?.Address, StringComparison.Ordinal)))
             throw new InvalidOperationException("The local-PC multicast assignment is invalid. Generate a new plan.");
 
         var poolStart = NetworkAddressing.ToUInt(InputValidation.Ip(plan.PoolPrefix, "Multicast pool prefix"));
@@ -160,6 +171,7 @@ public sealed class MulticastService(
                             assignment.Ttl,
                             plan.JobName,
                             job.NdiDiscoveryServerIp,
+                            assignment.Address,
                             token);
                         inUse = local.InUse;
                     }

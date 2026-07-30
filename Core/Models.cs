@@ -98,7 +98,8 @@ public sealed record AppState(
     string? TeleToolManagerId = null,
     MulticastConfiguration? Multicast = null,
     string? SelectedNetworkAdapterId = null,
-    string? SelectedNetworkAddress = null)
+    string? SelectedNetworkAddress = null,
+    LocalPcEndpoint? LocalPc = null)
 {
     public static AppState Empty => new([]);
 }
@@ -163,6 +164,16 @@ public sealed record LocalNetworkInterface(
     string Address,
     int PrefixLength,
     string Type);
+public sealed record LocalPcEndpoint(
+    string EndpointId,
+    string Hostname,
+    string AdapterId,
+    string AdapterName,
+    string Address,
+    int PrefixLength,
+    bool PreferredInterfaceConfigured,
+    string Status,
+    string? Error = null);
 public sealed record MulticastDeviceConfiguration(
     string Group,
     string? NetPrefix,
