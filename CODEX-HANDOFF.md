@@ -8,18 +8,57 @@ Last updated: 30 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: remote Windows endpoint removal and manual multicast reservations
-- Current version: `0.8.0-dev.28`
+- Latest implementation: managed local NDI group replacement and high-DPI installer layout
+- Current version: `0.8.0-dev.29`
 - Release channel: `Development`
-- Previous published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.27>
-- Target release: `v0.8.0-dev.28`
-- Current active work: package and publish the remote Windows endpoint management release.
+- Previous published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.28>
+- Target release: `v0.8.0-dev.29`
+- Current active work: package and publish the managed NDI group and high-DPI installer release.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.27` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.28` has been committed, pushed, packaged, and published.
+
+## Dev.29 local NDI group replacement work
+
+- Starting a confirmed onboarding plan now replaces the previously managed
+  local NDI send and receive group with the new Job Name.
+- Unrelated Access Manager groups are preserved and duplicates are removed.
+- The selected interface and NDI Discovery Server are reapplied and the saved
+  configuration is read back before any device is modified.
+- The managed group is persisted as `ManagedLocalNdiGroup`; older state falls
+  back to the previous `LastJob.JobName` for its first upgraded onboarding.
+- Concurrent start requests are serialized so two plans cannot race while
+  changing the local NDI configuration.
+- NDI Access Manager must be closed. A write or verification failure stops
+  onboarding before device configuration begins.
+- Two isolated full simulated onboarding runs were completed successfully:
+  - `Public,OldManagedJob1,UserCustom` became
+    `Public,UserCustom,NewManagedJob1`;
+  - the next run became `Public,UserCustom,NextManagedJob2`;
+  - both runs completed all 8 steps with zero errors, removed the tracked
+    previous group, and retained the unrelated groups.
+
+## Dev.29 installer DPI work
+
+- The EULA window now uses nested table/flow layouts rather than fixed body
+  coordinates.
+- The installer is resizable and maximizable, with a DPI-scaled minimum size.
+- Before it becomes visible, the window is constrained and centred within the
+  active monitor's working area.
+- The licence text is the only area that contracts; acceptance and action
+  controls remain visible.
+- Per-Monitor V2 is declared through the supported WinForms project property
+  and reinforced at process startup.
+- Windows 10/11 compatibility is declared in the UAC manifest.
+- Validation completed:
+  - bootstrapper Release build: zero warnings/errors;
+  - `dotnet format --verify-no-changes` passed;
+  - the live EULA window reports per-monitor DPI awareness;
+  - normal `836×739` and compact `640×520` renders were inspected with no
+    clipping, overlap, or hidden controls.
 
 ## Dev.28 Windows endpoint work
 
@@ -106,16 +145,18 @@ All requested application work through `v0.8.0-dev.27` has been committed, pushe
 
 ## Validation already completed
 
-For `v0.8.0-dev.28`:
+For `v0.8.0-dev.29`:
 
 - `dotnet format --verify-no-changes` passed.
-- Release build passed with zero warnings and zero errors.
-- Frontend JavaScript syntax check passed.
-- Two isolated remote Windows endpoints received distinct `/28` sender ranges.
-- Applying the isolated plan stored both ranges as manual `reserved`
-  assignments, with zero failures.
-- Removing one isolated endpoint removed its registration and multicast
-  assignment while retaining the other endpoint.
+- Main and bootstrapper Release builds passed with zero warnings and zero
+  errors.
+- Release metadata and Git whitespace checks passed.
+- Two isolated consecutive onboardings replaced only the tracked local NDI
+  group, retained unrelated groups, and completed all eight simulated steps
+  with zero errors.
+- The live installer EULA window was verified as per-monitor DPI aware.
+- Normal `836×739` and compact `640×520` installer renders were inspected with
+  no clipping, overlap, or hidden controls.
 
 ## Release procedure
 
@@ -123,7 +164,7 @@ Development releases must:
 
 1. Be made from `development`.
 2. Increment the version in `Directory.Build.props`.
-3. Use a tag such as `v0.8.0-dev.28`.
+3. Use a tag such as `v0.8.0-dev.29`.
 4. Be published as a GitHub prerelease targeting `development`.
 5. Include:
    - `Kiloview-Job-Configurator.exe`

@@ -119,6 +119,62 @@ public sealed class NdiAccessManagerService
         }
     }
 
+    public async Task ApplyJobGroupAsync(
+        string group,
+        string? previousManagedGroup,
+        string discoveryServer,
+        string preferredAddress,
+        CancellationToken ct)
+    {
+        var nextGroup = group.Trim();
+        if (string.IsNullOrWhiteSpace(nextGroup))
+            throw new ArgumentException("The local NDI group cannot be empty.");
+        var previousGroup = string.IsNullOrWhiteSpace(previousManagedGroup)
+            ? null
+            : previousManagedGroup.Trim();
+        var selectedAddress = InputValidation.Ip(preferredAddress, "Preferred NDI interface").ToString();
+        var selectedDiscoveryServer = InputValidation.Ip(discoveryServer, "NDI Discovery Server").ToString();
+        if (IsRunning)
+            throw new InvalidOperationException(
+                "Close NDI Access Manager before starting onboarding. It keeps an in-memory copy and can restore the previous NDI group when it exits.");
+
+        var root = await ReadConfigurationForUpdateAsync("applying the local NDI job group", ct);
+        var ndi = Object(root, "ndi");
+        var groups = Object(ndi, "groups");
+        groups["send"] = ReplaceManagedGroup(Text(groups, "send"), previousGroup, nextGroup);
+        groups["recv"] = ReplaceManagedGroup(Text(groups, "recv"), previousGroup, nextGroup);
+
+        var networks = Object(ndi, "networks");
+        networks["discovery"] = selectedDiscoveryServer;
+
+        var adapters = Object(ndi, "adapters");
+        var allowed = new JsonArray();
+        allowed.Add(selectedAddress);
+        adapters["allowed"] = allowed;
+
+        await WriteConfigurationAsync(root, ct);
+
+        await using var input = File.OpenRead(_configPath);
+        var saved = await JsonNode.ParseAsync(input, cancellationToken: ct) as JsonObject
+            ?? throw new InvalidOperationException("The saved NDI Access Manager configuration could not be validated.");
+        var savedNdi = saved["ndi"] as JsonObject;
+        var savedGroups = savedNdi?["groups"] as JsonObject;
+        var savedNetworks = savedNdi?["networks"] as JsonObject;
+        var savedAllowed = AllowedAddresses(savedNdi?["adapters"] as JsonObject);
+        var previousRemoved = previousGroup is null
+            || string.Equals(previousGroup, nextGroup, StringComparison.OrdinalIgnoreCase)
+            || !ContainsValue(Text(savedGroups, "send"), previousGroup)
+            && !ContainsValue(Text(savedGroups, "recv"), previousGroup);
+        var configured = ContainsValue(Text(savedGroups, "send"), nextGroup)
+            && ContainsValue(Text(savedGroups, "recv"), nextGroup)
+            && previousRemoved
+            && string.Equals(Text(savedNetworks, "discovery"), selectedDiscoveryServer, StringComparison.Ordinal)
+            && savedAllowed.Count == 1
+            && string.Equals(savedAllowed[0], selectedAddress, StringComparison.Ordinal);
+        if (!configured)
+            throw new InvalidOperationException("NDI Access Manager did not retain the new local job group, Discovery Server, and preferred interface.");
+    }
+
     public async Task<NdiAccessManagerStatus> ApplyAsync(
         string netPrefix,
         string netmask,
@@ -310,6 +366,16 @@ public sealed class NdiAccessManagerService
         (current ?? "")
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Append(group.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+
+    private static string ReplaceManagedGroup(string? current, string? previousGroup, string nextGroup) => string.Join(
+        ",",
+        (current ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => previousGroup is null
+                || !string.Equals(value, previousGroup, StringComparison.OrdinalIgnoreCase))
+            .Append(nextGroup)
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Distinct(StringComparer.OrdinalIgnoreCase));
 

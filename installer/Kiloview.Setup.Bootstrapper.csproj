@@ -11,6 +11,7 @@
     <Description>Installer for the Kiloview job onboarding, configuration, and monitoring application.</Description>
     <ApplicationIcon>..\wwwroot\KiloviewSetup.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>

@@ -6,10 +6,19 @@ using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
 
-public sealed class OnboardingService(AppStateStore store, DeviceClientFactory factory, KiloLinkCredentialStore credentialStore, KiloLinkServerClient kiloLink, NdiTitleCardService titleCards, ILogger<OnboardingService> logger)
+public sealed class OnboardingService(
+    AppStateStore store,
+    DeviceClientFactory factory,
+    KiloLinkCredentialStore credentialStore,
+    KiloLinkServerClient kiloLink,
+    NdiTitleCardService titleCards,
+    NdiAccessManagerService accessManager,
+    EncoderThumbnailService thumbnails,
+    ILogger<OnboardingService> logger)
 {
     private static readonly TimeSpan PlanLifetime = TimeSpan.FromMinutes(15);
     private readonly object _progressGate = new();
+    private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly Dictionary<Guid, OnboardingPlan> _plans = [];
     private OnboardingProgress _progress = new(Guid.Empty, "idle", 0, 0, [], DateTimeOffset.UtcNow);
     private Task? _run;
@@ -86,6 +95,12 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
             warnings.Add($"TeleTools will remain encoders and receive hostnames, NDI channel names, Discovery Server {request.NdiDiscoveryServerIp}, and NDI group '{request.JobName}' from the TeleTool Dev API.");
             warnings.Add("TeleTools already adopted by another Fleet Manager or managing their own fleet cannot be selected.");
         }
+        var previousLocalGroup = state.ManagedLocalNdiGroup ?? state.LastJob?.JobName;
+        warnings.Add(string.IsNullOrWhiteSpace(previousLocalGroup)
+            ? $"The local PC will use '{request.JobName}' as its NDI send and receive group."
+            : string.Equals(previousLocalGroup, request.JobName, StringComparison.OrdinalIgnoreCase)
+                ? $"The local PC NDI send and receive group will remain '{request.JobName}'."
+                : $"The local PC NDI group '{previousLocalGroup}' will be replaced by '{request.JobName}' in send and receive, while unrelated groups are preserved.");
         var plan = new OnboardingPlan(
             Guid.NewGuid(),
             request,
@@ -104,25 +119,71 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
 
     public async Task<object> StartAsync(Guid planId, CancellationToken ct)
     {
-        OnboardingPlan plan;
-        lock (_progressGate)
+        await _startGate.WaitAsync(ct);
+        try
         {
-            if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
-            if (!_plans.Remove(planId, out plan!))
-                throw new InvalidOperationException("This onboarding plan is missing, expired, or has already been used. Generate a new plan.");
+            OnboardingPlan plan;
+            lock (_progressGate)
+            {
+                if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
+                if (!_plans.Remove(planId, out plan!))
+                    throw new InvalidOperationException("This onboarding plan is missing, expired, or has already been used. Generate a new plan.");
+            }
+            if (plan.ExpiresUtc <= DateTimeOffset.UtcNow)
+                throw new InvalidOperationException("This onboarding plan expired. Generate a new plan.");
+            await ValidatePlanAsync(plan, ct);
+            await ApplyLocalNdiJobAsync(plan.Settings, ct);
+            lock (_progressGate)
+            {
+                if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
+                titleCards.StopAll();
+                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 8));
+                _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
+                _run = Task.Run(() => ExecuteAsync(plan));
+                return new { _progress.RunId, _progress.Status };
+            }
         }
-        if (plan.ExpiresUtc <= DateTimeOffset.UtcNow)
-            throw new InvalidOperationException("This onboarding plan expired. Generate a new plan.");
-        await ValidatePlanAsync(plan, ct);
-        lock (_progressGate)
+        finally
         {
-            if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
-            titleCards.StopAll();
-            var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 8));
-            _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
-            _run = Task.Run(() => ExecuteAsync(plan));
-            return new { _progress.RunId, _progress.Status };
+            _startGate.Release();
         }
+    }
+
+    private async Task ApplyLocalNdiJobAsync(OnboardingRequest settings, CancellationToken ct)
+    {
+        var state = await store.ReadAsync();
+        var selected = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress)
+            ?? throw new InvalidOperationException(
+                "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.");
+        var previousGroup = state.ManagedLocalNdiGroup ?? state.LastJob?.JobName;
+        await accessManager.ApplyJobGroupAsync(
+            settings.JobName,
+            previousGroup,
+            settings.NdiDiscoveryServerIp,
+            selected.Address,
+            ct);
+        try
+        {
+            await thumbnails.ReloadNdiConfigurationAsync(ct);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        {
+            logger.LogWarning(ex, "The local NDI job group was applied, but the preview receiver could not reload");
+        }
+
+        await store.UpdateAsync(current => current with
+        {
+            ManagedLocalNdiGroup = settings.JobName,
+            LocalPc = current.LocalPc is null
+                ? null
+                : current.LocalPc with
+                {
+                    Status = "applied",
+                    Error = null
+                }
+        });
     }
 
     private async Task ValidatePlanAsync(OnboardingPlan plan, CancellationToken ct)

@@ -100,6 +100,7 @@ public sealed record AppState(
     string? SelectedNetworkAdapterId = null,
     string? SelectedNetworkAddress = null,
     LocalPcEndpoint? LocalPc = null,
+    string? ManagedLocalNdiGroup = null,
     IReadOnlyList<RemoteWindowsPcEndpoint>? RemoteWindowsPcs = null)
 {
     public static AppState Empty => new([]);

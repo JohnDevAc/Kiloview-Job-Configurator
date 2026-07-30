@@ -144,24 +144,35 @@ internal static class BootstrapperProgram
         {
             Text = $"{ProductName} Installer — License Agreement",
             StartPosition = FormStartPosition.CenterScreen,
-            ClientSize = new Size(820, 700),
+            AutoScaleDimensions = new SizeF(96F, 96F),
             AutoScaleMode = AutoScaleMode.Dpi,
+            ClientSize = new Size(820, 700),
+            MinimumSize = new Size(640, 520),
             MinimizeBox = false,
-            MaximizeBox = false,
-            FormBorderStyle = FormBorderStyle.FixedSingle,
+            MaximizeBox = true,
+            FormBorderStyle = FormBorderStyle.Sizable,
             ShowIcon = true,
             ShowInTaskbar = true,
             Icon = (Icon)applicationIcon.Clone(),
             BackColor = Color.FromArgb(245, 248, 246)
         };
 
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
         var header = new Panel
         {
-            Left = 0,
-            Top = 0,
-            Width = 820,
-            Height = 108,
-            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
             BackColor = Color.FromArgb(8, 13, 12)
         };
 
@@ -185,7 +196,8 @@ internal static class BootstrapperProgram
             Height = 33,
             Text = ProductName,
             ForeColor = Color.White,
-            Font = new Font("Segoe UI", 18, FontStyle.Bold)
+            Font = new Font("Segoe UI", 18, FontStyle.Bold),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
 
         var subtitle = new Label
@@ -197,7 +209,8 @@ internal static class BootstrapperProgram
             Height = 23,
             Text = $"WINDOWS INSTALLER  ·  VERSION {ResolveDisplayVersion()}",
             ForeColor = Color.FromArgb(184, 243, 74),
-            Font = new Font("Consolas", 9, FontStyle.Bold)
+            Font = new Font("Consolas", 9, FontStyle.Bold),
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right
         };
 
         var accent = new Panel
@@ -211,24 +224,33 @@ internal static class BootstrapperProgram
         };
         header.Controls.AddRange([logoBox, title, subtitle, accent]);
 
+        var content = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = Padding.Empty,
+            Padding = new Padding(22, 14, 22, 12)
+        };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+
         var heading = new Label
         {
+            Dock = DockStyle.Fill,
             AutoSize = false,
-            Left = 22,
-            Top = 126,
-            Width = 776,
-            Height = 47,
             Text = "License agreement\nPlease review the terms below before continuing.",
             ForeColor = Color.FromArgb(25, 35, 32),
-            Font = new Font("Segoe UI", 11, FontStyle.Bold)
+            Font = new Font("Segoe UI", 11, FontStyle.Bold),
+            Margin = Padding.Empty
         };
 
         var license = new RichTextBox
         {
-            Left = 22,
-            Top = 180,
-            Width = 776,
-            Height = 420,
+            Dock = DockStyle.Fill,
             ReadOnly = true,
             DetectUrls = true,
             Text = licenseText,
@@ -236,40 +258,44 @@ internal static class BootstrapperProgram
             BackColor = SystemColors.Window,
             BorderStyle = BorderStyle.FixedSingle,
             TabStop = true,
-            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
+            Margin = Padding.Empty
         };
 
         var acceptance = new CheckBox
         {
-            Left = 24,
-            Top = 618,
-            Width = 520,
-            Height = 30,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
             Text = "I have read and accept the license agreement.",
-            Anchor = AnchorStyles.Bottom | AnchorStyles.Left
+            AutoEllipsis = true,
+            Margin = new Padding(2, 7, 2, 5)
+        };
+
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = new Padding(0, 7, 0, 0)
         };
 
         var cancel = new Button
         {
             Text = "Decline",
-            Left = 590,
-            Top = 650,
-            Width = 98,
+            Width = 108,
             Height = 34,
             DialogResult = DialogResult.Cancel,
-            Anchor = AnchorStyles.Bottom | AnchorStyles.Right
+            Margin = new Padding(8, 0, 0, 0)
         };
 
         var install = new Button
         {
             Text = "Accept && Install",
-            Left = 696,
-            Top = 650,
-            Width = 102,
+            Width = 122,
             Height = 34,
             Enabled = false,
             DialogResult = DialogResult.OK,
-            Anchor = AnchorStyles.Bottom | AnchorStyles.Right
+            Margin = Padding.Empty
         };
 
         acceptance.CheckedChanged += (_, _) => install.Enabled = acceptance.Checked;
@@ -278,17 +304,43 @@ internal static class BootstrapperProgram
             foregroundReleaseTimer.Stop();
             dialog.TopMost = false;
         };
+        dialog.Load += (_, _) => FitToWorkingArea(dialog);
         dialog.Shown += (_, _) =>
         {
             BringInstallerToForeground(dialog);
             foregroundReleaseTimer.Start();
         };
         dialog.FormClosed += (_, _) => logoBox.Image?.Dispose();
-        dialog.Controls.AddRange([header, heading, license, acceptance, cancel, install]);
+        actions.Controls.AddRange([install, cancel]);
+        content.Controls.Add(heading, 0, 0);
+        content.Controls.Add(license, 0, 1);
+        content.Controls.Add(acceptance, 0, 2);
+        content.Controls.Add(actions, 0, 3);
+        layout.Controls.Add(header, 0, 0);
+        layout.Controls.Add(content, 0, 1);
+        dialog.Controls.Add(layout);
         dialog.AcceptButton = install;
         dialog.CancelButton = cancel;
 
         return dialog.ShowDialog() == DialogResult.OK && acceptance.Checked;
+    }
+
+    private static void FitToWorkingArea(Form dialog)
+    {
+        var workingArea = Screen.FromControl(dialog).WorkingArea;
+        const int margin = 12;
+        var availableWidth = Math.Max(1, workingArea.Width - margin * 2);
+        var availableHeight = Math.Max(1, workingArea.Height - margin * 2);
+        var width = Math.Min(dialog.Width, availableWidth);
+        var height = Math.Min(dialog.Height, availableHeight);
+
+        dialog.MinimumSize = new Size(
+            Math.Min(dialog.MinimumSize.Width, width),
+            Math.Min(dialog.MinimumSize.Height, height));
+        dialog.Size = new Size(width, height);
+        dialog.Location = new Point(
+            workingArea.Left + Math.Max(margin, (workingArea.Width - width) / 2),
+            workingArea.Top + Math.Max(margin, (workingArea.Height - height) / 2));
     }
 
     private static Icon LoadBrandIcon()
