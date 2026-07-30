@@ -191,6 +191,51 @@ app.MapPost("/api/pc-onboarding/register", async (
         jobName = state.LastJob!.JobName
     });
 });
+app.MapDelete("/api/pc-onboarding/{endpointId}", async (
+    string endpointId,
+    AppStateStore store) =>
+{
+    if (!Guid.TryParse(endpointId, out _))
+        return Results.BadRequest(new { error = "The Windows PC endpoint identifier is invalid." });
+
+    RemoteWindowsPcEndpoint? removed = null;
+    var state = await store.UpdateAsync(current =>
+    {
+        var endpoints = current.RemoteWindowsPcs ?? [];
+        removed = endpoints.FirstOrDefault(item =>
+            string.Equals(item.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase));
+        if (removed is null) return current;
+        var remainingAssignments = current.Multicast?.Assignments
+            .Where(assignment => !string.Equals(
+                assignment.EndpointId,
+                endpointId,
+                StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        return current with
+        {
+            RemoteWindowsPcs = endpoints
+                .Where(item => !string.Equals(item.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
+                .ToArray(),
+            Multicast = current.Multicast is null
+                ? null
+                : remainingAssignments is []
+                    ? null
+                : current.Multicast with
+                {
+                    Assignments = remainingAssignments!
+                }
+        };
+    });
+    if (removed is null)
+        return Results.NotFound(new { error = $"Windows endpoint '{endpointId}' was not found." });
+    return Results.Ok(new
+    {
+        status = "removed",
+        endpointId = removed.EndpointId,
+        hostname = removed.Hostname,
+        remaining = state.RemoteWindowsPcs?.Count ?? 0
+    });
+});
 app.MapGet("/api/system/info", async (GitHubUpdateService updates, AppStateStore store) =>
 {
     var state = await store.ReadAsync();

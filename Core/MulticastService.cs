@@ -24,11 +24,14 @@ public sealed class MulticastService(
         var state = await store.ReadAsync();
         var job = state.LastJob ?? throw new InvalidOperationException("Complete onboarding before configuring multicast.");
         var devices = state.Devices.Where(device => device.IsOnboarded).OrderBy(device => device.Id, StringComparer.Ordinal).ToArray();
-        if (devices.Length == 0 && !request.IncludeLocalPc)
-            throw new InvalidOperationException("There are no onboarded devices or local PC endpoint to configure.");
+        var remoteWindowsPcs = (state.RemoteWindowsPcs ?? [])
+            .OrderBy(endpoint => endpoint.EndpointId, StringComparer.Ordinal)
+            .ToArray();
+        if (devices.Length == 0 && remoteWindowsPcs.Length == 0 && !request.IncludeLocalPc)
+            throw new InvalidOperationException("There are no onboarded devices or Windows PC endpoints to configure.");
 
         var senders = devices.Where(device => device.Role == DeviceRole.Encoder).ToArray();
-        var slots = senders.Length + (request.IncludeLocalPc ? 1 : 0);
+        var slots = senders.Length + remoteWindowsPcs.Length + (request.IncludeLocalPc ? 1 : 0);
         var poolPrefixLength = PoolPrefixLength(slots);
         var poolSize = 1u << (32 - poolPrefixLength);
         var poolStart = SelectPool(job.JobName, poolSize, request.Regenerate, state.Multicast);
@@ -58,6 +61,21 @@ public sealed class MulticastService(
                 device.Role == DeviceRole.Decoder,
                 prefix,
                 sender ? AllocationNetmask : null,
+                request.Ttl));
+        }
+
+        foreach (var endpoint in remoteWindowsPcs)
+        {
+            assignments.Add(new(
+                endpoint.EndpointId,
+                endpoint.Hostname,
+                endpoint.Address,
+                "WindowsPC",
+                DeviceRole.Encoder,
+                true,
+                true,
+                NetworkAddressing.FromUInt(poolStart + slot++ * 16).ToString(),
+                AllocationNetmask,
                 request.Ttl));
         }
 
@@ -102,14 +120,29 @@ public sealed class MulticastService(
         if (plan.Ttl is < 1 or > 255) throw new ArgumentException("Multicast TTL must be between 1 and 255.");
 
         var devices = state.Devices.Where(device => device.IsOnboarded).ToDictionary(device => device.Id, StringComparer.Ordinal);
+        var remoteWindowsPcs = (state.RemoteWindowsPcs ?? [])
+            .ToDictionary(endpoint => endpoint.EndpointId, StringComparer.OrdinalIgnoreCase);
+        var remoteEndpointIds = remoteWindowsPcs.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plannedDeviceIds = plan.Assignments
-            .Where(assignment => assignment.EndpointId != "local-pc")
+            .Where(assignment => assignment.EndpointId != "local-pc"
+                && !remoteEndpointIds.Contains(assignment.EndpointId))
             .Select(assignment => assignment.EndpointId)
             .ToHashSet(StringComparer.Ordinal);
-        var deviceAssignments = plan.Assignments.Where(assignment => assignment.EndpointId != "local-pc").ToArray();
+        var deviceAssignments = plan.Assignments
+            .Where(assignment => assignment.EndpointId != "local-pc"
+                && !remoteEndpointIds.Contains(assignment.EndpointId))
+            .ToArray();
+        var remoteAssignments = plan.Assignments
+            .Where(assignment => remoteEndpointIds.Contains(assignment.EndpointId))
+            .ToArray();
         var localAssignments = plan.Assignments.Where(assignment => assignment.EndpointId == "local-pc").ToArray();
         if (deviceAssignments.Length != plannedDeviceIds.Count || !plannedDeviceIds.SetEquals(devices.Keys))
             throw new InvalidOperationException("The onboarded fleet changed after this multicast plan was generated. Generate a new plan.");
+        if (remoteAssignments.Length != remoteEndpointIds.Count
+            || !remoteAssignments.Select(assignment => assignment.EndpointId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                .SetEquals(remoteEndpointIds))
+            throw new InvalidOperationException("The onboarded Windows endpoints changed after this multicast plan was generated. Generate a new plan.");
         if (localAssignments.Length != (plan.IncludeLocalPc ? 1 : 0))
             throw new InvalidOperationException("The local-PC selection changed after this multicast plan was generated. Generate a new plan.");
         var selectedNetwork = plan.IncludeLocalPc
@@ -130,6 +163,18 @@ public sealed class MulticastService(
                 || assignment.Receiver != (device.Role == DeviceRole.Decoder)
                 || assignment.Ttl != plan.Ttl)
                 throw new InvalidOperationException($"The multicast plan for {device.Hostname} no longer matches the onboarded device. Generate a new plan.");
+        }
+        foreach (var assignment in remoteAssignments)
+        {
+            var endpoint = remoteWindowsPcs[assignment.EndpointId];
+            if (!string.Equals(assignment.Hostname, endpoint.Hostname, StringComparison.Ordinal)
+                || !string.Equals(assignment.Address, endpoint.Address, StringComparison.Ordinal)
+                || !string.Equals(assignment.Family, "WindowsPC", StringComparison.Ordinal)
+                || assignment.Role != DeviceRole.Encoder
+                || !assignment.Sender
+                || !assignment.Receiver
+                || assignment.Ttl != plan.Ttl)
+                throw new InvalidOperationException($"The multicast plan for {endpoint.Hostname} no longer matches the onboarded Windows endpoint. Generate a new plan.");
         }
         if (localAssignments is [{ } local]
             && (!local.Sender
@@ -174,6 +219,16 @@ public sealed class MulticastService(
                             assignment.Address,
                             token);
                         inUse = local.InUse;
+                    }
+                    else if (remoteEndpointIds.Contains(assignment.EndpointId))
+                    {
+                        results[assignment.EndpointId] = assignment with
+                        {
+                            Status = "reserved",
+                            InUse = false,
+                            Error = null
+                        };
+                        return;
                     }
                     else
                     {
@@ -246,7 +301,8 @@ public sealed class MulticastService(
             }).ToArray()
         });
 
-        return new(completed.Status, completedAssignments.Length - failed, failed, completed);
+        var applied = completedAssignments.Count(assignment => assignment.Status == "applied");
+        return new(completed.Status, applied, failed, completed);
     }
 
     public async Task<MulticastRevertResult> RevertToUnicastAsync(CancellationToken ct)
@@ -259,7 +315,13 @@ public sealed class MulticastService(
             .ToDictionary(device => device.Id, StringComparer.Ordinal);
         var includeLocalPc = current.IncludeLocalPc
             || current.Assignments.Any(assignment => assignment.EndpointId == "local-pc");
-        if (devices.Count == 0 && !includeLocalPc)
+        var remoteEndpointIds = (state.RemoteWindowsPcs ?? [])
+            .Select(endpoint => endpoint.EndpointId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remoteAssignments = current.Assignments
+            .Where(assignment => remoteEndpointIds.Contains(assignment.EndpointId))
+            .ToArray();
+        if (devices.Count == 0 && remoteAssignments.Length == 0 && !includeLocalPc)
             throw new InvalidOperationException("There are no multicast endpoints to revert.");
 
         await store.UpdateAsync(app => app with
@@ -268,6 +330,8 @@ public sealed class MulticastService(
         });
 
         var results = new ConcurrentDictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var assignment in remoteAssignments)
+            results[assignment.EndpointId] = null;
         await Parallel.ForEachAsync(
             devices.Values,
             new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },

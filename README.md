@@ -65,7 +65,14 @@ state, and device-monitor cards required by that companion.
 After it finds an active Job Configurator on TCP `8091`, the utility backs up
 the local NDI configuration, applies the selected preferred interface, Job Name
 send/receive group, and NDI Discovery Server, verifies the result, and
-registers the PC in the main device monitor.
+registers the PC in the main device monitor. Remote Windows endpoint cards can
+be removed from the job without changing that PC's NDI configuration. The Job
+Configurator's own local endpoint remains protected and has no removal action.
+Multicast planning reserves a unique `/28` sender range for every onboarded
+remote Windows endpoint. Because the Job Configurator cannot change NDI Access
+Manager on another PC, the endpoint card shows the prefix, netmask, and TTL for
+the user to apply manually; the reservation is not reported as remotely applied
+or verified.
 
 ## Create the Windows package
 

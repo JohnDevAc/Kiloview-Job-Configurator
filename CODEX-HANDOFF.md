@@ -8,20 +8,20 @@ Last updated: 30 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation commit: `a77b2fb` — `Add Windows PC onboarding compatibility`
-- Current version: `0.8.0-dev.27`
+- Latest implementation: remote Windows endpoint removal and manual multicast reservations
+- Current version: `0.8.0-dev.28`
 - Release channel: `Development`
-- Previous published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.26>
-- Target release: `v0.8.0-dev.27`
-- Current active work: package and publish the Windows PC Onboarding Utility compatibility release.
+- Previous published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.27>
+- Target release: `v0.8.0-dev.28`
+- Current active work: package and publish the remote Windows endpoint management release.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.26` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.27` has been committed, pushed, packaged, and published.
 
-## Uncommitted companion compatibility work
+## Dev.28 Windows endpoint work
 
 - Main application additions retained in this repository:
   - `GET /api/pc-onboarding/profile`;
@@ -30,16 +30,20 @@ All requested application work through `v0.8.0-dev.26` has been committed, pushe
   - remote Windows NDI endpoint cards in the monitor.
 - Registration rejects a reported address that does not equal the connecting
   IPv4 client and rejects an old/missing EULA acceptance.
+- Remote Windows endpoint cards can be removed from the job. The removal
+  deletes only the remote registration record and never appears on the
+  protected local-PC card.
+- Each remote Windows endpoint receives a unique reserved `/28` sender range in
+  multicast plans. Its card displays the manual NDI Access Manager values; the
+  configurator does not claim to apply or verify remote settings.
 - Validation completed:
-  - main and companion Debug builds: zero warnings/errors;
-  - both projects pass `dotnet format --verify-no-changes`;
-  - LAN-path profile and successful registration integration test passed with
-    isolated state on TCP 18091;
-  - spoofed-address and old-EULA registrations did not enter state;
-  - self-contained x64 publish and ZIP content inspection passed.
-- Still required before release:
-  - decide the next development version;
-  - commit/push/release only when John explicitly asks.
+  - main Release build: zero warnings/errors;
+  - `dotnet format --verify-no-changes` passed;
+  - frontend JavaScript syntax and Git whitespace checks passed;
+  - an isolated two-PC multicast test produced two distinct `/28` ranges;
+  - applying the test plan marked both remote ranges `reserved`, with no false
+    remote-application claim;
+  - removing a test endpoint also removed only its stored multicast assignment.
 
 ## Most recent implementation
 
@@ -102,22 +106,16 @@ All requested application work through `v0.8.0-dev.26` has been committed, pushe
 
 ## Validation already completed
 
-For `v0.8.0-dev.26`:
+For `v0.8.0-dev.28`:
 
 - `dotnet format --verify-no-changes` passed.
 - Release build passed with zero warnings and zero errors.
 - Frontend JavaScript syntax check passed.
-- Isolated application data and NDI configuration paths were used for integration tests.
-- Selecting Wi-Fi at `192.168.0.105/24`:
-  - wrote `192.168.0.105` as the sole preferred NDI interface;
-  - created the persistent local-PC endpoint.
-- Simulation onboarding completed.
-- Multicast applied to the simulated endpoint and local PC.
-- Multicast revert retained the local-PC endpoint and preferred interface.
-- Manually changing the preferred interface to a different test address was detected by the monitor.
-- Reapply restored the selected interface.
-- GitHub release metadata, target branch, prerelease flag, installer size, and SHA-256 digest were verified.
-- The installed `dev.25` updater detected `dev.26`.
+- Two isolated remote Windows endpoints received distinct `/28` sender ranges.
+- Applying the isolated plan stored both ranges as manual `reserved`
+  assignments, with zero failures.
+- Removing one isolated endpoint removed its registration and multicast
+  assignment while retaining the other endpoint.
 
 ## Release procedure
 
@@ -125,7 +123,7 @@ Development releases must:
 
 1. Be made from `development`.
 2. Increment the version in `Directory.Build.props`.
-3. Use a tag such as `v0.8.0-dev.27`.
+3. Use a tag such as `v0.8.0-dev.28`.
 4. Be published as a GitHub prerelease targeting `development`.
 5. Include:
    - `Kiloview-Job-Configurator.exe`
