@@ -6,6 +6,50 @@ namespace KiloviewSetup.Core;
 
 public static class NetworkAddressing
 {
+    public static int GetPrefixLength(uint mask)
+    {
+        var prefixLength = 0;
+        var foundZero = false;
+        for (var bit = 31; bit >= 0; bit--)
+        {
+            var set = (mask & (1u << bit)) != 0;
+            if (set && foundZero) throw new ArgumentException("Subnet mask must contain contiguous one bits.");
+            if (set) prefixLength++;
+            else foundZero = true;
+        }
+        return prefixLength;
+    }
+
+    public static bool Contains(IPAddress address, IPAddress networkAddress, int prefixLength)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetwork
+            || networkAddress.AddressFamily != AddressFamily.InterNetwork
+            || prefixLength is < 0 or > 32)
+            return false;
+        var mask = prefixLength == 0 ? 0u : uint.MaxValue << (32 - prefixLength);
+        return (ToUInt(address) & mask) == (ToUInt(networkAddress) & mask);
+    }
+
+    public static IReadOnlyList<LocalNetworkInterface> GetLocalInterfaces() => NetworkInterface.GetAllNetworkInterfaces()
+        .Where(network => network.OperationalStatus == OperationalStatus.Up
+            && network.NetworkInterfaceType is not NetworkInterfaceType.Loopback
+            && network.NetworkInterfaceType is not NetworkInterfaceType.Tunnel)
+        .SelectMany(network => network.GetIPProperties().UnicastAddresses
+            .Where(address => address.Address.AddressFamily == AddressFamily.InterNetwork
+                && !IPAddress.IsLoopback(address.Address))
+            .Select(address => new LocalNetworkInterface(
+                network.Name,
+                network.Description,
+                address.Address.ToString(),
+                address.PrefixLength,
+                network.NetworkInterfaceType.ToString())))
+        .DistinctBy(candidate => candidate.Address)
+        .OrderBy(candidate => candidate.Type == nameof(NetworkInterfaceType.Ethernet) ? 0
+            : candidate.Type == nameof(NetworkInterfaceType.Wireless80211) ? 1 : 2)
+        .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(candidate => candidate.Address, StringComparer.Ordinal)
+        .ToArray();
+
     public static int DiscoveryParallelism(int addressCount)
     {
         if (addressCount <= 0) return 1;

@@ -34,7 +34,9 @@ public sealed class MulticastService(
         var poolSize = 1u << (32 - poolPrefixLength);
         var poolStart = SelectPool(job.JobName, poolSize, request.Regenerate, state.Multicast);
         var poolMask = PrefixMask(poolPrefixLength);
-        var localAddress = ResolveLocalAddress(devices.Select(device => device.IpAddress));
+        var localAddress = request.IncludeLocalPc
+            ? ResolveLocalAddress(devices.Select(device => device.IpAddress), request.LocalAddress)
+            : "127.0.0.1";
         var assignments = new List<MulticastAssignment>();
         var slot = 0u;
 
@@ -419,22 +421,45 @@ public sealed class MulticastService(
     private static bool RangesOverlap(uint firstStart, uint firstEnd, uint secondStart, uint secondEnd) =>
         firstStart <= secondEnd && secondStart <= firstEnd;
 
-    private static string ResolveLocalAddress(IEnumerable<string> deviceAddresses)
+    private static string ResolveLocalAddress(IEnumerable<string> deviceAddresses, string? requestedAddress)
     {
+        var candidates = NetworkAddressing.GetLocalInterfaces();
+        if (candidates.Count == 0)
+            throw new InvalidOperationException("No active IPv4 network adapter is available for the local NDI endpoint.");
+        if (!string.IsNullOrWhiteSpace(requestedAddress))
+        {
+            var selected = candidates.FirstOrDefault(candidate =>
+                string.Equals(candidate.Address, requestedAddress, StringComparison.Ordinal));
+            if (selected is null)
+                throw new ArgumentException("The selected local network adapter is no longer active. Select another adapter.");
+            return selected.Address;
+        }
+
         var devices = deviceAddresses
             .Select(address => IPAddress.TryParse(address, out var ip) ? ip : null)
             .Where(ip => ip?.AddressFamily == AddressFamily.InterNetwork)
             .Cast<IPAddress>()
             .ToArray();
-        var local = Dns.GetHostEntry(Dns.GetHostName()).AddressList
-            .Where(ip => ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
-            .ToArray();
-        foreach (var device in devices)
+        var ranked = candidates.Select(candidate => new
         {
-            var prefix = NetworkAddressing.ToUInt(device) & 0xffffff00;
-            var match = local.FirstOrDefault(candidate => (NetworkAddressing.ToUInt(candidate) & 0xffffff00) == prefix);
-            if (match is not null) return match.ToString();
+            Candidate = candidate,
+            Matches = devices.Count(device => NetworkAddressing.Contains(
+                device,
+                IPAddress.Parse(candidate.Address),
+                candidate.PrefixLength))
+        })
+            .OrderByDescending(candidate => candidate.Matches)
+            .ToArray();
+        var bestMatches = ranked[0].Matches;
+        var best = ranked.Where(candidate => candidate.Matches == bestMatches).ToArray();
+        if (best.Length == 1 && (bestMatches > 0 || candidates.Count == 1))
+            return best[0].Candidate.Address;
+        if (bestMatches > 0)
+        {
+            throw new InvalidOperationException(
+                $"Multiple active adapters match {bestMatches} onboarded device address(es). Select the adapter to use for the local NDI endpoint.");
         }
-        return local.FirstOrDefault()?.ToString() ?? "127.0.0.1";
+        throw new InvalidOperationException(
+            "No adapter automatically matches the onboarded device subnets. Select the adapter to use for the local NDI endpoint.");
     }
 }

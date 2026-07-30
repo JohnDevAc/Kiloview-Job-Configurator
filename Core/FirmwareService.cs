@@ -1,4 +1,6 @@
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Net.Http.Headers;
 
 namespace KiloviewSetup.Core;
 
@@ -7,10 +9,11 @@ namespace KiloviewSetup.Core;
 /// </summary>
 public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore credentials, KiloLinkServerClient kiloLink, IWebHostEnvironment environment)
 {
-    private const long MaximumFirmwareBytes = 1024L * 1024 * 1024;
+    public const long MaximumFirmwareBytes = 1024L * 1024 * 1024;
+    public const long MaximumRequestBytes = MaximumFirmwareBytes * 2 + 1024L * 1024;
     private readonly string _directory = GetFirmwareDirectory(environment);
 
-    public async Task<FirmwareJob> StageAsync(IFormFile? n6Firmware, IFormFile? n60Firmware, CancellationToken ct)
+    public async Task<FirmwareJob> StageMultipartAsync(HttpRequest request, CancellationToken ct)
     {
         var state = await store.ReadAsync();
         var devices = state.Devices.Where(d => d.IsOnboarded && d.IsKiloview()).ToArray();
@@ -18,17 +21,59 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
 
         var needsN6 = devices.Any(d => IsModel(d, "N6"));
         var needsN60 = devices.Any(d => IsModel(d, "N60"));
-        if (needsN6 && n6Firmware is null) throw new ArgumentException("Select the latest N6 firmware package.");
-        if (needsN60 && n60Firmware is null) throw new ArgumentException("Select the latest N60 firmware package.");
+        if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var contentType)
+            || !string.Equals(contentType.MediaType.Value, "multipart/form-data", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Firmware staging requires a multipart form upload.");
+        var boundary = HeaderUtilities.RemoveQuotes(contentType.Boundary).Value;
+        if (string.IsNullOrWhiteSpace(boundary))
+            throw new ArgumentException("The firmware upload is missing its multipart boundary.");
 
         Directory.CreateDirectory(_directory);
         var packages = new List<FirmwarePackage>();
-        if (n6Firmware is not null) packages.Add(await SaveAsync("N6", n6Firmware, ct));
-        if (n60Firmware is not null) packages.Add(await SaveAsync("N60", n60Firmware, ct));
-        var job = new FirmwareJob("staged", packages, DateTimeOffset.UtcNow,
-            Message: $"{packages.Count} model-specific package(s) staged locally.");
-        await store.UpdateAsync(s => s with { FirmwareJob = job });
-        return job;
+        try
+        {
+            var reader = new MultipartReader(boundary, request.Body)
+            {
+                BodyLengthLimit = MaximumFirmwareBytes
+            };
+            while (await reader.ReadNextSectionAsync(ct) is { } section)
+            {
+                if (!ContentDispositionHeaderValue.TryParse(section.ContentDisposition, out var disposition)
+                    || !string.Equals(disposition.DispositionType.Value, "form-data", StringComparison.OrdinalIgnoreCase)
+                    || disposition.FileName.Value is null && disposition.FileNameStar.Value is null)
+                    continue;
+                var fieldName = HeaderUtilities.RemoveQuotes(disposition.Name).Value;
+                var model = fieldName switch
+                {
+                    "n6Firmware" => "N6",
+                    "n60Firmware" => "N60",
+                    _ => throw new ArgumentException($"Unexpected firmware upload field '{fieldName}'.")
+                };
+                if (packages.Any(package => string.Equals(package.Model, model, StringComparison.OrdinalIgnoreCase)))
+                    throw new ArgumentException($"Only one {model} firmware package can be staged at a time.");
+                var fileName = HeaderUtilities.RemoveQuotes(disposition.FileNameStar.HasValue
+                    ? disposition.FileNameStar
+                    : disposition.FileName).Value;
+                packages.Add(await SaveStreamAsync(model, fileName ?? string.Empty, section.Body, ct));
+            }
+
+            if (needsN6 && packages.All(package => !string.Equals(package.Model, "N6", StringComparison.OrdinalIgnoreCase)))
+                throw new ArgumentException("Select the latest N6 firmware package.");
+            if (needsN60 && packages.All(package => !string.Equals(package.Model, "N60", StringComparison.OrdinalIgnoreCase)))
+                throw new ArgumentException("Select the latest N60 firmware package.");
+            var job = new FirmwareJob("staged", packages, DateTimeOffset.UtcNow,
+                Message: $"{packages.Count} model-specific package(s) staged locally.");
+            await store.UpdateAsync(s => s with { FirmwareJob = job });
+            return job;
+        }
+        catch
+        {
+            foreach (var package in packages)
+                try { File.Delete(package.LocalPath); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     public async Task<FirmwareStartResult> StartAsync(CancellationToken ct)
@@ -79,22 +124,45 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
         }
     }
 
-    private async Task<FirmwarePackage> SaveAsync(string model, IFormFile file, CancellationToken ct)
+    private async Task<FirmwarePackage> SaveStreamAsync(string model, string uploadedFileName, Stream input, CancellationToken ct)
     {
-        if (file.Length <= 0) throw new ArgumentException($"The {model} firmware package is empty.");
-        if (file.Length > MaximumFirmwareBytes) throw new ArgumentException($"The {model} firmware package exceeds the 1 GB safety limit.");
-        if (!string.Equals(Path.GetExtension(file.FileName), ".bin", StringComparison.OrdinalIgnoreCase))
+        var safeName = Path.GetFileName(uploadedFileName);
+        if (!string.Equals(Path.GetExtension(safeName), ".bin", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException($"The {model} firmware package must be a .bin file.");
 
-        var safeName = Path.GetFileName(file.FileName);
         var modelDirectory = Path.Combine(_directory, model);
         Directory.CreateDirectory(modelDirectory);
-        var destination = Path.Combine(modelDirectory, $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{safeName}");
-        await using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 128, true))
-            await file.CopyToAsync(output, ct);
-        await using var input = File.OpenRead(destination);
-        var hash = Convert.ToHexString(await SHA256.HashDataAsync(input, ct)).ToLowerInvariant();
-        return new(model, safeName, destination, file.Length, hash);
+        var destination = Path.Combine(modelDirectory, $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}-{safeName}");
+        var temporary = destination + ".uploading";
+        long length = 0;
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        try
+        {
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 128, true))
+            {
+                var buffer = new byte[1024 * 128];
+                int read;
+                while ((read = await input.ReadAsync(buffer.AsMemory(), ct)) > 0)
+                {
+                    length += read;
+                    if (length > MaximumFirmwareBytes)
+                        throw new ArgumentException($"The {model} firmware package exceeds the 1 GB safety limit.");
+                    hash.AppendData(buffer, 0, read);
+                    await output.WriteAsync(buffer.AsMemory(0, read), ct);
+                }
+                await output.FlushAsync(ct);
+            }
+            if (length == 0) throw new ArgumentException($"The {model} firmware package is empty.");
+            File.Move(temporary, destination);
+            return new(model, safeName, destination, length, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
+        }
+        catch
+        {
+            try { File.Delete(temporary); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            throw;
+        }
     }
 
     private static void ValidateCoverage(IEnumerable<ManagedDevice> devices, IReadOnlyList<FirmwarePackage> packages)

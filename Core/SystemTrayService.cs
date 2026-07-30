@@ -10,10 +10,13 @@ public sealed class SystemTrayService(
     ILogger<SystemTrayService> logger) : IHostedService, IDisposable
 {
     private readonly ManualResetEventSlim _initialized = new(false);
+    private readonly object _trayGate = new();
     private Thread? _trayThread;
+    private System.Threading.Timer? _retryTimer;
     private SynchronizationContext? _traySynchronizationContext;
     private Exception? _startupException;
     private int _restartRequested;
+    private int _stopping;
 
     public bool RestartRequested => Volatile.Read(ref _restartRequested) == 1;
 
@@ -21,27 +24,70 @@ public sealed class SystemTrayService(
     {
         if (!OperatingSystem.IsWindows()) return Task.CompletedTask;
 
-        _trayThread = new Thread(RunTray)
+        StartTrayThread();
+        try
         {
-            IsBackground = true,
-            Name = "Kiloview Job Configurator tray"
-        };
-        _trayThread.SetApartmentState(ApartmentState.STA);
-        _trayThread.Start();
-
-        if (!_initialized.Wait(TimeSpan.FromSeconds(5), cancellationToken))
-            throw new InvalidOperationException("The Kiloview Job Configurator tray icon did not start.");
+            if (!_initialized.Wait(TimeSpan.FromSeconds(5), cancellationToken))
+            {
+                logger.LogWarning("The tray icon did not initialize within five seconds. The web service will remain available while tray startup is retried.");
+                ScheduleRetry();
+                return Task.CompletedTask;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return Task.CompletedTask;
+        }
         if (_startupException is not null)
-            throw new InvalidOperationException("The Kiloview Job Configurator tray icon could not start.", _startupException);
+        {
+            logger.LogWarning(_startupException, "The tray icon could not start. The web service will remain available while tray startup is retried.");
+            ScheduleRetry();
+        }
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
+        Interlocked.Exchange(ref _stopping, 1);
+        _retryTimer?.Dispose();
         _traySynchronizationContext?.Post(_ => Application.ExitThread(), null);
         if (_trayThread is { IsAlive: true } && !_trayThread.Join(TimeSpan.FromSeconds(5)))
             logger.LogWarning("The system tray thread did not stop within five seconds.");
         return Task.CompletedTask;
+    }
+
+    private void StartTrayThread()
+    {
+        lock (_trayGate)
+        {
+            if (Volatile.Read(ref _stopping) == 1 || _trayThread is { IsAlive: true }) return;
+            _initialized.Reset();
+            _startupException = null;
+            _traySynchronizationContext = null;
+            _trayThread = new Thread(RunTray)
+            {
+                IsBackground = true,
+                Name = "Kiloview Job Configurator tray"
+            };
+            _trayThread.SetApartmentState(ApartmentState.STA);
+            _trayThread.Start();
+        }
+    }
+
+    private void ScheduleRetry()
+    {
+        if (Volatile.Read(ref _stopping) == 1) return;
+        _retryTimer ??= new System.Threading.Timer(_ =>
+        {
+            if (Volatile.Read(ref _stopping) == 1) return;
+            if (_initialized.IsSet && _startupException is null)
+            {
+                _retryTimer?.Dispose();
+                _retryTimer = null;
+                return;
+            }
+            StartTrayThread();
+        }, null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
     }
 
     private void RunTray()
@@ -79,6 +125,8 @@ public sealed class SystemTrayService(
             notifyIcon.DoubleClick += (_, _) => OpenWebUi();
 
             _initialized.Set();
+            _retryTimer?.Dispose();
+            _retryTimer = null;
             Application.Run();
             notifyIcon.Visible = false;
         }
@@ -124,6 +172,8 @@ public sealed class SystemTrayService(
 
     public void Dispose()
     {
-        _initialized.Dispose();
+        Interlocked.Exchange(ref _stopping, 1);
+        _retryTimer?.Dispose();
+        if (_trayThread is not { IsAlive: true }) _initialized.Dispose();
     }
 }

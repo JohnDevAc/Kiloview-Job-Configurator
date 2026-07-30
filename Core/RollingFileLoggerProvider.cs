@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
 namespace KiloviewSetup.Core;
@@ -13,30 +14,62 @@ public sealed class RollingFileLoggerProvider : ILoggerProvider
     private int _sequence;
     private long _writtenBytes;
     private bool _disposed;
+    private int _disabled;
 
     public RollingFileLoggerProvider(string directory)
     {
         _directory = directory;
-        Directory.CreateDirectory(_directory);
+        try { Directory.CreateDirectory(_directory); }
+        catch (Exception exception) when (IsFileFailure(exception))
+        {
+            Interlocked.Exchange(ref _disabled, 1);
+            Debug.WriteLine($"Kiloview file logging disabled: {exception.Message}");
+        }
     }
 
     public ILogger CreateLogger(string categoryName) => new RollingFileLogger(this, categoryName);
 
     internal void Write(string category, LogLevel level, string message, Exception? exception)
     {
+        if (Volatile.Read(ref _disabled) == 1) return;
         var timestamp = DateTimeOffset.Now;
         var line = $"{timestamp:O} [{level}] {category}: {message}";
         if (exception is not null) line += Environment.NewLine + exception;
 
         lock (_gate)
         {
-            if (_disposed) return;
-            EnsureWriter(timestamp);
-            _writer!.WriteLine(line);
-            _writer.Flush();
-            _writtenBytes += System.Text.Encoding.UTF8.GetByteCount(line + Environment.NewLine);
+            if (_disposed || Volatile.Read(ref _disabled) == 1) return;
+            try
+            {
+                EnsureWriter(timestamp);
+                _writer!.WriteLine(line);
+                _writer.Flush();
+                _writtenBytes += System.Text.Encoding.UTF8.GetByteCount(line + Environment.NewLine);
+            }
+            catch (Exception writeException) when (IsFileFailure(writeException))
+            {
+                Disable(writeException);
+            }
         }
     }
+
+    private void Disable(Exception exception)
+    {
+        Interlocked.Exchange(ref _disabled, 1);
+        try { _writer?.Dispose(); }
+        catch (Exception disposeException) when (IsFileFailure(disposeException))
+        {
+            Debug.WriteLine($"Kiloview log writer cleanup failed: {disposeException.Message}");
+        }
+        _writer = null;
+        Debug.WriteLine($"Kiloview file logging disabled: {exception.Message}");
+    }
+
+    private static bool IsFileFailure(Exception exception) => exception is
+        IOException or
+        UnauthorizedAccessException or
+        System.Security.SecurityException or
+        NotSupportedException;
 
     private void EnsureWriter(DateTimeOffset timestamp)
     {
@@ -83,7 +116,11 @@ public sealed class RollingFileLoggerProvider : ILoggerProvider
         {
             if (_disposed) return;
             _disposed = true;
-            _writer?.Dispose();
+            try { _writer?.Dispose(); }
+            catch (Exception exception) when (IsFileFailure(exception))
+            {
+                Debug.WriteLine($"Kiloview log writer cleanup failed: {exception.Message}");
+            }
             _writer = null;
         }
     }

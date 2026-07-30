@@ -133,7 +133,14 @@ public sealed record DevicePlan(
     DeviceRole Role,
     bool ExistingStaticDevice = false,
     DeviceFamily Family = DeviceFamily.N6);
-public sealed record OnboardingPlan(OnboardingRequest Settings, IReadOnlyList<DevicePlan> Devices, IReadOnlyList<string> OccupiedAddresses, IReadOnlyList<string> Warnings);
+public sealed record OnboardingPlan(
+    Guid PlanId,
+    OnboardingRequest Settings,
+    IReadOnlyList<DevicePlan> Devices,
+    IReadOnlyList<string> OccupiedAddresses,
+    IReadOnlyList<string> Warnings,
+    DateTimeOffset ExpiresUtc);
+public sealed record OnboardingRunRequest(Guid PlanId);
 
 public sealed record OnboardingStep(string DeviceId, string IpAddress, string Step, string Status, string? Message = null);
 public sealed record OnboardingProgress(Guid RunId, string Status, int Completed, int Total, IReadOnlyList<OnboardingStep> Steps, DateTimeOffset StartedUtc, DateTimeOffset? FinishedUtc = null);
@@ -143,7 +150,17 @@ public sealed record TeleToolRemovalResult(string Id, string Hostname, int Manag
 public sealed record IdentityUpdate(string Hostname, string NdiChannelName);
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
 public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
-public sealed record MulticastSetupRequest(bool IncludeLocalPc = true, int Ttl = 1, bool Regenerate = false);
+public sealed record MulticastSetupRequest(
+    bool IncludeLocalPc = true,
+    int Ttl = 1,
+    bool Regenerate = false,
+    string? LocalAddress = null);
+public sealed record LocalNetworkInterface(
+    string Name,
+    string Description,
+    string Address,
+    int PrefixLength,
+    string Type);
 public sealed record MulticastDeviceConfiguration(
     string Group,
     string? NetPrefix,
@@ -204,15 +221,37 @@ public static class InputValidation
     {
         var start = Ip(request.StaticStart, "Static range start");
         var end = Ip(request.StaticEnd, "Static range end");
+        var subnetMask = Ip(request.SubnetMask, "Subnet mask");
         if (requireKiloLink) Ip(request.KiloLinkServerIp, "KiloLink Server IP");
         Ip(request.NdiDiscoveryServerIp, "NDI Discovery Server IP");
-        Ip(request.SubnetMask, "Subnet mask");
-        if (!string.IsNullOrWhiteSpace(request.Gateway)) Ip(request.Gateway, "Gateway");
+        var gateway = string.IsNullOrWhiteSpace(request.Gateway) ? null : Ip(request.Gateway, "Gateway");
         Ip(request.Dns, "DNS server");
         if (NetworkAddressing.ToUInt(start) > NetworkAddressing.ToUInt(end))
             throw new ArgumentException("Static range start must be before or equal to its end.");
         if (NetworkAddressing.ToUInt(end) - NetworkAddressing.ToUInt(start) > 4095)
             throw new ArgumentException("The static range is limited to 4096 addresses per onboarding run.");
+        var mask = NetworkAddressing.ToUInt(subnetMask);
+        var prefixLength = NetworkAddressing.GetPrefixLength(mask);
+        if (prefixLength is < 1 or > 30)
+            throw new ArgumentException("Subnet mask must define a usable IPv4 subnet between /1 and /30.");
+        var network = NetworkAddressing.ToUInt(start) & mask;
+        var broadcast = network | ~mask;
+        var startNumber = NetworkAddressing.ToUInt(start);
+        var endNumber = NetworkAddressing.ToUInt(end);
+        if ((endNumber & mask) != network)
+            throw new ArgumentException("Static range start and end must be in the same subnet.");
+        if (startNumber == network || startNumber == broadcast || endNumber == network || endNumber == broadcast)
+            throw new ArgumentException("Static range cannot include the subnet network or broadcast address.");
+        if (gateway is not null)
+        {
+            var gatewayNumber = NetworkAddressing.ToUInt(gateway);
+            if ((gatewayNumber & mask) != network)
+                throw new ArgumentException("Gateway must be in the same subnet as the static range.");
+            if (gatewayNumber == network || gatewayNumber == broadcast)
+                throw new ArgumentException("Gateway cannot be the subnet network or broadcast address.");
+            if (gatewayNumber >= startNumber && gatewayNumber <= endNumber)
+                throw new ArgumentException("Gateway cannot be inside the device static range.");
+        }
         if (string.IsNullOrWhiteSpace(request.JobName)) throw new ArgumentException("Job Name is required.");
         if (request.JobName.Contains(',')) throw new ArgumentException("Job Name cannot contain a comma because it is also used as an NDI group name.");
         if (requireKiloLink && request.KiloLinkPort is < 1 or > 65535) throw new ArgumentException("KiloLink port is invalid.");

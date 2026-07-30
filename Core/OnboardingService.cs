@@ -8,7 +8,9 @@ namespace KiloviewSetup.Core;
 
 public sealed class OnboardingService(AppStateStore store, DeviceClientFactory factory, KiloLinkCredentialStore credentialStore, KiloLinkServerClient kiloLink, NdiTitleCardService titleCards, ILogger<OnboardingService> logger)
 {
+    private static readonly TimeSpan PlanLifetime = TimeSpan.FromMinutes(15);
     private readonly object _progressGate = new();
+    private readonly Dictionary<Guid, OnboardingPlan> _plans = [];
     private OnboardingProgress _progress = new(Guid.Empty, "idle", 0, 0, [], DateTimeOffset.UtcNow);
     private Task? _run;
     public OnboardingProgress Progress { get { lock (_progressGate) return _progress; } }
@@ -31,6 +33,10 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
         else request = request with { KiloLinkPassword = "" };
 
         var range = NetworkAddressing.Range(request.StaticStart, request.StaticEnd).Select(x => x.ToString()).ToArray();
+        var devicesAlreadyInRange = selected.Where(device => range.Contains(device.IpAddress)).ToArray();
+        if (devicesAlreadyInRange.Length > 0)
+            throw new ArgumentException(
+                $"Devices already inside the static range are left unchanged. Deselect: {string.Join(", ", devicesAlreadyInRange.Select(device => device.Hostname))}.");
         var occupied = new ConcurrentDictionary<string, byte>();
         foreach (var device in state.Devices.Where(d => d.IsStatic || d.IsOnboarded))
             if (range.Contains(device.IpAddress)) occupied.TryAdd(device.IpAddress, 0);
@@ -57,11 +63,6 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
             var hostname = device.IsTeleTool()
                 ? $"{SanitizeName(request.JobName)}-TT-{++teleToolNumber:000}"
                 : $"{SanitizeName(request.JobName)}-KV-{++kiloviewNumber:000}";
-            if (device.IsStatic && range.Contains(device.IpAddress))
-            {
-                plans.Add(new(device.Id, device.IpAddress, device.IpAddress, hostname, device.IsTeleTool() ? DeviceRole.Encoder : device.Role, true, device.Family));
-                continue;
-            }
             while (next <= end && occupied.ContainsKey(NetworkAddressing.FromUInt(next).ToString())) next++;
             if (next > end) throw new ArgumentException("There are not enough unused addresses above the previously onboarded devices in the static range.");
             var target = NetworkAddressing.FromUInt(next++).ToString();
@@ -85,11 +86,34 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
             warnings.Add($"TeleTools will remain encoders and receive hostnames, NDI channel names, Discovery Server {request.NdiDiscoveryServerIp}, and NDI group '{request.JobName}' from the TeleTool Dev API.");
             warnings.Add("TeleTools already adopted by another Fleet Manager or managing their own fleet cannot be selected.");
         }
-        return new(request, plans, occupied.Keys.OrderBy(x => NetworkAddressing.ToUInt(IPAddress.Parse(x))).ToArray(), warnings);
+        var plan = new OnboardingPlan(
+            Guid.NewGuid(),
+            request,
+            plans,
+            occupied.Keys.OrderBy(x => NetworkAddressing.ToUInt(IPAddress.Parse(x))).ToArray(),
+            warnings,
+            DateTimeOffset.UtcNow.Add(PlanLifetime));
+        lock (_progressGate)
+        {
+            foreach (var expired in _plans.Where(candidate => candidate.Value.ExpiresUtc <= DateTimeOffset.UtcNow).Select(candidate => candidate.Key).ToArray())
+                _plans.Remove(expired);
+            _plans[plan.PlanId] = plan;
+        }
+        return plan;
     }
 
-    public object Start(OnboardingPlan plan)
+    public async Task<object> StartAsync(Guid planId, CancellationToken ct)
     {
+        OnboardingPlan plan;
+        lock (_progressGate)
+        {
+            if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
+            if (!_plans.Remove(planId, out plan!))
+                throw new InvalidOperationException("This onboarding plan is missing, expired, or has already been used. Generate a new plan.");
+        }
+        if (plan.ExpiresUtc <= DateTimeOffset.UtcNow)
+            throw new InvalidOperationException("This onboarding plan expired. Generate a new plan.");
+        await ValidatePlanAsync(plan, ct);
         lock (_progressGate)
         {
             if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
@@ -99,6 +123,50 @@ public sealed class OnboardingService(AppStateStore store, DeviceClientFactory f
             _run = Task.Run(() => ExecuteAsync(plan));
             return new { _progress.RunId, _progress.Status };
         }
+    }
+
+    private async Task ValidatePlanAsync(OnboardingPlan plan, CancellationToken ct)
+    {
+        var state = await store.ReadAsync();
+        var requiresKiloLink = plan.Devices.Any(item => item.Family is DeviceFamily.N6 or DeviceFamily.N60);
+        InputValidation.Validate(plan.Settings, requiresKiloLink);
+        var range = NetworkAddressing.Range(plan.Settings.StaticStart, plan.Settings.StaticEnd)
+            .Select(address => address.ToString())
+            .ToHashSet(StringComparer.Ordinal);
+        var targetAddresses = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in plan.Devices)
+        {
+            var device = state.Devices.FirstOrDefault(candidate => candidate.Id == item.DeviceId)
+                ?? throw new InvalidOperationException($"Device '{item.DeviceId}' is no longer available. Generate a new plan.");
+            if (!device.CanOnboard)
+                throw new InvalidOperationException(device.ManagementMessage ?? $"Device '{device.Hostname}' can no longer be onboarded.");
+            if (device.Family != item.Family || !string.Equals(device.IpAddress, item.CurrentIp, StringComparison.Ordinal))
+                throw new InvalidOperationException($"Device '{device.Hostname}' changed after the plan was generated. Generate a new plan.");
+            if (range.Contains(device.IpAddress))
+                throw new InvalidOperationException($"Device '{device.Hostname}' is already inside the static range and will not be changed.");
+            if (!range.Contains(item.TargetIp) || !targetAddresses.Add(item.TargetIp))
+                throw new InvalidOperationException("The onboarding address plan is no longer valid. Generate a new plan.");
+        }
+
+        var selectedIds = plan.Devices.Select(item => item.DeviceId).ToHashSet(StringComparer.Ordinal);
+        var newlyOccupied = state.Devices
+            .Where(device => !selectedIds.Contains(device.Id) && targetAddresses.Contains(device.IpAddress))
+            .Select(device => device.IpAddress)
+            .ToArray();
+        if (newlyOccupied.Length > 0)
+            throw new InvalidOperationException($"A planned address is now in use ({string.Join(", ", newlyOccupied)}). Generate a new plan.");
+
+        var responsiveTargets = new ConcurrentBag<string>();
+        await Parallel.ForEachAsync(targetAddresses, new ParallelOptions
+        {
+            MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(targetAddresses.Count),
+            CancellationToken = ct
+        }, async (address, token) =>
+        {
+            if (await AddressRespondsAsync(address, token)) responsiveTargets.Add(address);
+        });
+        if (!responsiveTargets.IsEmpty)
+            throw new InvalidOperationException($"A planned address is now responding ({string.Join(", ", responsiveTargets.Order())}). Generate a new plan.");
     }
 
     private async Task ExecuteAsync(OnboardingPlan plan)

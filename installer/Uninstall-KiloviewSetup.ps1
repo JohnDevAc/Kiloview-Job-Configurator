@@ -33,8 +33,30 @@ $startMenus = @(
 )
 $scheduledTaskName = 'Kiloview Job Configurator Service'
 $firewallRuleName = 'Kiloview Job Configurator LAN'
+$installedExe = Join-Path $installRoot 'KiloviewSetup.exe'
 
-Get-Process KiloviewSetup -ErrorAction SilentlyContinue | Stop-Process -Force
+$runningProcesses = @(Get-Process KiloviewSetup -ErrorAction SilentlyContinue | Where-Object {
+    try {
+        [string]::Equals(
+            [IO.Path]::GetFullPath($_.Path),
+            [IO.Path]::GetFullPath($installedExe),
+            [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch { $false }
+})
+foreach ($runningProcess in $runningProcesses) {
+    $runningProcess | Stop-Process -Force
+}
+foreach ($runningProcess in $runningProcesses) {
+    try {
+        if (-not $runningProcess.WaitForExit(15000)) {
+            throw "Kiloview Job Configurator process $($runningProcess.Id) did not stop within 15 seconds."
+        }
+    }
+    finally {
+        $runningProcess.Dispose()
+    }
+}
 if ($PSCmdlet.ShouldProcess($installRoot, 'Remove Kiloview Job Configurator application files')) {
     $scheduledTask = Get-ScheduledTask -TaskName $scheduledTaskName -ErrorAction SilentlyContinue
     if ($scheduledTask) {

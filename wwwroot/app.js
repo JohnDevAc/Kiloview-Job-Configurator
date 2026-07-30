@@ -3,7 +3,7 @@ import { createPreviewController } from './js/previews.js';
 import { createSystemSettingsController } from './js/system-settings.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false};
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,localInterfaces:[]};
 const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
 function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup')setTimeout(detectInfrastructure,0)}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
@@ -177,7 +177,7 @@ function setDiscoveryDecision(id,onboard){if(onboard){state.selected.add(id);sta
 function updateSelected(){$('#selectedCount').textContent=`${state.selected.size} onboard · ${state.skipped.size} standalone`;$('#buildPlan').disabled=!state.selected.size}
 $('#buildPlan').onclick=async()=>{try{state.settings.deviceIds=[...state.selected];state.plan=await api('/api/onboarding/plan',{method:'POST',body:JSON.stringify(state.settings)});if(state.skipped.size)state.plan={...state.plan,warnings:[...(state.plan.warnings||[]),`${state.skipped.size} discovered device${state.skipped.size===1?' is':'s are'} being left standalone with no configuration changes.`]};state.settings.kiloLinkPassword='';kiloLinkPassword.value='';credentialHint.textContent='KiloLink login stored locally for this server.';renderPlan();show('plan')}catch(e){toast(e.message,true)}};
 function renderPlan(){const hasKiloview=state.plan.devices.some(d=>!['TeleTool','SimulatedTeleTool'].includes(d.family)),hasTeleTool=state.plan.devices.some(d=>['TeleTool','SimulatedTeleTool'].includes(d.family));$('#planRows').innerHTML=state.plan.devices.map(d=>`<div class="plan-row"><div><small>${['TeleTool','SimulatedTeleTool'].includes(d.family)?'TELETOOL':'KILOVIEW'} · FOUND ADDRESS</small><span class="from">${esc(d.currentIp)}</span></div><div class="arrow">→</div><div><small>STATIC ADDRESS</small><span class="to">${esc(d.targetIp)}</span></div><div><small>INITIAL HOSTNAME</small><strong>${esc(d.hostname)}</strong></div></div>`).join('');$('#planWarnings').innerHTML=state.plan.warnings.map(w=>`<div class="warning">⚠ ${esc(w)}</div>`).join('');$('#planCount').textContent=`${state.plan.devices.length} device${state.plan.devices.length===1?'':'s'} will be changed`;$('#planConfirmation').textContent=hasKiloview?'Confirmation accepts the EULA only on selected Kiloview units; TeleTools use their Dev management API.':'TeleTools will be configured through their Dev management API; no Kiloview EULA action is required.';$('#runPlan').querySelector('span').textContent=hasKiloview?hasTeleTool?'Accept Kiloview EULA & onboard all':'Accept EULA & onboard':'Onboard TeleTools'}
-$('#runPlan').onclick=async()=>{try{$('#runPlan').disabled=true;await api('/api/onboarding/run',{method:'POST',body:JSON.stringify(state.plan)});show('progress');pollProgress()}catch(e){toast(e.message,true);$('#runPlan').disabled=false}};
+$('#runPlan').onclick=async()=>{try{$('#runPlan').disabled=true;await api('/api/onboarding/run',{method:'POST',body:JSON.stringify({planId:state.plan.planId})});show('progress');pollProgress()}catch(e){toast(e.message,true);$('#runPlan').disabled=false}};
 async function pollProgress(){clearInterval(state.poll);const tick=async()=>{try{const p=await api('/api/onboarding/progress');renderProgress(p);if(!['idle','running'].includes(p.status)){clearInterval(state.poll);state.poll=null;await loadDecoderOrMonitor(p.status)}}catch(e){toast(e.message,true)}};await tick();state.poll=setInterval(tick,1200)}
 function renderProgress(p){const pct=p.total?Math.round(p.completed/p.total*100):0;$('#progressBar').style.width=`${pct}%`;$('#progressTitle').textContent=p.status==='running'?'Applying configuration':p.status.replaceAll('-',' ');$('#progressMessage').textContent=p.status==='running'?`${p.completed} of ${p.total} stages complete · mode changes can take one minute`:'Onboarding pass finished.';$('#progressSteps').innerHTML=p.steps.length?p.steps.slice().reverse().map(s=>`<div class="timeline-row"><i class="health ${esc(s.status==='ok'?'online':s.status)}"></i><code>${esc(s.ipAddress)}</code><strong>${esc(s.step)}</strong><span class="${esc(s.status)}">${esc(s.message||s.status)}</span></div>`).join(''):'<div class="empty">Preparing the first device…</div>'}
 function currentRunDevices(devices){const ids=new Set((state.plan?.devices||[]).map(device=>device.deviceId));return ids.size?devices.filter(device=>ids.has(device.id)):devices}
@@ -258,13 +258,23 @@ function renderMulticastPlan(plan){
 }
 async function loadMulticastSetup(regenerate=false){
   const ttl=Math.max(1,Math.min(255,Number($('#multicastTtl').value)||1)),includeLocalPc=$('#includeLocalPc').checked,apply=$('#applyMulticast');
+  $('#localAdapterOption').classList.toggle('hidden',!includeLocalPc);
   $('#multicastPool').textContent='Generating…';$('#multicastPoolMeta').textContent='Checking onboarded endpoints and selecting conflict-free ranges.';apply.disabled=true;
   try{
-    const plan=await api('/api/multicast/plan',{method:'POST',body:JSON.stringify({includeLocalPc,ttl,regenerate})});
+    if(includeLocalPc)await loadLocalInterfaces();
+    const localAddress=includeLocalPc?$('#localMulticastAddress').value||null:null;
+    const plan=await api('/api/multicast/plan',{method:'POST',body:JSON.stringify({includeLocalPc,ttl,regenerate,localAddress})});
     renderMulticastPlan(plan);
   }catch(err){
     state.multicastPlan=null;$('#multicastPool').textContent='Plan unavailable';$('#multicastPoolMeta').textContent=err.message;$('#multicastAssignments').innerHTML=`<div class="empty">${esc(err.message)}</div>`;toast(err.message,true);
   }
+}
+async function loadLocalInterfaces(){
+  const select=$('#localMulticastAddress'),previous=select.value;
+  state.localInterfaces=await api('/api/network/interfaces');
+  select.innerHTML='<option value="">Choose automatically</option>'+state.localInterfaces.map(candidate=>`<option value="${esc(candidate.address)}">${esc(candidate.name)} · ${esc(candidate.address)}/${candidate.prefixLength} · ${esc(candidate.type)}</option>`).join('');
+  if(state.localInterfaces.some(candidate=>candidate.address===previous))select.value=previous;
+  else if(state.localInterfaces.length===1)select.value=state.localInterfaces[0].address;
 }
 async function applyMulticastSetup(){
   if(!state.multicastPlan)return;
@@ -304,6 +314,7 @@ async function revertMulticastSetup(){
 $('#regenerateMulticast').onclick=()=>loadMulticastSetup(true);
 $('#multicastTtl').onchange=()=>loadMulticastSetup(false);
 $('#includeLocalPc').onchange=()=>loadMulticastSetup(false);
+$('#localMulticastAddress').onchange=()=>loadMulticastSetup(false);
 $('#applyMulticast').onclick=applyMulticastSetup;
 $('#revertMulticast').onclick=revertMulticastSetup;
 async function refreshMonitor(){if($('#monitorView').classList.contains('hidden'))return;try{renderMonitor(await api('/api/state'))}catch{}}

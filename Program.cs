@@ -4,13 +4,15 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using KiloviewSetup.Core;
 using KiloviewSetup.Devices;
+using Microsoft.AspNetCore.Mvc;
 
 var servicePort = int.TryParse(Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"), out var configuredPort)
     && configuredPort is >= 1024 and <= 65535 ? configuredPort : 8091;
 var lanAccess = args.Contains("--lan", StringComparer.OrdinalIgnoreCase)
     || string.Equals(Environment.GetEnvironmentVariable("KILOVIEW_LAN_ACCESS"), "1", StringComparison.Ordinal);
-using var instanceMutex = new Mutex(true, $"Local\\KiloviewJobConfigurator-{servicePort}", out var ownsInstanceMutex);
-if (!ownsInstanceMutex)
+using var instanceSemaphore = new Semaphore(1, 1, $"Local\\KiloviewJobConfigurator-{servicePort}");
+var ownsInstanceSemaphore = instanceSemaphore.WaitOne(0);
+if (!ownsInstanceSemaphore)
 {
     try { Process.Start(new ProcessStartInfo($"http://localhost:{servicePort}") { UseShellExecute = true }); }
     catch { /* The existing tray process remains available even if no browser is registered. */ }
@@ -149,6 +151,7 @@ app.MapPost("/api/system/update/install", async (GitHubUpdateService updates, Ap
 app.MapGet("/license", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "LICENSE.md"), "text/markdown; charset=utf-8"));
 app.MapGet("/third-party-notices", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "THIRD-PARTY-NOTICES", "README.md"), "text/markdown; charset=utf-8"));
 app.MapGet("/api/network/subnets", () => Results.Ok(NetworkAddressing.GetLocalScanCidrs()));
+app.MapGet("/api/network/interfaces", () => Results.Ok(NetworkAddressing.GetLocalInterfaces()));
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));
 app.MapGet("/api/devices", async (AppStateStore store) => Results.Ok((await store.ReadAsync()).Devices));
 app.MapGet("/api/devices/{id}/thumbnail", async (string id, EncoderThumbnailService thumbnails, HttpResponse response, CancellationToken ct) =>
@@ -224,9 +227,10 @@ app.MapPost("/api/onboarding/plan", async (OnboardingRequest request, Onboarding
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 
-app.MapPost("/api/onboarding/run", (OnboardingPlan plan, OnboardingService onboarding) =>
+app.MapPost("/api/onboarding/run", async (OnboardingRunRequest request, OnboardingService onboarding, CancellationToken ct) =>
 {
-    try { return Results.Accepted(value: onboarding.Start(plan)); }
+    try { return Results.Accepted(value: await onboarding.StartAsync(request.PlanId, ct)); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 app.MapGet("/api/onboarding/progress", (OnboardingService onboarding) => Results.Ok(onboarding.Progress));
@@ -255,12 +259,12 @@ app.MapPost("/api/firmware/stage", async (HttpRequest request, FirmwareService f
 {
     try
     {
-        var form = await request.ReadFormAsync(ct);
-        return Results.Ok(await firmware.StageAsync(form.Files.GetFile("n6Firmware"), form.Files.GetFile("n60Firmware"), ct));
+        return Results.Ok(await firmware.StageMultipartAsync(request, ct));
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (InvalidDataException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status413PayloadTooLarge); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
-});
+}).WithMetadata(new RequestSizeLimitAttribute(FirmwareService.MaximumRequestBytes));
 app.MapPost("/api/firmware/start", async (FirmwareService firmware, CancellationToken ct) =>
 {
     try { return Results.Ok(await firmware.StartAsync(ct)); }
@@ -365,7 +369,7 @@ try
 finally
 {
     app.Logger.LogInformation("Kiloview Job Configurator is stopping");
-    instanceMutex.ReleaseMutex();
+    if (ownsInstanceSemaphore) instanceSemaphore.Release();
 }
 
 if (systemTray.RestartRequested && Environment.ProcessPath is { } executablePath)
