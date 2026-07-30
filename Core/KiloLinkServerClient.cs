@@ -8,11 +8,14 @@ namespace KiloviewSetup.Core;
 /// <summary>Validated against the KiloLink Server Pro 1.08.0034 web API.</summary>
 public sealed class KiloLinkServerClient(IHttpClientFactory clients)
 {
-    public async Task<IReadOnlyList<KiloLinkServerDiscovery>> DiscoverAsync(int webPort, CancellationToken ct)
+    public async Task<IReadOnlyList<KiloLinkServerDiscovery>> DiscoverAsync(
+        int webPort,
+        LocalNetworkInterface network,
+        CancellationToken ct)
     {
         if (webPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
         var found = new ConcurrentDictionary<string, KiloLinkServerDiscovery>(StringComparer.OrdinalIgnoreCase);
-        var addresses = NetworkAddressing.GetLocalScanCidrs().SelectMany(NetworkAddressing.ExpandCidr).Distinct().ToArray();
+        var addresses = NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(network)).ToArray();
         await Parallel.ForEachAsync(addresses, new ParallelOptions
         {
             MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(addresses.Length),

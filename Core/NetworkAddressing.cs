@@ -6,6 +6,35 @@ namespace KiloviewSetup.Core;
 
 public static class NetworkAddressing
 {
+    public static LocalNetworkInterface? ResolveLocalInterface(string? adapterId, string? address)
+    {
+        var candidates = GetLocalInterfaces();
+        if (!string.IsNullOrWhiteSpace(adapterId))
+        {
+            var exact = candidates.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, adapterId, StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(address)
+                    || string.Equals(candidate.Address, address, StringComparison.Ordinal)));
+            if (exact is not null) return exact;
+            var adapterCandidates = candidates
+                .Where(candidate => string.Equals(candidate.Id, adapterId, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (adapterCandidates.Length == 1) return adapterCandidates[0];
+        }
+        if (!string.IsNullOrWhiteSpace(address))
+            return candidates.FirstOrDefault(candidate =>
+                string.Equals(candidate.Address, address, StringComparison.Ordinal));
+        return null;
+    }
+
+    public static string GetScanCidr(LocalNetworkInterface network)
+    {
+        var address = InputValidation.Ip(network.Address, "Network adapter address");
+        var prefix = Math.Clamp(network.PrefixLength, 24, 30);
+        var mask = uint.MaxValue << (32 - prefix);
+        return $"{FromUInt(ToUInt(address) & mask)}/{prefix}";
+    }
+
     public static int GetPrefixLength(uint mask)
     {
         var prefixLength = 0;
@@ -38,12 +67,13 @@ public static class NetworkAddressing
             .Where(address => address.Address.AddressFamily == AddressFamily.InterNetwork
                 && !IPAddress.IsLoopback(address.Address))
             .Select(address => new LocalNetworkInterface(
+                network.Id,
                 network.Name,
                 network.Description,
                 address.Address.ToString(),
                 address.PrefixLength,
                 network.NetworkInterfaceType.ToString())))
-        .DistinctBy(candidate => candidate.Address)
+        .DistinctBy(candidate => (candidate.Id, candidate.Address))
         .OrderBy(candidate => candidate.Type == nameof(NetworkInterfaceType.Ethernet) ? 0
             : candidate.Type == nameof(NetworkInterfaceType.Wireless80211) ? 1 : 2)
         .ThenBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)
@@ -70,21 +100,6 @@ public static class NetworkAddressing
         if (BitConverter.IsLittleEndian) Array.Reverse(bytes);
         return new IPAddress(bytes);
     }
-
-    public static IReadOnlyList<string> GetLocalScanCidrs() => NetworkInterface.GetAllNetworkInterfaces()
-        .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not NetworkInterfaceType.Loopback)
-        .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-        .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a.Address))
-        .Select(a =>
-        {
-            var originalPrefix = a.PrefixLength;
-            var prefix = Math.Max(originalPrefix, 24); // Safe discovery default: never sweep more than 254 hosts automatically.
-            var mask = prefix == 0 ? 0u : uint.MaxValue << (32 - prefix);
-            return $"{FromUInt(ToUInt(a.Address) & mask)}/{prefix}";
-        })
-        .Distinct()
-        .Order()
-        .ToArray();
 
     public static IEnumerable<IPAddress> ExpandCidr(string cidr)
     {

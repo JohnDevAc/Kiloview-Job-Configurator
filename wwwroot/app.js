@@ -3,9 +3,9 @@ import { createPreviewController } from './js/previews.js';
 import { createSystemSettingsController } from './js/system-settings.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,localInterfaces:[]};
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,infrastructureRerun:false,localInterfaces:[],selectedNetwork:null,networkReady:false};
 const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
-function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup')setTimeout(detectInfrastructure,0)}
+function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup'&&state.networkReady)setTimeout(detectInfrastructure,0)}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
 function esc(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function roleClass(r){return String(r).toLowerCase()}
@@ -32,16 +32,67 @@ function updateServiceConnectionsStatus(checking=false){
   else{setServiceConnectionsStatus('needs-attention','Service attention required');setServiceConnectionsExpanded(true)}
 }
 toggleServiceConnections.onclick=()=>setServiceConnectionsExpanded(serviceConnections.classList.contains('is-collapsed'));
+const onboardingNetworkAdapter=$('#onboardingNetworkAdapter'),onboardingNetworkMeta=$('#onboardingNetworkMeta');
+function ipv4Number(value){const parts=String(value).split('.').map(Number);return parts.length===4&&parts.every(part=>Number.isInteger(part)&&part>=0&&part<=255)?parts.reduce((number,part)=>((number<<8)|part)>>>0,0):null}
+function addressMatchesNetwork(address,network){
+  const value=ipv4Number(address),local=ipv4Number(network.address),prefix=Math.max(0,Math.min(32,Number(network.prefixLength)));
+  if(value===null||local===null)return false;
+  const mask=prefix===0?0:(0xffffffff<<(32-prefix))>>>0;
+  return (value&mask)===(local&mask);
+}
+function selectedNetworkOption(){
+  const index=Number(onboardingNetworkAdapter.value);
+  return onboardingNetworkAdapter.value!==''&&Number.isInteger(index)?state.localInterfaces[index]||null:null;
+}
+function showSelectedNetwork(network){
+  state.selectedNetwork=network;state.networkReady=!!network;
+  onboardingNetworkMeta.textContent=network
+    ? `${network.name} · ${network.address}/${network.prefixLength} · device scan ${network.scanCidr||'uses this subnet'}`
+    : 'Choose the interface connected to the Kiloview, TeleTool, KiloLink, and NDI network.';
+}
+async function persistNetworkSelection(network=selectedNetworkOption()){
+  if(!network){showSelectedNetwork(null);throw new Error('Select the network adapter connected to the devices.')}
+  const selected=await api('/api/network/selection',{method:'PUT',body:JSON.stringify({adapterId:network.id,address:network.address})});
+  const merged={...network,...selected};showSelectedNetwork(merged);return merged;
+}
+async function loadNetworkSelection(app){
+  state.localInterfaces=await api('/api/network/interfaces');
+  onboardingNetworkAdapter.innerHTML='<option value="">Select an active network adapter</option>'+state.localInterfaces.map((candidate,index)=>`<option value="${index}">${esc(candidate.name)} · ${esc(candidate.address)}/${candidate.prefixLength} · ${esc(candidate.type)}</option>`).join('');
+  let selected=state.localInterfaces.find(candidate=>candidate.id===app.selectedNetworkAdapterId&&candidate.address===app.selectedNetworkAddress)
+    ||state.localInterfaces.find(candidate=>candidate.id===app.selectedNetworkAdapterId);
+  const previousLocal=app.multicast?.assignments?.find(assignment=>assignment.endpointId==='local-pc')?.address;
+  if(!selected&&previousLocal)selected=state.localInterfaces.find(candidate=>candidate.address===previousLocal);
+  if(!selected){
+    const devices=app.devices||[],ranked=state.localInterfaces.map(candidate=>({candidate,matches:devices.filter(device=>addressMatchesNetwork(device.ipAddress,candidate)).length})).sort((a,b)=>b.matches-a.matches);
+    if(ranked.length&&ranked[0].matches>0&&(ranked.length===1||ranked[0].matches>ranked[1].matches))selected=ranked[0].candidate;
+  }
+  if(!selected&&state.localInterfaces.length===1)selected=state.localInterfaces[0];
+  onboardingNetworkAdapter.value=selected?String(state.localInterfaces.indexOf(selected)):'';
+  if(selected)await persistNetworkSelection(selected);
+  else{
+    showSelectedNetwork(null);
+    setServiceConnectionsStatus('needs-attention','Select network adapter');
+    setServiceConnectionsExpanded(false);
+  }
+}
+onboardingNetworkAdapter.onchange=async()=>{
+  try{
+    await persistNetworkSelection();
+    Object.assign(serviceChecks,{kiloLinkFound:false,kiloLinkAuthenticated:false,ndiDiscoveryFound:false});
+    if(state.infrastructureDetecting){state.infrastructureRerun=true;return}
+    await detectInfrastructure();
+  }catch(err){toast(err.message,true)}
+};
 
 async function boot(){
-  try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const cidrs=await api('/api/network/subnets');$('#scanCidrs').value=cidrs.join('\n');const app=await api('/api/state');state.devices=app.devices||[];const localOnboarded=app.multicast?.assignments?.some(a=>a.endpointId==='local-pc');if(app.lastJob&&(state.devices.some(d=>d.isOnboarded)||localOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
+  try{const health=await api('/api/health'),development=String(health.channel).toLowerCase()==='development';$('#appVersion').textContent=`v${health.version}`;$('#headerVersion').textContent=`Version v${health.version}${development?' · DEV':''}`;$('#developmentBanner').classList.toggle('hidden',!development);document.body.classList.toggle('development-build',development);$('#serviceDot').className='online';const app=await api('/api/state');state.devices=app.devices||[];await loadNetworkSelection(app);const localOnboarded=app.multicast?.assignments?.some(a=>a.endpointId==='local-pc');if(app.lastJob&&(state.devices.some(d=>d.isOnboarded)||localOnboarded)){renderMonitor(app);show('monitor')}else show('setup')}
   catch(e){toast(`Service unavailable: ${e.message}`,true)}
 }
 
 $('#setupForm').addEventListener('submit',async e=>{
   e.preventDefault();const f=new FormData(e.currentTarget);state.settings={kiloLinkServerIp:f.get('kiloLinkServerIp').trim(),kiloLinkOnboardingCode:'',kiloLinkUsername:f.get('kiloLinkUsername').trim(),kiloLinkPassword:f.get('kiloLinkPassword'),kiloLinkPort:+f.get('kiloLinkPort'),kiloLinkWebPort:+f.get('kiloLinkWebPort'),ndiDiscoveryServerIp:f.get('ndiDiscoveryServerIp').trim(),staticStart:f.get('staticStart').trim(),staticEnd:f.get('staticEnd').trim(),subnetMask:f.get('subnetMask').trim(),gateway:f.get('gateway').trim(),dns:f.get('dns').trim(),jobName:f.get('jobName').trim(),deviceIds:[]};
-  const scanCidrs=f.get('scanCidrs').split(/[\n,]+/).map(x=>x.trim()).filter(Boolean);const simulation=f.get('simulation')==='on';
-  try{e.submitter.disabled=true;e.submitter.querySelector('span').textContent='Scanning…';const result=await api('/api/discovery',{method:'POST',body:JSON.stringify({scanCidrs,credentials:{username:f.get('username')||'admin',password:f.get('password')||'admin'},simulation})});state.devices=result.devices;state.discovery=result;state.skipped=new Set();state.selected=new Set(result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)).map(d=>d.id));renderDiscovery(result);show('discover')}
+  const simulation=f.get('simulation')==='on';
+  try{e.submitter.disabled=true;e.submitter.querySelector('span').textContent='Scanning…';await persistNetworkSelection();const result=await api('/api/discovery',{method:'POST',body:JSON.stringify({credentials:{username:f.get('username')||'admin',password:f.get('password')||'admin'},simulation})});state.devices=result.devices;state.discovery=result;state.skipped=new Set();state.selected=new Set(result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)).map(d=>d.id));renderDiscovery(result);show('discover')}
   catch(err){toast(err.message,true)}finally{e.submitter.disabled=false;e.submitter.querySelector('span').textContent='Scan network'}
 });
 const kiloLinkIp=$('input[name="kiloLinkServerIp"]'),kiloLinkUser=$('input[name="kiloLinkUsername"]'),kiloLinkPassword=$('input[name="kiloLinkPassword"]'),credentialHint=$('#kiloLinkCredentialHint'),storedCredential=$('#kiloLinkStoredCredential'),storedUsername=$('#kiloLinkStoredUsername'),storedPassword=$('#kiloLinkStoredPassword'),revealStoredPassword=$('#showKiloLinkStoredPassword'),storedSecurityNote=$('#kiloLinkStoredSecurityNote');
@@ -88,6 +139,7 @@ async function detectInfrastructure(){
   }finally{
     state.infrastructureDetecting=false;
     updateServiceConnectionsStatus();
+    if(state.infrastructureRerun){state.infrastructureRerun=false;setTimeout(detectInfrastructure,0)}
   }
 }
 async function detectKiloLink(automatic=false,deferStatus=false){
@@ -168,7 +220,7 @@ function ipn(ip){return ip.split('.').reduce((n,x)=>n*256+(+x),0)}function inRan
 function renderDiscovery(result){
   const fresh=result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)),teletools=result.devices.filter(isTeleTool),kiloviews=result.devices.length-teletools.length;
   $('#discoverySummary').innerHTML=`<div><strong>${kiloviews}</strong><small>Kiloviews found</small></div><div><strong>${teletools.length}</strong><small>TeleTools found</small></div><div><strong>${fresh.length}</strong><small>Ready to onboard</small></div><div><strong>${result.scannedCidrs.length}</strong><small>Networks scanned</small></div>`;
-  $('#discoveredGrid').innerHTML=result.devices.length?result.devices.map(d=>{const locked=inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd),blocked=d.canOnboard===false,disabled=locked||blocked,selected=state.selected.has(d.id),standalone=state.skipped.has(d.id),label=blocked?(d.managementMessage||'NOT AVAILABLE'):locked?'IN STATIC RANGE':isTeleTool(d)?'ENCODER · DEV API':d.role;return `<article class="device-card ${selected?'selected':''} ${standalone?'skipped':''} ${blocked?'unavailable':''}" data-id="${esc(d.id)}"><header><span class="model">${esc(d.model)} · ${esc(d.family)}</span><input class="selectbox" type="checkbox" ${selected?'checked':''} ${disabled?'disabled':''} aria-label="Onboard ${esc(d.hostname)}"></header><h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}${d.webPort&&d.webPort!==80?`:${d.webPort}`:''}</div><div class="meta"><span class="pill">${esc(d.macAddress)}</span><span class="pill ${isTeleTool(d)?'teletool':roleClass(d.role)}">${esc(label)}</span>${standalone?'<span class="pill standalone">STANDALONE · NO CHANGES</span>':''}${d.firmwareVersion?`<span class="pill">${esc(d.firmwareVersion)}</span>`:''}</div>${blocked?`<div class="error-text">${esc(d.managementMessage||d.lastError||'This unit cannot be selected.')}</div>`:disabled?'':`<div class="card-actions discovery-decision"><button type="button" data-discovery-action="${selected?'skip':'include'}" data-device-id="${esc(d.id)}">${selected?'Leave standalone':'Include in onboarding'}</button></div>`}</article>`}).join(''):'<div class="empty">No Kiloview N6/N60 or TeleTool Dev units responded. Check the scan CIDR, cabling, and relevant device services.</div>';
+  $('#discoveredGrid').innerHTML=result.devices.length?result.devices.map(d=>{const locked=inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd),blocked=d.canOnboard===false,disabled=locked||blocked,selected=state.selected.has(d.id),standalone=state.skipped.has(d.id),label=blocked?(d.managementMessage||'NOT AVAILABLE'):locked?'IN STATIC RANGE':isTeleTool(d)?'ENCODER · DEV API':d.role;return `<article class="device-card ${selected?'selected':''} ${standalone?'skipped':''} ${blocked?'unavailable':''}" data-id="${esc(d.id)}"><header><span class="model">${esc(d.model)} · ${esc(d.family)}</span><input class="selectbox" type="checkbox" ${selected?'checked':''} ${disabled?'disabled':''} aria-label="Onboard ${esc(d.hostname)}"></header><h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}${d.webPort&&d.webPort!==80?`:${d.webPort}`:''}</div><div class="meta"><span class="pill">${esc(d.macAddress)}</span><span class="pill ${isTeleTool(d)?'teletool':roleClass(d.role)}">${esc(label)}</span>${standalone?'<span class="pill standalone">STANDALONE · NO CHANGES</span>':''}${d.firmwareVersion?`<span class="pill">${esc(d.firmwareVersion)}</span>`:''}</div>${blocked?`<div class="error-text">${esc(d.managementMessage||d.lastError||'This unit cannot be selected.')}</div>`:disabled?'':`<div class="card-actions discovery-decision"><button type="button" data-discovery-action="${selected?'skip':'include'}" data-device-id="${esc(d.id)}">${selected?'Leave standalone':'Include in onboarding'}</button></div>`}</article>`}).join(''):'<div class="empty">No Kiloview N6/N60 or TeleTool Dev units responded. Check the selected network adapter, cabling, and relevant device services.</div>';
   $$('#discoveredGrid .selectbox').forEach(box=>box.onchange=()=>setDiscoveryDecision(box.closest('.device-card').dataset.id,box.checked));
   $$('#discoveredGrid [data-discovery-action]').forEach(button=>button.onclick=()=>setDiscoveryDecision(button.dataset.deviceId,button.dataset.discoveryAction==='include'));
   updateSelected()
@@ -258,23 +310,20 @@ function renderMulticastPlan(plan){
 }
 async function loadMulticastSetup(regenerate=false){
   const ttl=Math.max(1,Math.min(255,Number($('#multicastTtl').value)||1)),includeLocalPc=$('#includeLocalPc').checked,apply=$('#applyMulticast');
-  $('#localAdapterOption').classList.toggle('hidden',!includeLocalPc);
+  const networkStatus=$('#multicastNetworkAdapter');
+  networkStatus.className=`access-manager-status ${includeLocalPc&&state.selectedNetwork?'ready':'disabled-state'}`;
+  networkStatus.innerHTML=includeLocalPc&&state.selectedNetwork
+    ? `<strong>Onboarding network adapter</strong><span>${esc(state.selectedNetwork.name)} · ${esc(state.selectedNetwork.address)}/${state.selectedNetwork.prefixLength}</span>`
+    : includeLocalPc
+      ? '<strong>Network adapter required</strong><span>Return to New onboarding and select an active adapter.</span>'
+      : '<strong>Local PC excluded</strong><span>No local network adapter is required.</span>';
   $('#multicastPool').textContent='Generating…';$('#multicastPoolMeta').textContent='Checking onboarded endpoints and selecting conflict-free ranges.';apply.disabled=true;
   try{
-    if(includeLocalPc)await loadLocalInterfaces();
-    const localAddress=includeLocalPc?$('#localMulticastAddress').value||null:null;
-    const plan=await api('/api/multicast/plan',{method:'POST',body:JSON.stringify({includeLocalPc,ttl,regenerate,localAddress})});
+    const plan=await api('/api/multicast/plan',{method:'POST',body:JSON.stringify({includeLocalPc,ttl,regenerate})});
     renderMulticastPlan(plan);
   }catch(err){
     state.multicastPlan=null;$('#multicastPool').textContent='Plan unavailable';$('#multicastPoolMeta').textContent=err.message;$('#multicastAssignments').innerHTML=`<div class="empty">${esc(err.message)}</div>`;toast(err.message,true);
   }
-}
-async function loadLocalInterfaces(){
-  const select=$('#localMulticastAddress'),previous=select.value;
-  state.localInterfaces=await api('/api/network/interfaces');
-  select.innerHTML='<option value="">Choose automatically</option>'+state.localInterfaces.map(candidate=>`<option value="${esc(candidate.address)}">${esc(candidate.name)} · ${esc(candidate.address)}/${candidate.prefixLength} · ${esc(candidate.type)}</option>`).join('');
-  if(state.localInterfaces.some(candidate=>candidate.address===previous))select.value=previous;
-  else if(state.localInterfaces.length===1)select.value=state.localInterfaces[0].address;
 }
 async function applyMulticastSetup(){
   if(!state.multicastPlan)return;
@@ -314,7 +363,6 @@ async function revertMulticastSetup(){
 $('#regenerateMulticast').onclick=()=>loadMulticastSetup(true);
 $('#multicastTtl').onchange=()=>loadMulticastSetup(false);
 $('#includeLocalPc').onchange=()=>loadMulticastSetup(false);
-$('#localMulticastAddress').onchange=()=>loadMulticastSetup(false);
 $('#applyMulticast').onclick=applyMulticastSetup;
 $('#revertMulticast').onclick=revertMulticastSetup;
 async function refreshMonitor(){if($('#monitorView').classList.contains('hidden'))return;try{renderMonitor(await api('/api/state'))}catch{}}

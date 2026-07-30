@@ -150,8 +150,36 @@ app.MapPost("/api/system/update/install", async (GitHubUpdateService updates, Ap
 });
 app.MapGet("/license", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "LICENSE.md"), "text/markdown; charset=utf-8"));
 app.MapGet("/third-party-notices", () => Results.File(Path.Combine(app.Environment.ContentRootPath, "THIRD-PARTY-NOTICES", "README.md"), "text/markdown; charset=utf-8"));
-app.MapGet("/api/network/subnets", () => Results.Ok(NetworkAddressing.GetLocalScanCidrs()));
+app.MapGet("/api/network/subnets", async (AppStateStore store) =>
+{
+    var state = await store.ReadAsync();
+    var selected = NetworkAddressing.ResolveLocalInterface(
+        state.SelectedNetworkAdapterId,
+        state.SelectedNetworkAddress);
+    return Results.Ok(selected is null ? [] : new[] { NetworkAddressing.GetScanCidr(selected) });
+});
 app.MapGet("/api/network/interfaces", () => Results.Ok(NetworkAddressing.GetLocalInterfaces()));
+app.MapPut("/api/network/selection", async (NetworkAdapterSelection selection, AppStateStore store) =>
+{
+    var selected = NetworkAddressing.ResolveLocalInterface(selection.AdapterId, selection.Address);
+    if (selected is null)
+        return Results.BadRequest(new { error = "Select an active IPv4 network adapter." });
+    await store.UpdateAsync(state => state with
+    {
+        SelectedNetworkAdapterId = selected.Id,
+        SelectedNetworkAddress = selected.Address
+    });
+    return Results.Ok(new
+    {
+        selected.Id,
+        selected.Name,
+        selected.Description,
+        selected.Address,
+        selected.PrefixLength,
+        selected.Type,
+        ScanCidr = NetworkAddressing.GetScanCidr(selected)
+    });
+});
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));
 app.MapGet("/api/devices", async (AppStateStore store) => Results.Ok((await store.ReadAsync()).Devices));
 app.MapGet("/api/devices/{id}/thumbnail", async (string id, EncoderThumbnailService thumbnails, HttpResponse response, CancellationToken ct) =>
@@ -193,14 +221,38 @@ app.MapPost("/api/kilolink/credentials/reveal", (string serverIp, HttpContext co
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
-app.MapGet("/api/kilolink/discover", async (int? webPort, KiloLinkServerClient client, CancellationToken ct) =>
+app.MapGet("/api/kilolink/discover", async (
+    int? webPort,
+    KiloLinkServerClient client,
+    AppStateStore store,
+    CancellationToken ct) =>
 {
-    try { return Results.Ok(await client.DiscoverAsync(webPort ?? 80, ct)); }
+    try
+    {
+        var state = await store.ReadAsync();
+        var network = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress)
+            ?? throw new ArgumentException("Select an active network adapter before searching for KiloLink Server.");
+        return Results.Ok(await client.DiscoverAsync(webPort ?? 80, network, ct));
+    }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
-app.MapGet("/api/ndi/discover", async (int? port, NdiDiscoveryServerClient client, CancellationToken ct) =>
+app.MapGet("/api/ndi/discover", async (
+    int? port,
+    NdiDiscoveryServerClient client,
+    AppStateStore store,
+    CancellationToken ct) =>
 {
-    try { return Results.Ok(await client.DiscoverAsync(port ?? NdiDiscoveryServerClient.DefaultPort, ct)); }
+    try
+    {
+        var state = await store.ReadAsync();
+        var network = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress)
+            ?? throw new ArgumentException("Select an active network adapter before searching for an NDI Discovery Server.");
+        return Results.Ok(await client.DiscoverAsync(port ?? NdiDiscoveryServerClient.DefaultPort, network, ct));
+    }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
 });
 app.MapPost("/api/kilolink/test", async (KiloLinkConnectionRequest request, KiloLinkConnectionService connections, CancellationToken ct) =>

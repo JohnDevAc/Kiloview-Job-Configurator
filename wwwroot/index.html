@@ -32,9 +32,12 @@
         <p>Discover Kiloview N6/N60 converters and TeleTool encoders, reserve safe static addresses, connect NDI services, and monitor the complete job fleet.</p>
       </div>
       <form id="setupForm" class="panel setup-grid">
+        <div class="section-title"><span>01</span><div><h2>Network adapter</h2><p>The single network used for discovery, onboarding, previews, and multicast.</p></div></div>
+        <label class="wide"><span>Onboarding network adapter</span><select name="networkAdapter" id="onboardingNetworkAdapter" required><option value="">Select an active network adapter</option></select><small id="onboardingNetworkMeta">Choose the interface connected to the Kiloview, TeleTool, KiloLink, and NDI network.</small></label>
+
         <section id="serviceConnections" class="service-connections wide is-collapsed is-checking" aria-labelledby="serviceConnectionsTitle">
           <div class="section-title service-connections-header">
-            <span>01</span>
+            <span>02</span>
             <div><h2 id="serviceConnectionsTitle">Service connections</h2><p>Where every unit should register.</p></div>
             <div id="serviceConnectionsState" class="service-connections-state" role="status" aria-live="polite">
               <i class="service-state-icon" aria-hidden="true"></i>
@@ -65,16 +68,15 @@
           </div>
         </section>
 
-        <div class="section-title"><span>02</span><div><h2>Address pool</h2><p>Assigned from the first free address above existing units.</p></div></div>
+        <div class="section-title"><span>03</span><div><h2>Address pool</h2><p>Assigned from the first free address above existing units.</p></div></div>
         <label><span>Static range start</span><input name="staticStart" placeholder="192.168.10.150" required inputmode="decimal"></label>
         <label><span>Static range end</span><input name="staticEnd" placeholder="192.168.10.199" required inputmode="decimal"></label>
         <label><span>Subnet mask</span><input name="subnetMask" value="255.255.255.0" required inputmode="decimal"></label>
         <label><span>Gateway</span><input name="gateway" placeholder="192.168.10.1" inputmode="decimal"></label>
         <label><span>DNS server</span><input name="dns" value="8.8.8.8" required inputmode="decimal"><small>Applied when assigning a new static address; existing in-range devices are not changed.</small></label>
 
-        <div class="section-title"><span>03</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
+        <div class="section-title"><span>04</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
         <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required maxlength="32"></label>
-        <label class="wide"><span>Networks to scan <small>(one CIDR per line)</small></span><textarea name="scanCidrs" id="scanCidrs" rows="2" placeholder="192.168.10.0/24"></textarea></label>
         <details class="wide advanced">
           <summary>Device login & test options</summary>
           <div class="details-grid">
@@ -147,7 +149,7 @@
           <p class="eyebrow">ENDPOINT OPTIONS</p>
           <label for="multicastTtl"><span>Multicast TTL</span><input id="multicastTtl" type="number" min="1" max="255" value="1"><small>Use 1 for one routed subnet. Increase only when the network team has enabled multicast routing.</small></label>
           <label class="check multicast-local-option"><input id="includeLocalPc" type="checkbox" checked><span>Onboard this PC using NDI Access Manager</span></label>
-          <label id="localAdapterOption" for="localMulticastAddress"><span>Local NDI network adapter</span><select id="localMulticastAddress"><option value="">Choose automatically</option></select><small>Select the Ethernet or Wi-Fi interface that carries the onboarded NDI devices.</small></label>
+          <div id="multicastNetworkAdapter" class="access-manager-status disabled-state">Using the network adapter selected during onboarding.</div>
           <div id="accessManagerStatus" class="access-manager-status">Checking the local NDI configuration…</div>
         </article>
       </div>

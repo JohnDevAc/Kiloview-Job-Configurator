@@ -7,15 +7,15 @@ public sealed class NdiDiscoveryServerClient
 {
     public const int DefaultPort = 5959;
 
-    public async Task<IReadOnlyList<NdiDiscoveryServerDiscovery>> DiscoverAsync(int port, CancellationToken ct)
+    public async Task<IReadOnlyList<NdiDiscoveryServerDiscovery>> DiscoverAsync(
+        int port,
+        LocalNetworkInterface network,
+        CancellationToken ct)
     {
         if (port is < 1 or > 65535) throw new ArgumentException("NDI Discovery Server port is invalid.");
 
         var found = new ConcurrentDictionary<string, NdiDiscoveryServerDiscovery>(StringComparer.OrdinalIgnoreCase);
-        var addresses = NetworkAddressing.GetLocalScanCidrs()
-            .SelectMany(NetworkAddressing.ExpandCidr)
-            .Distinct()
-            .ToArray();
+        var addresses = NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(network)).ToArray();
 
         await Parallel.ForEachAsync(addresses, new ParallelOptions
         {

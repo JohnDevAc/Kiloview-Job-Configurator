@@ -96,13 +96,14 @@ public sealed record AppState(
     FirmwareJob? FirmwareJob = null,
     SoftwareReleaseChannel UpdateChannel = SoftwareReleaseChannel.Main,
     string? TeleToolManagerId = null,
-    MulticastConfiguration? Multicast = null)
+    MulticastConfiguration? Multicast = null,
+    string? SelectedNetworkAdapterId = null,
+    string? SelectedNetworkAddress = null)
 {
     public static AppState Empty => new([]);
 }
 
 public sealed record DiscoveryRequest(
-    IReadOnlyList<string>? ScanCidrs,
     DeviceCredentials? Credentials,
     bool Simulation = false);
 
@@ -153,9 +154,10 @@ public sealed record TitleCardSource(string Name, string Group, string LocalAddr
 public sealed record MulticastSetupRequest(
     bool IncludeLocalPc = true,
     int Ttl = 1,
-    bool Regenerate = false,
-    string? LocalAddress = null);
+    bool Regenerate = false);
+public sealed record NetworkAdapterSelection(string AdapterId, string Address);
 public sealed record LocalNetworkInterface(
+    string Id,
     string Name,
     string Description,
     string Address,

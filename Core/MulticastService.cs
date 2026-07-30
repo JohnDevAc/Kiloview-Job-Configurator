@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using KiloviewSetup.Devices;
@@ -34,9 +33,14 @@ public sealed class MulticastService(
         var poolSize = 1u << (32 - poolPrefixLength);
         var poolStart = SelectPool(job.JobName, poolSize, request.Regenerate, state.Multicast);
         var poolMask = PrefixMask(poolPrefixLength);
-        var localAddress = request.IncludeLocalPc
-            ? ResolveLocalAddress(devices.Select(device => device.IpAddress), request.LocalAddress)
-            : "127.0.0.1";
+        var selectedNetwork = request.IncludeLocalPc
+            ? NetworkAddressing.ResolveLocalInterface(
+                state.SelectedNetworkAdapterId,
+                state.SelectedNetworkAddress)
+                ?? throw new InvalidOperationException(
+                    "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.")
+            : null;
+        var localAddress = selectedNetwork?.Address ?? "127.0.0.1";
         var assignments = new List<MulticastAssignment>();
         var slot = 0u;
 
@@ -421,45 +425,4 @@ public sealed class MulticastService(
     private static bool RangesOverlap(uint firstStart, uint firstEnd, uint secondStart, uint secondEnd) =>
         firstStart <= secondEnd && secondStart <= firstEnd;
 
-    private static string ResolveLocalAddress(IEnumerable<string> deviceAddresses, string? requestedAddress)
-    {
-        var candidates = NetworkAddressing.GetLocalInterfaces();
-        if (candidates.Count == 0)
-            throw new InvalidOperationException("No active IPv4 network adapter is available for the local NDI endpoint.");
-        if (!string.IsNullOrWhiteSpace(requestedAddress))
-        {
-            var selected = candidates.FirstOrDefault(candidate =>
-                string.Equals(candidate.Address, requestedAddress, StringComparison.Ordinal));
-            if (selected is null)
-                throw new ArgumentException("The selected local network adapter is no longer active. Select another adapter.");
-            return selected.Address;
-        }
-
-        var devices = deviceAddresses
-            .Select(address => IPAddress.TryParse(address, out var ip) ? ip : null)
-            .Where(ip => ip?.AddressFamily == AddressFamily.InterNetwork)
-            .Cast<IPAddress>()
-            .ToArray();
-        var ranked = candidates.Select(candidate => new
-        {
-            Candidate = candidate,
-            Matches = devices.Count(device => NetworkAddressing.Contains(
-                device,
-                IPAddress.Parse(candidate.Address),
-                candidate.PrefixLength))
-        })
-            .OrderByDescending(candidate => candidate.Matches)
-            .ToArray();
-        var bestMatches = ranked[0].Matches;
-        var best = ranked.Where(candidate => candidate.Matches == bestMatches).ToArray();
-        if (best.Length == 1 && (bestMatches > 0 || candidates.Count == 1))
-            return best[0].Candidate.Address;
-        if (bestMatches > 0)
-        {
-            throw new InvalidOperationException(
-                $"Multiple active adapters match {bestMatches} onboarded device address(es). Select the adapter to use for the local NDI endpoint.");
-        }
-        throw new InvalidOperationException(
-            "No adapter automatically matches the onboarded device subnets. Select the adapter to use for the local NDI endpoint.");
-    }
 }

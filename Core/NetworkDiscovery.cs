@@ -21,9 +21,12 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
 
         await ClearSimulationAsync();
 
-        var cidrs = (request.ScanCidrs is { Count: > 0 } ? request.ScanCidrs : NetworkAddressing.GetLocalScanCidrs())
-            .Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
-        if (cidrs.Length == 0) throw new ArgumentException("No active IPv4 network was found. Enter a scan CIDR manually.");
+        var state = await store.ReadAsync();
+        var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress)
+            ?? throw new ArgumentException("Select an active network adapter before scanning for devices.");
+        var cidrs = new[] { NetworkAddressing.GetScanCidr(selectedNetwork) };
         var addresses = cidrs.SelectMany(NetworkAddressing.ExpandCidr).Distinct().ToArray();
         if (addresses.Length > 8192) throw new ArgumentException("Discovery is limited to 8192 addresses per scan.");
         var credentials = request.Credentials ?? new DeviceCredentials();

@@ -1,12 +1,11 @@
-using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
 
 namespace KiloviewSetup.Core;
 
 /// <summary>Publishes one full-frame NDI identity card per decoder using the locally installed NDI Tools runtime.</summary>
-public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : IDisposable
+public sealed class NdiTitleCardService(
+    AppStateStore store,
+    ILogger<NdiTitleCardService> logger) : IDisposable
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, TitleCardSender> _senders = new(StringComparer.OrdinalIgnoreCase);
@@ -24,7 +23,12 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
         var publishedGroups = device.Family == DeviceFamily.Simulated && !string.Equals(group, "public", StringComparison.OrdinalIgnoreCase)
             ? $"public,{group}"
             : group;
-        var localAddress = LocalAddressFor(device.IpAddress);
+        var state = await store.ReadAsync();
+        var localAddress = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress)?.Address
+            ?? throw new InvalidOperationException(
+                "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.");
         var created = false;
         lock (_gate)
         {
@@ -59,25 +63,6 @@ public sealed class NdiTitleCardService(ILogger<NdiTitleCardService> logger) : I
     }
 
     public void Dispose() => StopAll();
-
-    private static string LocalAddressFor(string remoteAddress)
-    {
-        try
-        {
-            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            socket.Connect(IPAddress.Parse(remoteAddress), 5960);
-            return ((IPEndPoint)socket.LocalEndPoint!).Address.ToString();
-        }
-        catch (Exception ex) when (ex is SocketException or FormatException)
-        {
-            return NetworkInterface.GetAllNetworkInterfaces()
-                .Where(adapter => adapter.OperationalStatus == OperationalStatus.Up && adapter.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                .SelectMany(adapter => adapter.GetIPProperties().UnicastAddresses)
-                .Select(address => address.Address)
-                .FirstOrDefault(address => address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(address))
-                ?.ToString() ?? "127.0.0.1";
-        }
-    }
 
     private static string NormalizeSourceSegment(string value)
     {
