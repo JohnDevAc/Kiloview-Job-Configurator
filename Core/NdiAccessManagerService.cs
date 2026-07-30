@@ -24,8 +24,52 @@ public sealed record NdiPreferredInterfaceStatus(
     bool AccessManagerRunning = false,
     string? Error = null);
 
+public sealed record NdiApplicationPreflight(
+    bool AccessManagerDetected,
+    bool AccessManagerRunning,
+    bool DiscoveryServerRunning,
+    IReadOnlyList<string> RunningConfigurationApplications)
+{
+    public bool Ready => !AccessManagerRunning && RunningConfigurationApplications.Count == 0;
+}
+
 public sealed class NdiAccessManagerService
 {
+    private static readonly IReadOnlyDictionary<string, string> ConfigurationApplicationProcessNames =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Application.NDI.DiscoveryService.UI"] = "NDI Discovery",
+            ["Application.Network.StudioMonitor.x64"] = "NDI Studio Monitor",
+            ["Studio Monitor"] = "NDI Studio Monitor",
+            ["NDI Studio Monitor"] = "NDI Studio Monitor",
+            ["Video Monitor"] = "NDI Video Monitor",
+            ["Application.Network.ScanConverter2.x64"] = "NDI Screen Capture",
+            ["Application.Network.ScanConverterHX.x64"] = "NDI Screen Capture HX",
+            ["Screen Capture"] = "NDI Screen Capture",
+            ["Screen Capture HX"] = "NDI Screen Capture HX",
+            ["Scan Converter"] = "NDI Scan Converter",
+            ["Webcam Input"] = "NDI Webcam Input",
+            ["Virtual Input"] = "NDI Virtual Input",
+            ["Webcam"] = "NDI Webcam",
+            ["Application.NDI.Bridge.UI"] = "NDI Bridge",
+            ["Application.NDI.Bridge.x64"] = "NDI Bridge",
+            ["NDI Bridge"] = "NDI Bridge",
+            ["Bridge"] = "NDI Bridge",
+            ["NDI Remote"] = "NDI Remote",
+            ["Application.NDI.Router"] = "NDI Router",
+            ["Router"] = "NDI Router",
+            ["Application.Network.TestPatterns"] = "NDI Test Patterns",
+            ["Test Patterns"] = "NDI Test Patterns",
+            ["NDIAnalysis"] = "NDI Analysis",
+            ["Audio Direct"] = "NDI Audio Direct"
+        };
+    private static readonly HashSet<string> DiscoveryServerProcessNames =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Discovery Server",
+            "NDI Discovery Server",
+            "NDI Discovery Service"
+        };
     private static readonly JsonSerializerOptions IndentedJson = new()
     {
         WriteIndented = true,
@@ -57,14 +101,57 @@ public sealed class NdiAccessManagerService
         }
     });
 
+    public NdiApplicationPreflight GetApplicationPreflight()
+    {
+        var runningApplications = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var discoveryServerRunning = false;
+        Process[] processes;
+        try
+        {
+            processes = Process.GetProcesses();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException
+            or PlatformNotSupportedException
+            or System.ComponentModel.Win32Exception)
+        {
+            processes = [];
+        }
+
+        foreach (var process in processes)
+        {
+            try
+            {
+                var processName = process.ProcessName;
+                if (DiscoveryServerProcessNames.Contains(processName))
+                    discoveryServerRunning = true;
+                else if (ConfigurationApplicationProcessNames.TryGetValue(processName, out var displayName))
+                    runningApplications.Add(displayName);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException
+                or System.ComponentModel.Win32Exception
+                or NotSupportedException)
+            {
+                // A process can exit or become inaccessible while the list is read.
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        return new(
+            Detected,
+            IsRunning,
+            discoveryServerRunning,
+            runningApplications.Order(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
     public async Task<NdiPreferredInterfaceStatus> ApplyPreferredInterfaceAsync(
         string address,
         CancellationToken ct)
     {
         var selectedAddress = InputValidation.Ip(address, "Preferred NDI interface").ToString();
-        if (IsRunning)
-            throw new InvalidOperationException(
-                "Close NDI Access Manager before selecting the onboarding network adapter. It keeps an in-memory copy and can overwrite the preferred interface when it exits.");
+        EnsureConfigurationApplicationsClosed("selecting the onboarding network adapter");
 
         var root = await ReadConfigurationForUpdateAsync("applying the preferred NDI interface", ct);
         var adapters = Object(Object(root, "ndi"), "adapters");
@@ -134,9 +221,7 @@ public sealed class NdiAccessManagerService
             : previousManagedGroup.Trim();
         var selectedAddress = InputValidation.Ip(preferredAddress, "Preferred NDI interface").ToString();
         var selectedDiscoveryServer = InputValidation.Ip(discoveryServer, "NDI Discovery Server").ToString();
-        if (IsRunning)
-            throw new InvalidOperationException(
-                "Close NDI Access Manager before starting onboarding. It keeps an in-memory copy and can restore the previous NDI group when it exits.");
+        EnsureConfigurationApplicationsClosed("starting onboarding");
 
         var root = await ReadConfigurationForUpdateAsync("applying the local NDI job group", ct);
         var ndi = Object(root, "ndi");
@@ -185,9 +270,7 @@ public sealed class NdiAccessManagerService
         CancellationToken ct)
     {
         var selectedAddress = InputValidation.Ip(preferredAddress, "Preferred NDI interface").ToString();
-        if (IsRunning)
-            throw new InvalidOperationException(
-                "Close NDI Access Manager before applying multicast settings. It keeps an in-memory copy and can overwrite externally applied changes when it exits.");
+        EnsureConfigurationApplicationsClosed("applying multicast settings");
 
         var root = await ReadConfigurationForUpdateAsync("applying multicast settings", ct);
 
@@ -229,9 +312,7 @@ public sealed class NdiAccessManagerService
 
     public async Task<NdiAccessManagerStatus> DisableMulticastAsync(CancellationToken ct)
     {
-        if (IsRunning)
-            throw new InvalidOperationException(
-                "Close NDI Access Manager before reverting to unicast. It keeps an in-memory copy and can overwrite externally applied changes when it exits.");
+        EnsureConfigurationApplicationsClosed("reverting to unicast");
 
         if (!File.Exists(_configPath))
             return new(Detected, false, false, _configPath, null, null, null);
@@ -384,6 +465,17 @@ public sealed class NdiAccessManagerService
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Contains(expected.Trim(), StringComparer.OrdinalIgnoreCase);
 
+    private void EnsureConfigurationApplicationsClosed(string operation)
+    {
+        var preflight = GetApplicationPreflight();
+        if (preflight.AccessManagerRunning)
+            throw new InvalidOperationException(
+                $"Close NDI Access Manager before {operation}. It keeps an in-memory copy and can overwrite externally applied changes when it exits.");
+        if (preflight.RunningConfigurationApplications.Count > 0)
+            throw new InvalidOperationException(
+                $"Close these NDI applications before {operation}: {string.Join(", ", preflight.RunningConfigurationApplications)}. Reopen them after onboarding so they load the new interface, group, and Discovery Server settings.");
+    }
+
     private static string? Text(JsonObject? source, string name) =>
         source?[name] is JsonValue value && value.TryGetValue<string>(out var text)
             ? text
@@ -405,6 +497,7 @@ public sealed class NdiAccessManagerService
     {
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         if (string.IsNullOrWhiteSpace(programFiles)) yield break;
+        yield return Path.Combine(programFiles, "NDI", "NDI 6 Tools", "Access Manager", "Application.NdiGroupEditor.exe");
         yield return Path.Combine(programFiles, "NDI", "NDI 6 Tools", "Access Manager.exe");
         yield return Path.Combine(programFiles, "NDI", "NDI Tools", "Access Manager.exe");
         yield return Path.Combine(programFiles, "NewTek", "NDI 5 Tools", "Access Manager.exe");
@@ -413,6 +506,7 @@ public sealed class NdiAccessManagerService
 
     private static IEnumerable<string> AccessManagerProcessNames()
     {
+        yield return "Application.NdiGroupEditor";
         yield return "Access Manager";
         yield return "NDI Access Manager";
     }

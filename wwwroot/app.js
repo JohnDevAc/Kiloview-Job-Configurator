@@ -3,9 +3,9 @@ import { createPreviewController } from './js/previews.js';
 import { createSystemSettingsController } from './js/system-settings.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,infrastructureRerun:false,localInterfaces:[],selectedNetwork:null,networkReady:false,localPc:null};
+const state={settings:null,devices:[],discovery:null,selected:new Set(),skipped:new Set(),plan:null,multicastPlan:null,multicastConfigured:false,poll:null,afterFirmware:null,titleCardIds:new Set(),titleCardSources:new Map(),previewWarnings:new Map(),monitorCardSignature:null,returnView:'setup',systemInfo:null,updateInfo:null,infrastructureDetecting:false,infrastructureRerun:false,localInterfaces:[],selectedNetwork:null,networkReady:false,localPc:null,ndiPreflight:null};
 const views=['setup','discover','plan','progress','firmware','decoder','monitor','multicast','settings'];
-function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup'&&state.networkReady)setTimeout(detectInfrastructure,0)}
+function show(name){views.forEach(v=>$(`#${v}View`).classList.toggle('hidden',v!==name));scrollTo({top:0,behavior:'smooth'});if(name==='setup'){if(state.networkReady)setTimeout(detectInfrastructure,0);setTimeout(refreshNdiPreflight,0)}}
 function toast(message,error=false){const el=$('#toast');el.textContent=message;el.className=error?'show error':'show';setTimeout(()=>el.className='',4200)}
 function esc(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function roleClass(r){return String(r).toLowerCase()}
@@ -32,7 +32,7 @@ function updateServiceConnectionsStatus(checking=false){
   else{setServiceConnectionsStatus('needs-attention','Service attention required');setServiceConnectionsExpanded(true)}
 }
 toggleServiceConnections.onclick=()=>setServiceConnectionsExpanded(serviceConnections.classList.contains('is-collapsed'));
-const onboardingNetworkAdapter=$('#onboardingNetworkAdapter'),onboardingNetworkMeta=$('#onboardingNetworkMeta');
+const onboardingNetworkAdapter=$('#onboardingNetworkAdapter'),onboardingNetworkMeta=$('#onboardingNetworkMeta'),onboardingLocalPcCard=$('#onboardingLocalPcCard');
 function ipv4Number(value){const parts=String(value).split('.').map(Number);return parts.length===4&&parts.every(part=>Number.isInteger(part)&&part>=0&&part<=255)?parts.reduce((number,part)=>((number<<8)|part)>>>0,0):null}
 function addressMatchesNetwork(address,network){
   const value=ipv4Number(address),local=ipv4Number(network.address),prefix=Math.max(0,Math.min(32,Number(network.prefixLength)));
@@ -44,6 +44,29 @@ function selectedNetworkOption(){
   const index=Number(onboardingNetworkAdapter.value);
   return onboardingNetworkAdapter.value!==''&&Number.isInteger(index)?state.localInterfaces[index]||null:null;
 }
+function renderOnboardingLocalPcCard(){
+  const network=state.selectedNetwork,pc=state.localPc,preflight=state.ndiPreflight;
+  const running=[...(preflight?.accessManagerRunning?['NDI Access Manager']:[]),...(preflight?.runningConfigurationApplications||[])];
+  const preferred=pc?.preferredInterfaceConfigured===true,ready=preferred&&preflight?.ready===true;
+  const hostname=pc?.hostname||'This Windows PC',address=network?.address||pc?.address,prefix=network?.prefixLength??pc?.prefixLength,interfaceName=network?.name||pc?.adapterName;
+  const attention=!network
+    ? 'Select the primary network adapter to onboard this PC.'
+    : pc?.error
+      ? pc.error
+      : !preflight
+        ? 'NDI application status could not be checked. Use Check NDI applications again before continuing.'
+      : running.length
+        ? `Close ${running.join(', ')} before continuing. Reopen client applications after onboarding so they load the new NDI settings.`
+        : 'Preferred interface applied. This PC is onboarded and will use the Job Name as its managed NDI send and receive group.';
+  onboardingLocalPcCard.classList.toggle('configuration-drift',!ready);
+  onboardingLocalPcCard.innerHTML=`<header><span class="model">LOCAL WINDOWS PC · NDI ENDPOINT</span><i class="health ${ready?'online':network?'configuring':'offline'}" title="${ready?'Ready for onboarding':'Needs attention'}"></i></header><div class="onboarding-local-pc-body"><div><h3>${esc(hostname)}</h3><div class="ip">${address?`${esc(address)}/${esc(prefix)}`:'NO ADAPTER SELECTED'}</div></div><div class="meta"><span class="pill ${preferred?'encoder':'standalone'}">${preferred?'PREFERRED INTERFACE APPLIED':'INTERFACE NOT APPLIED'}</span>${interfaceName?`<span class="pill">${esc(interfaceName)}</span>`:''}</div></div><div class="${ready?'local-pc-note':'local-pc-drift'}"><strong>${ready?'LOCAL PC READY':'LOCAL PC ATTENTION'}</strong><span>${esc(attention)}</span></div><div class="card-actions"><button type="button" data-local-onboarding-action="refresh">Check readiness again</button></div>`;
+}
+async function refreshNdiPreflight(){
+  try{state.ndiPreflight=await api('/api/ndi/preflight')}
+  catch{state.ndiPreflight=null}
+  renderOnboardingLocalPcCard();
+  return state.ndiPreflight;
+}
 function showSelectedNetwork(network){
   state.selectedNetwork=network;state.networkReady=!!network;
   const localStatus=state.localPc
@@ -54,15 +77,18 @@ function showSelectedNetwork(network){
   onboardingNetworkMeta.textContent=network
     ? `${network.name} · ${network.address}/${network.prefixLength} · device scan ${network.scanCidr||'uses this subnet'}${localStatus}`
     : 'Choose the interface connected to the Kiloview, TeleTool, KiloLink, and NDI network.';
+  renderOnboardingLocalPcCard();
 }
 async function persistNetworkSelection(network=selectedNetworkOption()){
   if(!network){showSelectedNetwork(null);throw new Error('Select the network adapter connected to the devices.')}
   const selected=await api('/api/network/selection',{method:'PUT',body:JSON.stringify({adapterId:network.id,address:network.address})});
   state.localPc=selected.localPc||null;
+  state.ndiPreflight=selected.ndiPreflight||state.ndiPreflight;
   const merged={...network,...selected};showSelectedNetwork(merged);return merged;
 }
 async function loadNetworkSelection(app){
   state.localPc=app.localPc||null;
+  await refreshNdiPreflight();
   state.localInterfaces=await api('/api/network/interfaces');
   onboardingNetworkAdapter.innerHTML='<option value="">Select an active network adapter</option>'+state.localInterfaces.map((candidate,index)=>`<option value="${index}">${esc(candidate.name)} · ${esc(candidate.address)}/${candidate.prefixLength} · ${esc(candidate.type)}</option>`).join('');
   let selected=state.localInterfaces.find(candidate=>candidate.id===app.selectedNetworkAdapterId&&candidate.address===app.selectedNetworkAddress)
@@ -104,7 +130,7 @@ async function boot(){
 $('#setupForm').addEventListener('submit',async e=>{
   e.preventDefault();const f=new FormData(e.currentTarget);state.settings={kiloLinkServerIp:f.get('kiloLinkServerIp').trim(),kiloLinkOnboardingCode:'',kiloLinkUsername:f.get('kiloLinkUsername').trim(),kiloLinkPassword:f.get('kiloLinkPassword'),kiloLinkPort:+f.get('kiloLinkPort'),kiloLinkWebPort:+f.get('kiloLinkWebPort'),ndiDiscoveryServerIp:f.get('ndiDiscoveryServerIp').trim(),staticStart:f.get('staticStart').trim(),staticEnd:f.get('staticEnd').trim(),subnetMask:f.get('subnetMask').trim(),gateway:f.get('gateway').trim(),dns:f.get('dns').trim(),jobName:f.get('jobName').trim(),deviceIds:[]};
   const simulation=f.get('simulation')==='on';
-  try{e.submitter.disabled=true;e.submitter.querySelector('span').textContent='Scanning…';const network=await persistNetworkSelection();if(!network.localPc?.preferredInterfaceConfigured)throw new Error(network.localPc?.error||'Apply the preferred NDI interface before continuing.');const result=await api('/api/discovery',{method:'POST',body:JSON.stringify({credentials:{username:f.get('username')||'admin',password:f.get('password')||'admin'},simulation})});state.devices=result.devices;state.discovery=result;state.skipped=new Set();state.selected=new Set(result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)).map(d=>d.id));renderDiscovery(result);show('discover')}
+  try{e.submitter.disabled=true;e.submitter.querySelector('span').textContent='Scanning…';const network=await persistNetworkSelection();if(!network.localPc?.preferredInterfaceConfigured)throw new Error(network.localPc?.error||'Apply the preferred NDI interface before continuing.');if(network.ndiPreflight?.ready!==true){if(!network.ndiPreflight)throw new Error('NDI application status could not be checked. Check NDI applications again before scanning.');const running=[...(network.ndiPreflight.accessManagerRunning?['NDI Access Manager']:[]),...(network.ndiPreflight.runningConfigurationApplications||[])];throw new Error(`Close ${running.join(', ')} before scanning. The NDI Discovery Server should remain running.`)}const result=await api('/api/discovery',{method:'POST',body:JSON.stringify({credentials:{username:f.get('username')||'admin',password:f.get('password')||'admin'},simulation})});state.devices=result.devices;state.discovery=result;state.skipped=new Set();state.selected=new Set(result.devices.filter(d=>d.canOnboard!==false&&!inRange(d.ipAddress,state.settings.staticStart,state.settings.staticEnd)).map(d=>d.id));renderDiscovery(result);show('discover')}
   catch(err){toast(err.message,true)}finally{e.submitter.disabled=false;e.submitter.querySelector('span').textContent='Scan network'}
 });
 const kiloLinkIp=$('input[name="kiloLinkServerIp"]'),kiloLinkUser=$('input[name="kiloLinkUsername"]'),kiloLinkPassword=$('input[name="kiloLinkPassword"]'),credentialHint=$('#kiloLinkCredentialHint'),storedCredential=$('#kiloLinkStoredCredential'),storedUsername=$('#kiloLinkStoredUsername'),storedPassword=$('#kiloLinkStoredPassword'),revealStoredPassword=$('#showKiloLinkStoredPassword'),storedSecurityNote=$('#kiloLinkStoredSecurityNote');
@@ -450,4 +476,14 @@ setInterval(refreshMonitor,15000);
 setInterval(refreshEncoderPreviews,5000);
 document.addEventListener('click',e=>{const button=e.target.closest('[data-teletool-action]');if(button){e.preventDefault();controlTeleTool(button)}});
 document.addEventListener('click',e=>{const a=e.target.closest('[data-action]');if(!a)return;e.preventDefault();if(a.dataset.action==='back-setup'||a.dataset.action==='new-job')show('setup');if(a.dataset.action==='back-devices')show('discover');if(a.dataset.action==='monitor'||a.dataset.action==='back-multicast')api('/api/state').then(x=>{renderMonitor(x);show('monitor')});if(a.dataset.action==='multicast'){show('multicast');loadMulticastSetup(false)}if(a.dataset.action==='settings'){state.returnView=views.find(v=>!$(`#${v}View`).classList.contains('hidden'))||'setup';show('settings');loadSystemSettings()}if(a.dataset.action==='back-settings')show(state.returnView||'setup')});
+document.addEventListener('click',async e=>{
+  const button=e.target.closest('[data-local-onboarding-action="refresh"]');
+  if(!button)return;
+  try{
+    button.disabled=true;button.textContent='Checking…';
+    await refreshNdiPreflight();
+    if(state.selectedNetwork)await persistNetworkSelection(state.selectedNetwork);
+    toast(state.ndiPreflight?.ready?'NDI application preflight passed':'Close the listed NDI client applications before continuing',state.ndiPreflight?.ready===false);
+  }catch(err){toast(err.message,true);renderOnboardingLocalPcCard()}
+});
 boot();

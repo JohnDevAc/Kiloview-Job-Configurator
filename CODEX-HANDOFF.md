@@ -8,18 +8,44 @@ Last updated: 30 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: managed local NDI group replacement and high-DPI installer layout
-- Current version: `0.8.0-dev.29`
+- Latest implementation: local-PC onboarding card and NDI client preflight
+- Current version: `0.8.0-dev.30`
 - Release channel: `Development`
-- Previous published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.28>
-- Target release: `v0.8.0-dev.29`
-- Current active work: package and publish the managed NDI group and high-DPI installer release.
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.29>
+- Target release: `v0.8.0-dev.30`
+- Current active work: package and publish the local-PC onboarding preflight release.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.28` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.29` has been committed, pushed, packaged, and published.
+
+## Dev.30 local-PC onboarding preflight work
+
+- The first onboarding section now includes a live card for the local Windows
+  NDI endpoint beneath the primary adapter selector.
+- The card shows hostname, address, adapter, preferred-interface state, and any
+  actionable intervention. Individual Access Manager, NDI client, and
+  Discovery Server status badges are intentionally omitted.
+- `GET /api/ndi/preflight` reports running configuration-consuming NDI client
+  applications.
+- Applying the preferred interface, starting onboarding, applying multicast,
+  and reverting multicast now stop when Access Manager or a recognised NDI
+  client application is open.
+- Exact NDI 6 process names are covered, including:
+  - `Application.NdiGroupEditor` for Access Manager;
+  - `Application.NDI.DiscoveryService.UI` for the separate Discovery client;
+  - the current Studio Monitor, Screen Capture, Bridge, Router, Webcam, Test
+    Patterns, and Analysis executables.
+- `NDI Discovery Service` is intentionally informational rather than blocking:
+  the Discovery Server must remain running while devices are onboarded.
+- Validation completed:
+  - frontend syntax, .NET formatting, and Release build passed;
+  - the live preflight identified the local Discovery Server as running while
+    returning `ready: true` when no client applications were open;
+  - the card rendered without horizontal overflow at `1920×1080` and
+    `640×900`.
 
 ## Dev.29 local NDI group replacement work
 
@@ -145,18 +171,16 @@ All requested application work through `v0.8.0-dev.28` has been committed, pushe
 
 ## Validation already completed
 
-For `v0.8.0-dev.29`:
+For `v0.8.0-dev.30`:
 
 - `dotnet format --verify-no-changes` passed.
-- Main and bootstrapper Release builds passed with zero warnings and zero
-  errors.
-- Release metadata and Git whitespace checks passed.
-- Two isolated consecutive onboardings replaced only the tracked local NDI
-  group, retained unrelated groups, and completed all eight simulated steps
-  with zero errors.
-- The live installer EULA window was verified as per-monitor DPI aware.
-- Normal `836×739` and compact `640×520` installer renders were inspected with
-  no clipping, overlap, or hidden controls.
+- Main Release build passed with zero warnings and zero errors.
+- Frontend JavaScript syntax, release metadata, and Git whitespace checks
+  passed.
+- The live preflight detected the installed NDI 6 Access Manager, allowed the
+  running Discovery Server, and returned ready when no client applications
+  were open.
+- The local-PC card had no horizontal overflow at `1920×1080` or `640×900`.
 
 ## Release procedure
 
@@ -164,7 +188,7 @@ Development releases must:
 
 1. Be made from `development`.
 2. Increment the version in `Directory.Build.props`.
-3. Use a tag such as `v0.8.0-dev.29`.
+3. Use a tag such as `v0.8.0-dev.30`.
 4. Be published as a GitHub prerelease targeting `development`.
 5. Include:
    - `Kiloview-Job-Configurator.exe`

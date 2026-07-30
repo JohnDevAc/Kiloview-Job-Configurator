@@ -290,6 +290,8 @@ app.MapGet("/api/network/subnets", async (AppStateStore store) =>
     return Results.Ok(selected is null ? [] : new[] { NetworkAddressing.GetScanCidr(selected) });
 });
 app.MapGet("/api/network/interfaces", () => Results.Ok(NetworkAddressing.GetLocalInterfaces()));
+app.MapGet("/api/ndi/preflight", (NdiAccessManagerService accessManager) =>
+    Results.Ok(accessManager.GetApplicationPreflight()));
 app.MapPut("/api/network/selection", async (
     NetworkAdapterSelection selection,
     AppStateStore store,
@@ -357,7 +359,8 @@ app.MapPut("/api/network/selection", async (
         selected.PrefixLength,
         selected.Type,
         ScanCidr = NetworkAddressing.GetScanCidr(selected),
-        LocalPc = localPc
+        LocalPc = localPc,
+        NdiPreflight = accessManager.GetApplicationPreflight()
     });
 });
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));
