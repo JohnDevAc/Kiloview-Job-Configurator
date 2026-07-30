@@ -8,11 +8,12 @@ Last updated: 30 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest commit: `32a62dd` — `Onboard the preferred local NDI interface`
+- Latest implementation commit: `a77b2fb` — `Add Windows PC onboarding compatibility`
 - Current version: `0.8.0-dev.27`
 - Release channel: `Development`
-- Published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.26>
-- Current active work: Windows PC Onboarding Utility compatibility release.
+- Previous published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.26>
+- Target release: `v0.8.0-dev.27`
+- Current active work: package and publish the Windows PC Onboarding Utility compatibility release.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
