@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.NetworkInformation;
 using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
@@ -74,6 +75,7 @@ public sealed class DeviceMonitor(
                 }
                 results[device.Id] = new(device, updated);
             });
+        var remoteWindowsResults = await PollRemoteWindowsPcsAsync(snapshot, ct);
 
         AccessManagerPollResult? accessManagerResult = null;
         try
@@ -105,6 +107,7 @@ public sealed class DeviceMonitor(
         await store.UpdateAsync(current => ApplyResults(
             current,
             results.Values,
+            remoteWindowsResults,
             accessManagerResult,
             localPcResult));
     }
@@ -112,6 +115,7 @@ public sealed class DeviceMonitor(
     private static AppState ApplyResults(
         AppState current,
         IEnumerable<DevicePollResult> results,
+        IEnumerable<RemoteWindowsPollResult> remoteWindowsResults,
         AccessManagerPollResult? accessManagerResult,
         LocalPcPollResult? localPcResult)
     {
@@ -120,6 +124,8 @@ public sealed class DeviceMonitor(
         var assignments = multicast?.Assignments.ToArray();
         var devicesChanged = false;
         var assignmentsChanged = false;
+        var remoteWindowsPcs = (current.RemoteWindowsPcs ?? []).ToArray();
+        var remoteWindowsChanged = false;
 
         foreach (var result in results)
         {
@@ -169,6 +175,20 @@ public sealed class DeviceMonitor(
             }
         }
 
+        foreach (var result in remoteWindowsResults)
+        {
+            var index = Array.FindIndex(
+                remoteWindowsPcs,
+                endpoint => string.Equals(
+                    endpoint.EndpointId,
+                    result.Original.EndpointId,
+                    StringComparison.OrdinalIgnoreCase));
+            if (index < 0 || remoteWindowsPcs[index] != result.Original) continue;
+            if (remoteWindowsPcs[index] == result.Updated) continue;
+            remoteWindowsPcs[index] = result.Updated;
+            remoteWindowsChanged = true;
+        }
+
         if (accessManagerResult is not null && assignments is not null && multicast is not null
             && string.Equals(multicast.JobName, accessManagerResult.JobName, StringComparison.Ordinal))
         {
@@ -191,7 +211,7 @@ public sealed class DeviceMonitor(
             localPcChanged = true;
         }
 
-        if (!devicesChanged && !assignmentsChanged && !localPcChanged) return current;
+        if (!devicesChanged && !assignmentsChanged && !localPcChanged && !remoteWindowsChanged) return current;
         if (multicast is not null && assignments is not null && assignmentsChanged)
         {
             multicast = multicast with
@@ -204,8 +224,64 @@ public sealed class DeviceMonitor(
         {
             Devices = devicesChanged ? devices : current.Devices,
             Multicast = multicast,
-            LocalPc = localPc
+            LocalPc = localPc,
+            RemoteWindowsPcs = remoteWindowsChanged ? remoteWindowsPcs : current.RemoteWindowsPcs
         };
+    }
+
+    private static async Task<IReadOnlyList<RemoteWindowsPollResult>> PollRemoteWindowsPcsAsync(
+        AppState state,
+        CancellationToken ct)
+    {
+        var endpoints = state.RemoteWindowsPcs ?? [];
+        if (endpoints.Count == 0) return [];
+
+        var results = new ConcurrentBag<RemoteWindowsPollResult>();
+        await Parallel.ForEachAsync(
+            endpoints,
+            new ParallelOptions { MaxDegreeOfParallelism = 12, CancellationToken = ct },
+            async (endpoint, token) =>
+            {
+                var checkedUtc = DateTimeOffset.UtcNow;
+                var reachable = false;
+                try
+                {
+                    using var ping = new Ping();
+                    var reply = await ping.SendPingAsync(
+                        endpoint.Address,
+                        TimeSpan.FromMilliseconds(900),
+                        cancellationToken: token);
+                    reachable = reply.Status == IPStatus.Success;
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is PingException
+                    or InvalidOperationException
+                    or System.Net.Sockets.SocketException)
+                {
+                    reachable = false;
+                }
+
+                var failures = reachable
+                    ? 0
+                    : Math.Min(endpoint.ConsecutiveConnectivityFailures + 1, 3);
+                var connectivityStatus = reachable
+                    ? "online"
+                    : failures >= 3
+                        ? "offline"
+                        : "stale";
+                var updated = endpoint with
+                {
+                    LastConnectivityCheckUtc = checkedUtc,
+                    LastSeenUtc = reachable ? checkedUtc : endpoint.LastSeenUtc,
+                    ConsecutiveConnectivityFailures = failures,
+                    ConnectivityStatus = connectivityStatus
+                };
+                results.Add(new(endpoint, updated));
+            });
+        return results.ToArray();
     }
 
     private async Task<LocalPcPollResult?> PollLocalPcAsync(AppState state, CancellationToken ct)
@@ -279,6 +355,9 @@ public sealed class DeviceMonitor(
         && string.Equals(latest.NdiGroup, original.NdiGroup, StringComparison.Ordinal);
 
     private sealed record DevicePollResult(ManagedDevice Original, ManagedDevice Updated);
+    private sealed record RemoteWindowsPollResult(
+        RemoteWindowsPcEndpoint Original,
+        RemoteWindowsPcEndpoint Updated);
     private sealed record AccessManagerPollResult(
         MulticastAssignment Original,
         MulticastAssignment Updated,

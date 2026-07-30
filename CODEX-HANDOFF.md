@@ -8,18 +8,45 @@ Last updated: 30 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: local-PC onboarding card and NDI client preflight
-- Current version: `0.8.0-dev.30`
+- Latest implementation: local-PC card relocation and remote Windows endpoint connectivity monitoring
+- Current version: `0.8.0-dev.31`
 - Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.29>
-- Target release: `v0.8.0-dev.30`
-- Current active work: package and publish the local-PC onboarding preflight release.
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.31>
+- Next target release: to be assigned after `v0.8.0-dev.31`
+- Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.29` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.31` has been committed, pushed, packaged, and published.
+
+## Dev.31 local-PC card relocation
+
+- The local Windows PC card no longer appears in the first setup form.
+- It now appears on the second onboarding/device-selection screen under
+  **Windows NDI Endpoints**.
+- The endpoint uses the same `device-grid` and standard `device-card` structure
+  as discovered Kiloview and TeleTool units, so its width and responsive
+  breakpoints match the other cards.
+- The card retains endpoint identity, address, adapter, preferred-interface
+  state, actionable readiness errors, and the readiness recheck action.
+
+## Dev.31 remote Windows endpoint monitoring
+
+- The existing 15-second device monitor now pings registered remote Windows NDI
+  endpoints concurrently, without requiring the companion utility to remain
+  running as a service.
+- Remote endpoint cards show **Online**, amber **Checking**, or **Offline**.
+  Three consecutive failed checks are required before an endpoint is declared
+  offline; any successful reply resets the failure count and refreshes
+  `LastSeenUtc`.
+- Timestamp-only health updates are excluded from the monitor card signature so
+  successful checks do not rebuild every card and interrupt live previews.
+- The Windows Onboarding App task was asked to create an idempotent inbound
+  ICMPv4 Echo firewall rule on the Private profile, restricted to the Job
+  Configurator IP or selected subnet, during successful onboarding. It must not
+  add a background service.
 
 ## Dev.30 local-PC onboarding preflight work
 
@@ -171,12 +198,15 @@ All requested application work through `v0.8.0-dev.29` has been committed, pushe
 
 ## Validation already completed
 
-For `v0.8.0-dev.30`:
+For `v0.8.0-dev.31`:
 
 - `dotnet format --verify-no-changes` passed.
 - Main Release build passed with zero warnings and zero errors.
 - Frontend JavaScript syntax, release metadata, and Git whitespace checks
   passed.
+- Isolated runtime checks confirmed that a reachable remote Windows endpoint
+  stays online, the first two missed replies report an amber checking state,
+  and the third consecutive failure reports offline.
 - The live preflight detected the installed NDI 6 Access Manager, allowed the
   running Discovery Server, and returned ready when no client applications
   were open.

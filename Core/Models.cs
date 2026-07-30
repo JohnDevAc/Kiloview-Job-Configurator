@@ -189,7 +189,10 @@ public sealed record RemoteWindowsPcEndpoint(
     DateTimeOffset RegisteredUtc,
     DateTimeOffset LastSeenUtc,
     string Status,
-    string? Error = null);
+    string? Error = null,
+    DateTimeOffset? LastConnectivityCheckUtc = null,
+    int ConsecutiveConnectivityFailures = 0,
+    string ConnectivityStatus = "unknown");
 public sealed record WindowsPcRegistration(
     string EndpointId,
     string Hostname,

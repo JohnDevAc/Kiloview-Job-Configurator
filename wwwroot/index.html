@@ -34,7 +34,6 @@
       <form id="setupForm" class="panel setup-grid">
         <div class="section-title"><span>01</span><div><h2>Network adapter</h2><p>The single network used for discovery, onboarding, previews, and multicast.</p></div></div>
         <label class="wide"><span>Onboarding network adapter</span><select name="networkAdapter" id="onboardingNetworkAdapter" required><option value="">Select an active network adapter</option></select><small id="onboardingNetworkMeta">Choose the interface connected to the Kiloview, TeleTool, KiloLink, and NDI network.</small></label>
-        <article id="onboardingLocalPcCard" class="device-card local-pc-card onboarding-local-pc-card wide" aria-live="polite"></article>
 
         <section id="serviceConnections" class="service-connections wide is-collapsed is-checking" aria-labelledby="serviceConnectionsTitle">
           <div class="section-title service-connections-header">
@@ -94,6 +93,10 @@
       <div class="page-head"><div><p class="eyebrow">DISCOVERY</p><h1>Select devices</h1><p>Kiloview converters and compatible TeleTool Dev encoders share one collision-checked address plan.</p></div><button class="quiet" data-action="back-setup">← Edit job</button></div>
       <div id="discoverySummary" class="summary-strip"></div>
       <div id="discoveredGrid" class="device-grid"></div>
+      <section class="device-group discovery-windows-endpoints" aria-labelledby="windowsNdiEndpointsTitle">
+        <div class="device-group-title"><h2 id="windowsNdiEndpointsTitle">Windows NDI Endpoints</h2><span>1 ENDPOINT</span></div>
+        <div class="device-grid"><article id="onboardingLocalPcCard" class="device-card local-pc-card" aria-live="polite"></article></div>
+      </section>
       <div class="sticky-action"><div><strong id="selectedCount">0 onboard · 0 standalone</strong><small>Use each card to onboard the unit or leave it standalone with no changes.</small></div><button id="buildPlan" class="primary">Review address plan <b>→</b></button></div>
     </section>
 
