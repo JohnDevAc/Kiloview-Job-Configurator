@@ -33,6 +33,8 @@ TeleTool discovery probes port `8000` and validates the `/api/manager/discovery`
 
 Each selected TeleTool remains an encoder and receives a `JOB-TT-###` hostname, a job-derived NDI channel name, the selected static IPv4 address on `eth0`, the job's NDI Discovery Server, and the exact Job Name as its NDI send group. If its NDI stream is already running, onboarding restarts that stream with the new identity/group so the change takes effect immediately. The configurator then maintains the TeleTool adoption heartbeat while the unit remains in the onboarded fleet.
 
+The existing 15-second TeleTool `/api/status` poll also reads `system_temperature_c`. Each TeleTool monitor card shows a compact temperature pill beside Dante and RF: green below `70°C`, amber from `70°C`, and red from `80°C`. The numerical value and accessible tooltip remain present in every state; older TeleTool builds that do not report the field show `TEMP N/A`. Temperature-only updates modify the pill in place so live preview cards are not rebuilt.
+
 The advanced setup section contains factory credentials and a simulation mode. Simulation mode exercises the full workflow without changing Kiloview or KiloLink hardware. Each simulation scan starts a fresh synthetic fleet so identities from an earlier run cannot leak into the next job. On the **Name the displays** page it publishes real test-card NDI sources in both `public` and the simulated Job Name group so they are immediately visible in NDI Studio Monitor; every source name includes the same hostname and static IP shown on its decoder card.
 
 ## Multicast setup

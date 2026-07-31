@@ -40,6 +40,7 @@ public sealed record ManagedDevice
     public string? PipelineStatus { get; init; }
     public string? RfSignal { get; init; }
     public string? RfSignalKind { get; init; }
+    public double? SystemTemperatureC { get; init; }
     public bool? DanteAudioActive { get; init; }
     public bool? DanteAudioReady { get; init; }
     public string? DanteAudioStatus { get; init; }

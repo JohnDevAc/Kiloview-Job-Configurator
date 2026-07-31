@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -493,6 +494,7 @@ public sealed class TeleToolFleetService(
         var rf = Object(status, "rf");
         var rfSignal = RfLabel(rf);
         var rfKind = RfKind(rf);
+        var systemTemperatureC = DecimalNumber(status, "system_temperature_c");
         var adoptionOk = adoption is null || Flag(adoption, "ok", true);
         var error = Text(status, "last_error") ?? Text(supervisor, "last_error");
         if (!adoptionOk) error = "Adopted by another active TeleTool Fleet Manager.";
@@ -533,6 +535,7 @@ public sealed class TeleToolFleetService(
             PipelineStatus = Text(supervisor, "pipeline_status") ?? Text(status, "pipeline_state"),
             RfSignal = rfSignal,
             RfSignalKind = rfKind,
+            SystemTemperatureC = systemTemperatureC,
             DanteAudioActive = dante?.Active,
             DanteAudioReady = dante?.Ready,
             DanteAudioStatus = dante?.Status,
@@ -822,6 +825,22 @@ public sealed class TeleToolFleetService(
         if (value.TryGetValue<long>(out var longResult) && longResult is >= int.MinValue and <= int.MaxValue) return (int)longResult;
         if (value.TryGetValue<string>(out var text) && int.TryParse(text, out result)) return result;
         return fallback;
+    }
+
+    private static double? DecimalNumber(JsonObject? source, string name)
+    {
+        if (source?[name] is not JsonValue value) return null;
+        double result;
+        if (!value.TryGetValue<double>(out result))
+        {
+            if (value.TryGetValue<decimal>(out var decimalResult)) result = (double)decimalResult;
+            else if (!value.TryGetValue<string>(out var text)
+                || !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out result)) return null;
+        }
+
+        return double.IsFinite(result) && result is >= -40 and <= 150
+            ? Math.Round(result, 1)
+            : null;
     }
 
     private static string? FirstText(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
