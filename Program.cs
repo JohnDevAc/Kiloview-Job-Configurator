@@ -153,6 +153,8 @@ app.MapPost("/api/pc-onboarding/register", async (
     if (string.IsNullOrWhiteSpace(registration.NdiToolsVersion) || registration.NdiToolsVersion.Length > 40
         || string.IsNullOrWhiteSpace(registration.UtilityVersion) || registration.UtilityVersion.Length > 40)
         return Results.BadRequest(new { error = "The NDI Tools and onboarding utility versions are required." });
+    if (registration.OperatingSystemVersion?.Length > 128)
+        return Results.BadRequest(new { error = "The Windows operating-system version must be at most 128 characters." });
     if (!string.Equals(registration.EulaVersion, "1.0", StringComparison.Ordinal))
         return Results.BadRequest(new { error = "The current Kiloview Job Configurator EULA must be accepted." });
 
@@ -169,7 +171,10 @@ app.MapPost("/api/pc-onboarding/register", async (
         registration.EulaVersion,
         now,
         now,
-        "onboarded");
+        "onboarded",
+        OperatingSystemVersion: string.IsNullOrWhiteSpace(registration.OperatingSystemVersion)
+            ? null
+            : registration.OperatingSystemVersion.Trim());
     var state = await store.UpdateAsync(current =>
     {
         if (current.LastJob is null)
@@ -343,7 +348,8 @@ app.MapPut("/api/network/selection", async (
         selected.PrefixLength,
         preferredInterfaceConfigured,
         preferredInterfaceConfigured ? "applied" : "error",
-        localError);
+        localError,
+        OperatingSystemVersion: System.Runtime.InteropServices.RuntimeInformation.OSDescription);
     await store.UpdateAsync(state => state with
     {
         SelectedNetworkAdapterId = selected.Id,

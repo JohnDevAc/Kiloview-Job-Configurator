@@ -176,7 +176,8 @@ public sealed record LocalPcEndpoint(
     int PrefixLength,
     bool PreferredInterfaceConfigured,
     string Status,
-    string? Error = null);
+    string? Error = null,
+    string? OperatingSystemVersion = null);
 public sealed record RemoteWindowsPcEndpoint(
     string EndpointId,
     string Hostname,
@@ -193,7 +194,8 @@ public sealed record RemoteWindowsPcEndpoint(
     string? Error = null,
     DateTimeOffset? LastConnectivityCheckUtc = null,
     int ConsecutiveConnectivityFailures = 0,
-    string ConnectivityStatus = "unknown");
+    string ConnectivityStatus = "unknown",
+    string? OperatingSystemVersion = null);
 public sealed record WindowsPcRegistration(
     string EndpointId,
     string Hostname,
@@ -203,7 +205,8 @@ public sealed record WindowsPcRegistration(
     bool PreferredInterfaceConfigured,
     string NdiToolsVersion,
     string UtilityVersion,
-    string EulaVersion);
+    string EulaVersion,
+    string? OperatingSystemVersion = null);
 public sealed record MulticastDeviceConfiguration(
     string Group,
     string? NetPrefix,

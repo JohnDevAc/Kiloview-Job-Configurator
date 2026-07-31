@@ -298,7 +298,8 @@ public sealed class DeviceMonitor(
             {
                 PreferredInterfaceConfigured = false,
                 Status = "drifted",
-                Error = "The selected onboarding network adapter is no longer active."
+                Error = "The selected onboarding network adapter is no longer active.",
+                OperatingSystemVersion = System.Runtime.InteropServices.RuntimeInformation.OSDescription
             };
             return unavailable == localPc ? null : new(localPc, unavailable);
         }
@@ -312,7 +313,8 @@ public sealed class DeviceMonitor(
             PrefixLength = selected.PrefixLength,
             PreferredInterfaceConfigured = status.Configured,
             Status = status.Configured ? "applied" : "drifted",
-            Error = status.Configured ? null : status.Error
+            Error = status.Configured ? null : status.Error,
+            OperatingSystemVersion = System.Runtime.InteropServices.RuntimeInformation.OSDescription
         };
         return updated == localPc ? null : new(localPc, updated);
     }

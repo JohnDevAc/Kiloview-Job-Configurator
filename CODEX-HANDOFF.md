@@ -8,18 +8,38 @@ Last updated: 31 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: TeleTool system temperature on monitor cards
-- Current version: `0.8.0-dev.32`
+- Latest implementation: multicast preview firewall fix and compact Windows OS-version card labels
+- Current version: `0.8.0-dev.33`
 - Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.32>
-- Next target release: to be assigned after `v0.8.0-dev.32`
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.33>
+- Next target release: to be assigned after `v0.8.0-dev.33`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.32` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.33` has been committed, pushed, packaged, and published.
+
+## Dev.33 multicast preview firewall and Windows card labels
+
+- Both adopted TeleTool previews failed together after multicast was enabled while
+  Studio Monitor continued receiving the feeds. The embedded NDI finder saw both
+  sources, but its receiver obtained no video frames.
+- Root cause: the installed executable had no inbound UDP allow rule for the
+  active Private profile. The existing installer rule covered only TCP `8091`;
+  an unrelated Windows-generated UDP rule covered Public only.
+- Adding `Kiloview Job Configurator NDI` for the installed executable, inbound
+  UDP, Domain/Private profiles, and `LocalSubnet` immediately restored both
+  previews with zero capture failures.
+- The installer now provisions that restricted rule and the uninstaller removes
+  it alongside the LAN web rule.
+- Local and remote Windows card headers now use `Windows · <OS version>`.
+  `POST /api/pc-onboarding/register` accepts the optional JSON field
+  `operatingSystemVersion`; the companion project should send
+  `RuntimeInformation.OSDescription` (or an equivalent friendly Windows version)
+  on its next update. Older registrations remain valid and display
+  `VERSION UNKNOWN` until they register again.
 
 ## Dev.32 TeleTool temperature integration
 
