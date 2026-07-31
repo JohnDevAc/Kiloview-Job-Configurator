@@ -2,24 +2,35 @@
 
 Read this file before changing or publishing Kiloview Job Configurator.
 
-Last updated: 30 July 2026
+Last updated: 31 July 2026
 
 ## Current baseline
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
-- Active development branch: `development`
+- Active stable branch: `main`
 - Latest implementation: local-PC card relocation and remote Windows endpoint connectivity monitoring
-- Current version: `0.8.0-dev.31`
-- Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.31>
-- Next target release: to be assigned after `v0.8.0-dev.31`
+- Current version: `0.8.0`
+- Release channel: `Main`
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0>
+- Next target release: to be assigned after `v0.8.0`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.31` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0` has been committed, pushed, packaged, and published.
+
+## Stable 0.8.0 promotion
+
+- `main` was fast-forwarded to the fully validated `v0.8.0-dev.31`
+  implementation.
+- Shared release metadata was changed to the stable `0.8.0` version and the
+  `Main` update channel.
+- The stable application retains the development branch's completed
+  onboarding, TeleTool, Windows endpoint, multicast, updater, diagnostics,
+  installer, tray, performance, and high-DPI work without displaying the
+  development banner.
 
 ## Dev.31 local-PC card relocation
 
@@ -198,7 +209,7 @@ All requested application work through `v0.8.0-dev.31` has been committed, pushe
 
 ## Validation already completed
 
-For `v0.8.0-dev.31`:
+For `v0.8.0`:
 
 - `dotnet format --verify-no-changes` passed.
 - Main Release build passed with zero warnings and zero errors.
@@ -214,11 +225,30 @@ For `v0.8.0-dev.31`:
 
 ## Release procedure
 
+Stable releases must:
+
+1. Be made from `main`.
+2. Increment the version in `Directory.Build.props`.
+3. Set `ReleaseChannel` to `Main`.
+4. Use a tag such as `v0.8.0`.
+5. Be published as a normal GitHub release targeting `main`.
+6. Include:
+   - `Kiloview-Job-Configurator.exe`
+   - `Kiloview-Job-Configurator-Windows.zip`
+   - `SHA256SUMS.txt`
+7. Be built with:
+
+   ```powershell
+   .\scripts\Publish.ps1 -SetupExe
+   ```
+
+8. Be checked through the installed updater after publishing.
+
 Development releases must:
 
 1. Be made from `development`.
-2. Increment the version in `Directory.Build.props`.
-3. Use a tag such as `v0.8.0-dev.30`.
+2. Use a `-dev.N` version and the `Development` release channel.
+3. Use a tag such as `v0.8.0-dev.31`.
 4. Be published as a GitHub prerelease targeting `development`.
 5. Include:
    - `Kiloview-Job-Configurator.exe`

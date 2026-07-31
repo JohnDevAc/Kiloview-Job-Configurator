@@ -2,8 +2,8 @@
   <PropertyGroup>
     <Product>Kiloview Job Configurator</Product>
     <Company>John Lightfoot</Company>
-    <Version>0.8.0-dev.31</Version>
-    <ReleaseChannel>Development</ReleaseChannel>
+    <Version>0.8.0</Version>
+    <ReleaseChannel>Main</ReleaseChannel>
     <Copyright>Copyright © 2026 John Lightfoot. All rights reserved.</Copyright>
   </PropertyGroup>
 </Project>
