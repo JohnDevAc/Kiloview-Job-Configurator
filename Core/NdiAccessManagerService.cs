@@ -35,6 +35,7 @@ public sealed record NdiApplicationPreflight(
 
 public sealed class NdiAccessManagerService
 {
+    private static readonly string? DetectedRuntimeVersion = DetectRuntimeVersion();
     private static readonly IReadOnlyDictionary<string, string> ConfigurationApplicationProcessNames =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -83,6 +84,7 @@ public sealed class NdiAccessManagerService
             "ndi-config.v1.json");
 
     public string ConfigPath => _configPath;
+    public string? RuntimeVersion => DetectedRuntimeVersion;
 
     public bool Detected => File.Exists(_configPath) || AccessManagerCandidates().Any(File.Exists);
     public bool IsRunning => AccessManagerProcessNames().Any(name =>
@@ -502,6 +504,37 @@ public sealed class NdiAccessManagerService
         yield return Path.Combine(programFiles, "NDI", "NDI Tools", "Access Manager.exe");
         yield return Path.Combine(programFiles, "NewTek", "NDI 5 Tools", "Access Manager.exe");
         yield return Path.Combine(programFiles, "NewTek", "NDI 4 Tools", "Access Manager.exe");
+    }
+
+    private static string? DetectRuntimeVersion()
+    {
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var candidates = new[]
+        {
+            string.IsNullOrWhiteSpace(programFiles)
+                ? ""
+                : Path.Combine(programFiles, "NDI", "NDI 6 Tools", "Runtime", "Processing.NDI.Lib.x64.dll"),
+            Path.Combine(AppContext.BaseDirectory, "Processing.NDI.Lib.x64.dll"),
+            @"C:\Program Files\NDI\NDI 6 Runtime\v6\Processing.NDI.Lib.x64.dll",
+            @"C:\Program Files\NewTek\NewTek NDI 3.8 Runtime\v3\Processing.NDI.Lib.x64.dll"
+        };
+        foreach (var candidate in candidates.Where(File.Exists))
+        {
+            try
+            {
+                var information = FileVersionInfo.GetVersionInfo(candidate);
+                var version = information.ProductVersion ?? information.FileVersion;
+                if (!string.IsNullOrWhiteSpace(version))
+                    return version.Split('+', StringSplitOptions.TrimEntries)[0];
+            }
+            catch (Exception ex) when (ex is FileNotFoundException
+                or UnauthorizedAccessException
+                or System.ComponentModel.Win32Exception)
+            {
+                // Continue to the next supported runtime location.
+            }
+        }
+        return null;
     }
 
     private static IEnumerable<string> AccessManagerProcessNames()

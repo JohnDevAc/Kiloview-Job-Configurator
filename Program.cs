@@ -349,7 +349,8 @@ app.MapPut("/api/network/selection", async (
         preferredInterfaceConfigured,
         preferredInterfaceConfigured ? "applied" : "error",
         localError,
-        OperatingSystemVersion: System.Runtime.InteropServices.RuntimeInformation.OSDescription);
+        OperatingSystemVersion: System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+        NdiToolsVersion: accessManager.RuntimeVersion);
     await store.UpdateAsync(state => state with
     {
         SelectedNetworkAdapterId = selected.Id,

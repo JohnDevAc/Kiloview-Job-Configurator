@@ -8,18 +8,28 @@ Last updated: 31 July 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: multicast preview firewall fix and compact Windows OS-version card labels
-- Current version: `0.8.0-dev.33`
+- Latest implementation: uniform local and remote Windows endpoint status pills
+- Current version: `0.8.0-dev.34`
 - Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.33>
-- Next target release: to be assigned after `v0.8.0-dev.33`
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.34>
+- Next target release: to be assigned after `v0.8.0-dev.34`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.33` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.34` has been committed, pushed, packaged, and published.
+
+## Dev.34 uniform Windows endpoint cards
+
+- Local and remote Windows endpoint cards now share one pill renderer and the
+  same order: availability, preferred NDI interface, adapter, NDI version, job
+  group, multicast allocation, and TTL.
+- `LocalPcEndpoint.NdiToolsVersion` is populated from the installed NDI runtime
+  so the local card can show the same NDI version pill as remote endpoints.
+- Remote connectivity and local readiness retain their distinct live status
+  logic, while their visual vocabulary is now consistent.
 
 ## Dev.33 multicast preview firewall and Windows card labels
 

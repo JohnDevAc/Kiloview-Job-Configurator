@@ -177,7 +177,8 @@ public sealed record LocalPcEndpoint(
     bool PreferredInterfaceConfigured,
     string Status,
     string? Error = null,
-    string? OperatingSystemVersion = null);
+    string? OperatingSystemVersion = null,
+    string? NdiToolsVersion = null);
 public sealed record RemoteWindowsPcEndpoint(
     string EndpointId,
     string Hostname,
