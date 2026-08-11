@@ -580,6 +580,17 @@ app.MapDelete("/api/teletools/{id}", async (
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
+app.MapDelete("/api/devices/{id}", async (
+    string id,
+    OnboardingService onboarding,
+    CancellationToken ct) =>
+{
+    try { return Results.Ok(await onboarding.RemoveKiloviewAsync(id, ct)); }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
 app.MapPost("/api/onboarding/complete", async (OnboardingService onboarding, CancellationToken ct) =>
     Results.Ok(await onboarding.CompleteAsync(ct)));
 

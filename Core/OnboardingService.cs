@@ -250,11 +250,22 @@ public sealed class OnboardingService(
 
     private async Task ExecuteAsync(OnboardingPlan plan)
     {
-        var ready = new List<ManagedDevice>();
+        var ready = new ConcurrentBag<ManagedDevice>();
         KiloLinkCredential? serverCredential = null;
         try
         {
-            foreach (var item in plan.Devices)
+            if (plan.Devices.Any(item => item.Family is DeviceFamily.N6 or DeviceFamily.N60))
+            {
+                serverCredential = credentialStore.ResolveAndStore(
+                    plan.Settings.KiloLinkServerIp,
+                    plan.Settings.KiloLinkUsername,
+                    plan.Settings.KiloLinkPassword);
+            }
+            var parallelOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Min(4, Math.Max(1, plan.Devices.Count))
+            };
+            await Parallel.ForEachAsync(plan.Devices, parallelOptions, async (item, _) =>
             {
                 var device = (await store.ReadAsync()).Devices.First(d => d.Id == item.DeviceId);
                 try
@@ -262,7 +273,7 @@ public sealed class OnboardingService(
                     if (device.IsTeleTool())
                     {
                         await OnboardTeleToolAsync(device, item, plan.Settings);
-                        continue;
+                        return;
                     }
 
                     var targetCredentials = new DeviceCredentials("admin", plan.Settings.JobName);
@@ -329,7 +340,7 @@ public sealed class OnboardingService(
                         : (await kiloLink.AuthorizeDeviceAsync(
                             plan.Settings.KiloLinkServerIp,
                             plan.Settings.KiloLinkWebPort,
-                            serverCredential ??= credentialStore.ResolveAndStore(plan.Settings.KiloLinkServerIp, plan.Settings.KiloLinkUsername, plan.Settings.KiloLinkPassword),
+                            serverCredential!,
                             device.Id,
                             item.Hostname,
                             CancellationToken.None)).AuthorizationCode;
@@ -357,9 +368,9 @@ public sealed class OnboardingService(
                     await SaveDeviceAsync(device with { Health = DeviceHealth.Error, LastError = ex.Message });
                     FailStep(device, "Onboarding", ex.Message);
                 }
-            }
+            });
 
-            foreach (var original in ready)
+            await Parallel.ForEachAsync(ready, parallelOptions, async (original, _) =>
             {
                 var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == original.Id) ?? original;
                 try
@@ -406,7 +417,7 @@ public sealed class OnboardingService(
                     await SaveDeviceAsync(device with { Health = DeviceHealth.Error, LastError = ex.Message });
                     FailStep(device, "HDMI role detection", ex.Message);
                 }
-            }
+            });
 
             await store.UpdateAsync(s => s with
             {
@@ -627,6 +638,52 @@ public sealed class OnboardingService(
         };
         await SaveDeviceAsync(device);
         return device;
+    }
+
+    public async Task<KiloviewRemovalResult> RemoveKiloviewAsync(string id, CancellationToken ct)
+    {
+        var state = await store.ReadAsync();
+        var device = state.Devices.FirstOrDefault(candidate => candidate.Id == id)
+            ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
+        if (!device.IsKiloview()) throw new InvalidOperationException("Only Kiloview devices can be removed with this action.");
+        if (!device.IsOnboarded) throw new InvalidOperationException("This Kiloview is not onboarded.");
+
+        var kiloLinkRecordRemoved = false;
+        if (!device.IsSimulation())
+        {
+            var job = state.LastJob ?? throw new InvalidOperationException("The KiloLink server for this job is no longer available.");
+            if (string.IsNullOrWhiteSpace(job.KiloLinkServerIp))
+                throw new InvalidOperationException("The KiloLink server for this job was not retained.");
+            var credential = credentialStore.ResolveAndStore(job.KiloLinkServerIp, null, null);
+            kiloLinkRecordRemoved = await kiloLink.RemoveDeviceAsync(
+                job.KiloLinkServerIp,
+                job.KiloLinkWebPort,
+                credential,
+                device.Id,
+                ct);
+        }
+
+        titleCards.Forget(device.Id);
+        thumbnails.Forget(device.Id);
+        var updated = await store.UpdateAsync(current =>
+        {
+            var assignments = current.Multicast?.Assignments
+                .Where(assignment => !string.Equals(assignment.EndpointId, device.Id, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            return current with
+            {
+                Devices = current.Devices.Where(candidate => candidate.Id != device.Id).ToArray(),
+                Multicast = current.Multicast is null
+                    ? null
+                    : assignments is null || assignments.Length == 0
+                        ? null
+                        : current.Multicast with { Assignments = assignments }
+            };
+        });
+        var remaining = updated.Devices.Count(candidate => candidate.IsOnboarded && candidate.IsKiloview());
+        logger.LogInformation("Removed Kiloview {DeviceId} at {Address} from the job; KiloLink record removed: {KiloLinkRecordRemoved}",
+            device.Id, device.IpAddress, kiloLinkRecordRemoved);
+        return new(device.Id, device.Hostname, remaining, kiloLinkRecordRemoved, "removed");
     }
 
     public async Task<ManagedDevice> SetIdentityAsync(string id, IdentityUpdate update, CancellationToken ct)

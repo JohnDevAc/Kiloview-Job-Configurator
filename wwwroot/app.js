@@ -337,7 +337,7 @@ function renderMonitor(app){
   $('#monitorMeta').textContent=app.lastJob?`${app.lastJob.staticStart} – ${app.lastJob.staticEnd} · NDI discovery ${app.lastJob.ndiDiscoveryServerIp}`:'Health and stream state refresh every 15 seconds.';
   $('#monitorStats').innerHTML=`<div class="stat"><strong>${onboarded}</strong><small>Onboarded</small></div><div class="stat"><strong>${online}</strong><small>Online</small></div><div class="stat"><strong>${onboarded-online}</strong><small>Needs attention</small></div><div class="stat"><strong>${running}/${teletools.length}</strong><small>TeleTool streams live</small></div>`;
   const multicastMeta=d=>d.multicastNetPrefix?`<span class="pill multicast-pill">MC ${esc(d.multicastNetPrefix)}/${d.multicastNetmask==='255.255.255.240'?'28':esc(d.multicastNetmask||'')}</span>`:'';
-  const kiloviewCard=d=>`<article class="device-card"><header><span class="model">${esc(d.model)} · ${esc(d.role)}</span><span class="card-indicators">${multicastIcon(d)}<i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></span></header>${d.role==='Encoder'?encoderPreview(d):''}<h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}</div><div class="meta"><span class="pill ${roleClass(d.role)}">${esc(d.role)}</span><span class="pill">${esc(d.ndiGroup)}</span>${multicastMeta(d)}${d.firmwareVersion?`<span class="pill">FW ${esc(d.firmwareVersion)}</span>`:''}${d.hdmiOutputResolution?`<span class="pill">${esc(d.hdmiOutputResolution)}</span>`:''}</div>${d.multicastLastError?`<div class="error-text">Multicast: ${esc(d.multicastLastError)}</div>`:''}${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">Device UI ↗</a></div></article>`;
+  const kiloviewCard=d=>`<article class="device-card"><header><span class="model">${esc(d.model)} · ${esc(d.role)}</span><span class="card-indicators">${multicastIcon(d)}<i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></span></header>${d.role==='Encoder'?encoderPreview(d):''}<h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}</div><div class="meta"><span class="pill ${roleClass(d.role)}">${esc(d.role)}</span><span class="pill">${esc(d.ndiGroup)}</span>${multicastMeta(d)}${d.firmwareVersion?`<span class="pill">FW ${esc(d.firmwareVersion)}</span>`:''}${d.hdmiOutputResolution?`<span class="pill">${esc(d.hdmiOutputResolution)}</span>`:''}</div>${d.multicastLastError?`<div class="error-text">Multicast: ${esc(d.multicastLastError)}</div>`:''}${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">Device UI ↗</a><button class="remove-kiloview" data-kiloview-action="remove" data-device-id="${esc(d.id)}" data-device-name="${esc(d.hostname)}">Remove from job</button></div></article>`;
   const teleToolCard=d=>{
     const channel=[d.activeChannelNumber,d.activeChannelName].filter(Boolean).join(' ')||'No active TV channel',startDisabled=d.health!=='Online'||d.streamRunning||!d.teleToolControlReady,stopDisabled=d.health!=='Online'||!d.streamRunning,release=[d.firmwareVersion,d.teleToolReleaseBranch].filter(Boolean).join(' ')||'Unknown',previewError=d.streamRunning&&state.previewWarnings.has(d.id);
     return `<article class="device-card teletool-card${previewError?' preview-error':''}"><header><span class="model">TELETOOL · ENCODER</span><span class="card-indicators">${multicastIcon(d)}<i class="health ${roleClass(d.health)}" title="${esc(d.health)}"></i></span></header>${encoderPreview(d)}<div class="teletool-heading"><h3>${esc(d.hostname)}</h3><div class="ip">${esc(d.ipAddress)}:${d.webPort||8000}</div></div><div class="teletool-status-row">${danteAudioBadge(d)}<span class="pill rf-${esc(d.rfSignalKind||'bad')}">RF ${esc(d.rfSignal||'N/A')}</span>${temperatureBadge(d)}</div><dl class="teletool-details"><div><dt>TV CHANNEL</dt><dd>${esc(channel)}</dd></div><div><dt>NDI SOURCE</dt><dd>${esc(d.ndiChannelName)}</dd></div><div><dt>NDI GROUP</dt><dd>${esc(d.ndiGroup)}</dd></div><div><dt>PIPELINE</dt><dd>${esc(d.pipelineStatus||'Unknown')}</dd></div><div class="teletool-release"><dt>RELEASE</dt><dd>${esc(release)}</dd></div></dl>${d.multicastLastError?`<div class="error-text">Multicast: ${esc(d.multicastLastError)}</div>`:''}${d.lastError?`<div class="error-text">${esc(d.lastError)}</div>`:''}<div class="card-actions"><a href="${esc(deviceUrl(d))}" target="_blank" rel="noreferrer">TeleTool UI ↗</a><button data-teletool-action="start" data-device-id="${esc(d.id)}" ${startDisabled?'disabled':''}>Start NDI</button><button data-teletool-action="stop" data-device-id="${esc(d.id)}" ${stopDisabled?'disabled':''}>Stop NDI</button><button class="remove-teletool" data-teletool-action="remove" data-device-id="${esc(d.id)}" data-device-name="${esc(d.hostname)}">Remove from job</button></div></article>`;
@@ -478,6 +478,20 @@ $('#includeLocalPc').onchange=()=>loadMulticastSetup(false);
 $('#applyMulticast').onclick=applyMulticastSetup;
 $('#revertMulticast').onclick=revertMulticastSetup;
 async function refreshMonitor(){if($('#monitorView').classList.contains('hidden'))return;try{renderMonitor(await api('/api/state'))}catch{}}
+async function removeKiloview(button){
+  const id=button.dataset.deviceId,name=button.dataset.deviceName||'this Kiloview';
+  if(!confirm(`Remove ${name} from this job?\n\nThis deletes its KiloLink registration and Job Configurator card. The device's network, login, and NDI settings are retained.`))return;
+  try{
+    button.disabled=true;button.textContent='Removing…';
+    const result=await api(`/api/devices/${encodeURIComponent(id)}`,{method:'DELETE'});
+    state.titleCardIds.delete(id);state.titleCardSources.delete(id);state.monitorCardSignature=null;
+    renderMonitor(await api('/api/state'));
+    toast(`${name} removed · ${result.managedKiloviewCount} Kiloview${result.managedKiloviewCount===1?'':'s'} remaining`);
+  }catch(err){
+    toast(err.message,true);
+    await refreshMonitor();
+  }
+}
 async function controlTeleTool(button){
   const action=button.dataset.teletoolAction,id=button.dataset.deviceId;
   if(action==='remove'){
@@ -509,6 +523,7 @@ async function controlTeleTool(button){
 setInterval(refreshMonitor,15000);
 setInterval(refreshEncoderPreviews,5000);
 document.addEventListener('click',e=>{const button=e.target.closest('[data-teletool-action]');if(button){e.preventDefault();controlTeleTool(button)}});
+document.addEventListener('click',e=>{const button=e.target.closest('[data-kiloview-action]');if(button){e.preventDefault();removeKiloview(button)}});
 document.addEventListener('click',e=>{const a=e.target.closest('[data-action]');if(!a)return;e.preventDefault();if(a.dataset.action==='back-setup'||a.dataset.action==='new-job')show('setup');if(a.dataset.action==='back-devices')show('discover');if(a.dataset.action==='monitor'||a.dataset.action==='back-multicast')api('/api/state').then(x=>{renderMonitor(x);show('monitor')});if(a.dataset.action==='name-displays')openDisplayNaming();if(a.dataset.action==='multicast'){show('multicast');loadMulticastSetup(false)}if(a.dataset.action==='settings'){state.returnView=views.find(v=>!$(`#${v}View`).classList.contains('hidden'))||'setup';show('settings');loadSystemSettings()}if(a.dataset.action==='back-settings')show(state.returnView||'setup')});
 document.addEventListener('click',async e=>{
   const button=e.target.closest('[data-local-onboarding-action="refresh"]');

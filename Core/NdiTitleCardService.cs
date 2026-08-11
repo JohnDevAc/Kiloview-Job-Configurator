@@ -69,6 +69,20 @@ public sealed class NdiTitleCardService(
         }
     }
 
+    public void Forget(string id)
+    {
+        lock (_gate)
+        {
+            if (!_senders.Remove(id, out var sender)) return;
+            sender.Dispose();
+            if (_senders.Count == 0)
+            {
+                _runtime?.Dispose();
+                _runtime = null;
+            }
+        }
+    }
+
     public void Dispose() => StopAll();
 
     private static string NormalizeSourceSegment(string value)

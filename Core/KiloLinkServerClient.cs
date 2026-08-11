@@ -182,6 +182,35 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         return new(deviceDns.Length, groupDns.Length);
     }
 
+    public async Task<bool> RemoveDeviceAsync(
+        string serverIp,
+        int webPort,
+        KiloLinkCredential credential,
+        string serialNumber,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(serialNumber)) throw new ArgumentException("A device serial number is required for KiloLink removal.");
+        using var session = await LoginAsync(serverIp, webPort, credential, ct);
+        using var devicesResponse = await PostAsync(session.Client, "api/tools/getDeviceList.json", new { dn = "", @virtual = false }, ct);
+        var dns = Flatten(Data(devicesResponse), "list")
+            .Where(row => ContainsNormalizedValue(row, serialNumber))
+            .Select(row => GetStringDeep(row, "dn"))
+            .Where(dn => !string.IsNullOrWhiteSpace(dn))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToArray();
+        if (dns.Length == 0) return false;
+        using var deleted = await PostAsync(session.Client, "api/tools/deleteMany.json",
+            new { list = dns.Select(Uri.EscapeDataString).ToArray() }, ct);
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var verification = await PostAsync(session.Client, "api/tools/getDeviceList.json", new { dn = "", @virtual = false }, ct);
+            if (!Flatten(Data(verification), "list").Any(row => ContainsNormalizedValue(row, serialNumber))) return true;
+            if (attempt < 4) await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+        }
+        throw new InvalidOperationException("KiloLink still lists the Kiloview after accepting its removal request.");
+    }
+
     public async Task<KiloLinkFleetResult> DispatchFleetAsync(
         string serverIp,
         int webPort,
