@@ -124,13 +124,19 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         }
 
         using var treeResponse = await PostWithoutBodyAsync(session.Client, "api/tools/searchFix.json", ct);
-        var parentDn = FindDefaultDeviceGroup(Data(treeResponse));
+        var parentDn = await FindOrCreateDeviceGroupAsync(session.Client, Data(treeResponse), hostname, ct);
         var generated = await CreateAuthorizationCodeAsync(session.Client, ct);
         using var added = await PostAsync(session.Client, "api/tools/add.json", new
         {
-            dn = parentDn,
+            dn = Uri.EscapeDataString(parentDn),
             type = "device",
-            cfg = new { cn = hostname, serialNumber, description = generated, o = "" }
+            cfg = new
+            {
+                cn = Uri.EscapeDataString(hostname),
+                serialNumber = Uri.EscapeDataString(serialNumber),
+                description = Uri.EscapeDataString(generated),
+                o = ""
+            }
         }, ct);
         return new(serialNumber, hostname, generated, true);
     }
@@ -299,6 +305,27 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         return dns.FirstOrDefault(x => x.StartsWith("ou=1,ou=KVDevices,", StringComparison.OrdinalIgnoreCase))
             ?? dns.FirstOrDefault(x => x.StartsWith("ou=", StringComparison.OrdinalIgnoreCase) && x.Contains(",ou=KVDevices,", StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidOperationException("KiloLink Server has no real device group under KVDevices.");
+    }
+
+    private static async Task<string> FindOrCreateDeviceGroupAsync(HttpClient client, JsonElement tree, string hostname, CancellationToken ct)
+    {
+        try { return FindDefaultDeviceGroup(tree); }
+        catch (InvalidOperationException)
+        {
+            var marker = hostname.LastIndexOf("-KV-", StringComparison.OrdinalIgnoreCase);
+            var groupName = marker > 0 ? hostname[..marker] : "Onboarded";
+            using var added = await PostAsync(client, "api/tools/add.json", new
+            {
+                dn = Uri.EscapeDataString("ou=KVDevices,cn=admin,dc=kiloview,dc=com"),
+                ou = Uri.EscapeDataString(groupName),
+                type = "organization",
+                cfg = new { ou = Uri.EscapeDataString(groupName) },
+                cn = "",
+                nodeName = ""
+            }, ct);
+            using var refreshed = await PostWithoutBodyAsync(client, "api/tools/searchFix.json", ct);
+            return FindDefaultDeviceGroup(Data(refreshed));
+        }
     }
 
     private static bool ContainsNormalizedValue(JsonElement value, string expected)

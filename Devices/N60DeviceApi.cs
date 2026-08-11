@@ -16,6 +16,8 @@ internal sealed class N60DeviceApi(
         var data = login.RootElement.GetProperty("data");
         var token = String(data, "token");
         var alias = String(data, "alias", "Admin");
+        client.DefaultRequestHeaders.Remove("Authorization");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", token);
         var uri = new Uri($"http://{IpAddress}");
         Cookies.Add(uri, new System.Net.Cookie("language", "en"));
         Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
@@ -56,7 +58,7 @@ internal sealed class N60DeviceApi(
     public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct)
     {
         using var original = await AuthorizedAsync(ct);
-        var accepted = await TryAcceptLicenseAsync(original, ct);
+        _ = await TryAcceptLicenseAsync(original, ct);
         if (!string.Equals(Credentials.Username, targetCredentials.Username, StringComparison.Ordinal) ||
             !string.Equals(Credentials.Password, targetCredentials.Password, StringComparison.Ordinal))
         {
@@ -81,15 +83,14 @@ internal sealed class N60DeviceApi(
 
         var replacement = new N60DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
-        accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
-        if (!accepted)
-            throw new DeviceApiException("The N60 accepted its new login, but its firmware did not expose a recognized EULA acceptance endpoint. Open the device UI once or provide its Web UI bundle for API matching.");
+        _ = await replacement.TryAcceptLicenseAsync(verified, ct);
     }
 
     private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)
     {
         var known = new[]
         {
+            "/api/users/accept_eula.json",
             "/api/systemctrl/system/acceptEula",
             "/api/systemctrl/system/setEula",
             "/api/systemctrl/eula/accept",
@@ -112,32 +113,42 @@ internal sealed class N60DeviceApi(
         var active = network.RootElement.GetProperty("data").EnumerateArray().FirstOrDefault(e => String(e, "status") == "up");
         if (active.ValueKind == JsonValueKind.Undefined) active = network.RootElement.GetProperty("data")[0];
         var ifname = String(active, "device", "eth0");
-        using var _ = await PostAsync(client, "/api/networkmanager/network/SetEthernets",
-            new { ifname, address, netmask = mask, gw = gateway, mac = String(active, "mac"), method = "static", dns },
-            "set N60 static address", ct);
+        try
+        {
+            using var _ = await PostAsync(client, "/api/networkmanager/network/SetEthernets",
+                new { ifname, address, netmask = mask, gw = gateway, mac = String(active, "mac"), method = "static", dns },
+                "set N60 static address", ct);
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { /* Expected while the address changes. */ }
+        catch (HttpRequestException) { /* The caller verifies the device at its target address. */ }
     }
 
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var networks = await GetAsync(client, "/api/KiloLink/networks", "read N60 KiloLink interfaces", ct);
+        using var networks = await GetAsync(client, "/api/kilolink/networks", "read N60 KiloLink interfaces", ct);
         var interfaces = networks.RootElement.TryGetProperty("list", out var list)
             ? list.EnumerateArray().Select(x => x.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray()
             : new[] { "eth0" };
-        using var kilo = await PostAsync(client, "/api/KiloLink/set", new { ip = settings.KiloLinkServerIp, port = settings.KiloLinkPort, ifname = interfaces, key = settings.KiloLinkOnboardingCode, crypto = false, enable = true }, "configure N60 KiloLink", ct);
+        using var kilo = await PostAsync(client, "/api/kilolink/set", new { ip = settings.KiloLinkServerIp, port = settings.KiloLinkPort, ifname = interfaces, key = settings.KiloLinkOnboardingCode, crypto = false, enable = true }, "configure N60 KiloLink", ct);
         await SetIdentityAndDiscoveryAsync(client, hostname, channelName, settings.JobName, settings.NdiDiscoveryServerIp, ct);
     }
 
     private async Task SetIdentityAndDiscoveryAsync(HttpClient client, string hostname, string channel, string group, string? discoveryIp, CancellationToken ct)
     {
         using var host = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
+        if (!string.IsNullOrWhiteSpace(discoveryIp))
+        {
+            using var discovery = await PostAsync(client, "/api/codec/discovery/setDiscoveryServer",
+                new { enable = true, servers = new[] { new { ip = discoveryIp, group_name = group } } },
+                "set N60 NDI discovery server",
+                ct);
+        }
         foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
         {
             try
             {
-                object body = string.IsNullOrWhiteSpace(discoveryIp)
-                    ? new { group, channel_name = channel, types = stream.Item2 }
-                    : new { group, channel_name = channel, types = stream.Item2, discovery_server = new { enable = true, address = discoveryIp } };
+                object body = new { group, channel_name = channel };
                 using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", body, $"configure N60 {stream.Item2}", ct);
             }
             catch (DeviceApiException) when (stream.Item1 == "main_full") { /* Full NDI can be disabled. */ }

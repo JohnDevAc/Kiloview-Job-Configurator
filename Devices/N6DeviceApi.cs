@@ -8,13 +8,46 @@ internal sealed class N6DeviceApi(
     DeviceCredentials credentials,
     IHttpClientFactory clients) : HttpDeviceApi(ipAddress, credentials, clients), IDeviceApi
 {
+    public async Task<ManagedDevice?> ProbeWebOnlyAsync(CancellationToken ct)
+    {
+        using var client = NewClient(TimeSpan.FromSeconds(8));
+        using var login = await PostAsync(client, "/api/users/login.json",
+            new { user = Credentials.Username, password = Credentials.Password },
+            "probe N6 web-access state",
+            ct);
+        var data = login.RootElement.GetProperty("data");
+        var firstLogin = data.TryGetProperty("changed", out var changed) && changed.ValueKind == JsonValueKind.False;
+
+        return new ManagedDevice
+        {
+            Id = $"N6-FIRST-LOGIN-{IpAddress}",
+            IpAddress = IpAddress,
+            MacAddress = IpAddress,
+            Hostname = firstLogin ? "N6 (first login)" : "N6 (API disabled)",
+            Model = "N6",
+            Family = DeviceFamily.N6,
+            Role = DeviceRole.Unknown,
+            Health = DeviceHealth.Online,
+            LastSeenUtc = DateTimeOffset.UtcNow,
+            Credentials = Credentials,
+            ManagementState = firstLogin ? "first-login" : "api-disabled",
+            ManagementMessage = firstLogin
+                ? "Factory N6 detected; onboarding will initialize its administrator password and API permission after confirmation."
+                : "N6 Web login detected with HTTP API permission disabled; onboarding will enable it after confirmation."
+        };
+    }
+
     private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
     {
         var client = NewClient(TimeSpan.FromSeconds(8));
         using var login = await PostAsync(client, "/api/user/authorize.json", new { user = Credentials.Username, password = Credentials.Password }, "N6 login", ct);
         var data = login.RootElement.GetProperty("data");
         var token = String(data, "token");
-        Cookies.Add(new Uri($"http://{IpAddress}"), new System.Net.Cookie("token", token));
+        var uri = new Uri($"http://{IpAddress}");
+        Cookies.Add(uri, new System.Net.Cookie("username", Credentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("alias", String(data, "alias", "Admin")));
+        Cookies.Add(uri, new System.Net.Cookie("token", token));
         ApplyCookies(client);
         return client;
     }
@@ -22,21 +55,26 @@ internal sealed class N6DeviceApi(
     public async Task<ManagedDevice> ReadAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var version = await GetAsync(client, "/api/sys/version.json", "read N6 version", ct);
+        using var version = await GetAsync(client, "/api/firmware/get.json", "read N6 version", ct);
         using var hostname = await GetAsync(client, "/api/device/get_hostname.json", "read N6 hostname", ct);
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
         using var mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode", ct);
         var net = network.RootElement.GetProperty("data")[0];
         var ver = version.RootElement.GetProperty("data");
-        var serial = String(ver, "serialNumber", String(ver, "serial_number", String(net, "mac", IpAddress)));
+        var hostnameText = String(hostname.RootElement.GetProperty("data"), "hostname", "N6");
+        var serialFromHostname = hostnameText.StartsWith("N6-", StringComparison.OrdinalIgnoreCase)
+            ? hostnameText[3..]
+            : "";
+        var serial = String(ver, "serialNumber", String(ver, "serial_number", serialFromHostname));
         var mac = String(net, "mac", serial);
+        if (string.IsNullOrWhiteSpace(serial)) serial = mac;
         var modeName = String(mode.RootElement.GetProperty("data"), "mode");
         return new ManagedDevice
         {
             Id = string.IsNullOrWhiteSpace(serial) ? mac : serial,
             IpAddress = String(net, "ip", IpAddress),
             MacAddress = mac,
-            Hostname = String(hostname.RootElement.GetProperty("data"), "hostname", "N6"),
+            Hostname = hostnameText,
             Model = "N6",
             Family = DeviceFamily.N6,
             FirmwareVersion = String(ver, "softwareVersion"),
@@ -50,32 +88,59 @@ internal sealed class N6DeviceApi(
 
     public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct)
     {
-        using var original = await AuthorizedAsync(ct);
-        var accepted = await TryAcceptLicenseAsync(original, ct);
+        using var web = NewClient(TimeSpan.FromSeconds(8));
+        using var login = await PostAsync(web, "/api/users/login.json",
+            new { user = Credentials.Username, password = Credentials.Password },
+            "start N6 access provisioning",
+            ct);
+        var loginData = login.RootElement.GetProperty("data");
+        var uri = new Uri($"http://{IpAddress}");
+        Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("alias", String(loginData, "alias", "Admin")));
+        Cookies.Add(uri, new System.Net.Cookie("token", String(loginData, "token")));
+        ApplyCookies(web);
         if (!string.Equals(Credentials.Username, targetCredentials.Username, StringComparison.Ordinal) ||
             !string.Equals(Credentials.Password, targetCredentials.Password, StringComparison.Ordinal))
         {
-            using var changed = await PostAsync(original, "/api/users/modify.json", new
+            using var changed = await PostAsync(web, "/api/users/modify.json", new
             {
-                id = targetCredentials.Username,
-                alias = "Admin",
-                api = true,
-                web = true,
-                password = targetCredentials.Password
+                id = Credentials.Username,
+                username = targetCredentials.Username,
+                password = targetCredentials.Password,
+                passwordAgain = targetCredentials.Password
             }, "set N6 onboarding credentials", ct);
         }
 
+        // The mandatory first-login form only submits password fields. Re-authenticate
+        // with the replacement credentials and enable API access in a separate user edit.
+        using var permissions = NewClient(TimeSpan.FromSeconds(8));
+        using var permissionLogin = await PostAsync(permissions, "/api/users/login.json",
+            new { user = targetCredentials.Username, password = targetCredentials.Password },
+            "re-authenticate N6 for API permission",
+            ct);
+        var permissionData = permissionLogin.RootElement.GetProperty("data");
+        Cookies.Add(uri, new System.Net.Cookie("user", targetCredentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("alias", String(permissionData, "alias", "Admin")));
+        Cookies.Add(uri, new System.Net.Cookie("token", String(permissionData, "token")));
+        ApplyCookies(permissions);
+        using var apiPermission = await PostAsync(permissions, "/api/users/modify.json", new
+        {
+            id = targetCredentials.Username,
+            alias = String(permissionData, "alias", "Admin"),
+            web = true,
+            api = true
+        }, "enable N6 HTTP API permission", ct);
+
         var replacement = new N6DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
-        accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
-        if (!accepted)
-            throw new DeviceApiException("The N6 accepted its new login, but its firmware did not expose a recognized EULA acceptance endpoint. Open the device UI once or provide its Web UI bundle for API matching.");
+        _ = await replacement.TryAcceptLicenseAsync(verified, ct);
     }
 
     private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)
     {
         var known = new[]
         {
+            "/api/users/accept_eula.json",
             "/api/sys/accept_eula.json",
             "/api/sys/eula/accept.json",
             "/api/device/accept_eula.json",
@@ -96,17 +161,28 @@ internal sealed class N6DeviceApi(
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
         var net = network.RootElement.GetProperty("data")[0];
         var device = String(net, "device", "eth0");
-        using var _ = await PostAsync(client, "/api/network/set.json", new { device, dynamic = "n", ip = address, mask, gw = gateway, dns }, "set N6 static address", ct);
+        try
+        {
+            using var _ = await PostAsync(client, "/api/network/modify.json", new { device, dynamic = "n", ip = address, mask, gw = gateway, dns }, "set N6 static address", ct);
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { /* Expected while the address changes. */ }
+        catch (HttpRequestException) { /* The caller verifies the device at its target address. */ }
     }
 
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
         await ConfigureKiloLinkAsync(client, settings, ct);
-        using var discovery = await PostAsync(client, "/api/device/set_discovery_server.json", new { address = settings.NdiDiscoveryServerIp, enable = true }, "set N6 NDI discovery server", ct);
+        using var discovery = await PostAsync(client, "/api/device/set_discovery_server.json",
+            new { enable = true, servers = new[] { new { ip = settings.NdiDiscoveryServerIp, group_name = settings.JobName } } },
+            "set N6 NDI discovery server",
+            ct);
         foreach (var type in new[] { "ndihx", "ndifull" })
         {
-            using var stream = await PostAsync(client, "/api/encoder/ndi/set_config.json", new { types = type, device_group = settings.JobName, channel_name = channelName }, $"set N6 {type} identity", ct);
+            using var stream = await PostAsync(client, "/api/device/modify.json",
+                new { types = type, device_group = settings.JobName, channel_name = channelName, machine_name = hostname },
+                $"set N6 {type} identity",
+                ct);
         }
         using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
     }
@@ -120,6 +196,22 @@ internal sealed class N6DeviceApi(
             try { using var _ = await PostAsync(client, path, body, "configure N6 KiloLink", ct); return; }
             catch (DeviceApiException ex) { last = ex; }
         }
+        try
+        {
+            using var _ = await PostAsync(client, "/kilolink/kilolink/Set.json",
+                new { cfg = body },
+                "configure N6 KiloLink",
+                ct);
+            return;
+        }
+        catch (DeviceApiException ex) { last = ex; }
+        try
+        {
+            var legacy = $"/api/platform/set.json?MASTER_ADDR={Uri.EscapeDataString(settings.KiloLinkServerIp)}&MASTER_PORT={settings.KiloLinkPort}&AUTH_CODE={Uri.EscapeDataString(settings.KiloLinkOnboardingCode)}";
+            using var _ = await GetAsync(client, legacy, "configure N6 KiloLink", ct);
+            return;
+        }
+        catch (DeviceApiException ex) { last = ex; }
         throw new DeviceApiException("This N6 firmware did not expose the KiloLink configuration endpoint. Update its firmware or configure KiloLink once in the device UI.", last);
     }
 

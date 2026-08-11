@@ -43,6 +43,17 @@ public sealed class DeviceMonitor(
                             LastError = null
                         };
                     }
+                    else if (device.ManagementState is "first-login" or "api-disabled")
+                    {
+                        var refreshed = await factory.ProbeAsync(device.IpAddress, device.Credentials, token)
+                            ?? throw new DeviceApiException($"Factory N6 at {device.IpAddress} is no longer reachable.");
+                        updated = refreshed with
+                        {
+                            IsOnboarded = device.IsOnboarded,
+                            Health = DeviceHealth.Online,
+                            LastError = null
+                        };
+                    }
                     else
                     {
                         var refreshed = await factory.Create(device).ReadAsync(token);

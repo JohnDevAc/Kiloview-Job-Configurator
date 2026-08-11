@@ -42,10 +42,6 @@ public sealed class OnboardingService(
         else request = request with { KiloLinkPassword = "" };
 
         var range = NetworkAddressing.Range(request.StaticStart, request.StaticEnd).Select(x => x.ToString()).ToArray();
-        var devicesAlreadyInRange = selected.Where(device => range.Contains(device.IpAddress)).ToArray();
-        if (devicesAlreadyInRange.Length > 0)
-            throw new ArgumentException(
-                $"Devices already inside the static range are left unchanged. Deselect: {string.Join(", ", devicesAlreadyInRange.Select(device => device.Hostname))}.");
         var occupied = new ConcurrentDictionary<string, byte>();
         foreach (var device in state.Devices.Where(d => d.IsStatic || d.IsOnboarded))
             if (range.Contains(device.IpAddress)) occupied.TryAdd(device.IpAddress, 0);
@@ -60,9 +56,8 @@ public sealed class OnboardingService(
             if (await AddressRespondsAsync(address, token)) occupied.TryAdd(address, 0);
         });
 
-        var occupiedNumbers = occupied.Keys.Select(x => NetworkAddressing.ToUInt(IPAddress.Parse(x))).ToArray();
         var startNumber = NetworkAddressing.ToUInt(IPAddress.Parse(request.StaticStart));
-        var next = occupiedNumbers.Length == 0 ? startNumber : Math.Max(startNumber, occupiedNumbers.Max() + 1);
+        var next = startNumber;
         var end = NetworkAddressing.ToUInt(IPAddress.Parse(request.StaticEnd));
         var plans = new List<DevicePlan>();
         var kiloviewNumber = 0;
@@ -72,12 +67,18 @@ public sealed class OnboardingService(
             var hostname = device.IsTeleTool()
                 ? $"{SanitizeName(request.JobName)}-TT-{++teleToolNumber:000}"
                 : $"{SanitizeName(request.JobName)}-KV-{++kiloviewNumber:000}";
-            while (next <= end && occupied.ContainsKey(NetworkAddressing.FromUInt(next).ToString())) next++;
-            if (next > end) throw new ArgumentException("There are not enough unused addresses above the previously onboarded devices in the static range.");
-            var target = NetworkAddressing.FromUInt(next++).ToString();
             var role = device.IsTeleTool()
                 ? DeviceRole.Encoder
                 : request.RoleOverrides is not null && request.RoleOverrides.TryGetValue(device.Id, out var value) ? value : DeviceRole.Unknown;
+            var existingStatic = range.Contains(device.IpAddress) && device.IsStatic;
+            if (existingStatic)
+            {
+                plans.Add(new(device.Id, device.IpAddress, device.IpAddress, hostname, role, true, device.Family));
+                continue;
+            }
+            while (next <= end && occupied.ContainsKey(NetworkAddressing.FromUInt(next).ToString())) next++;
+            if (next > end) throw new ArgumentException("There are not enough unused addresses in the static range.");
+            var target = NetworkAddressing.FromUInt(next++).ToString();
             plans.Add(new(device.Id, device.IpAddress, target, hostname, role, false, device.Family));
             occupied.TryAdd(target, 0);
         }
@@ -203,6 +204,13 @@ public sealed class OnboardingService(
                 throw new InvalidOperationException(device.ManagementMessage ?? $"Device '{device.Hostname}' can no longer be onboarded.");
             if (device.Family != item.Family || !string.Equals(device.IpAddress, item.CurrentIp, StringComparison.Ordinal))
                 throw new InvalidOperationException($"Device '{device.Hostname}' changed after the plan was generated. Generate a new plan.");
+            if (item.ExistingStaticDevice)
+            {
+                if (!device.IsStatic || !range.Contains(device.IpAddress) ||
+                    !string.Equals(device.IpAddress, item.TargetIp, StringComparison.Ordinal))
+                    throw new InvalidOperationException($"Device '{device.Hostname}' no longer matches its retained static address. Generate a new plan.");
+                continue;
+            }
             if (range.Contains(device.IpAddress))
                 throw new InvalidOperationException($"Device '{device.Hostname}' is already inside the static range and will not be changed.");
             if (!range.Contains(item.TargetIp) || !targetAddresses.Add(item.TargetIp))
@@ -249,10 +257,17 @@ public sealed class OnboardingService(
 
                     var targetCredentials = new DeviceCredentials("admin", plan.Settings.JobName);
                     Step(device, "Access & license", "running", "Accepting EULA and applying job credentials");
+                    var discoveredDeviceId = device.Id;
                     await factory.Create(device).ProvisionAccessAsync(targetCredentials, CancellationToken.None);
-                    device = device with { Credentials = targetCredentials, LicenseAccepted = true, Health = DeviceHealth.Configuring };
-                    await SaveDeviceAsync(device);
                     CompleteStep(device, "Access & license", "EULA accepted; admin password set to Job Name");
+                    var verified = await factory.Create(device with { Credentials = targetCredentials }).ReadAsync(CancellationToken.None);
+                    device = verified with
+                    {
+                        Credentials = targetCredentials,
+                        LicenseAccepted = true,
+                        Health = DeviceHealth.Configuring
+                    };
+                    await ReplaceDeviceAsync(discoveredDeviceId, device);
 
                     Step(device, "Static IP & DNS", "running", item.ExistingStaticDevice
                         ? $"Retaining existing network settings at {item.TargetIp}"
@@ -273,7 +288,7 @@ public sealed class OnboardingService(
                         : $"Address assigned; DNS {plan.Settings.Dns} applied");
 
                     Step(device, "Reconnect", "running");
-                    device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45));
+                    device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                     CompleteStep(device, "Reconnect", "Device reachable on static IP");
 
                     if (device.Role == DeviceRole.Decoder)
@@ -281,7 +296,7 @@ public sealed class OnboardingService(
                         Step(device, "Prepare", "running", "Temporarily switching to encoder mode for NDI setup");
                         await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, CancellationToken.None);
                         device = device with { Role = DeviceRole.Encoder };
-                        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45));
+                        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                         CompleteStep(device, "Prepare", "Encoder mode ready");
                     }
                     else CompleteStep(device, "Prepare", "Encoder mode ready");
@@ -560,6 +575,16 @@ public sealed class OnboardingService(
     private async Task SaveDeviceAsync(ManagedDevice device) => await store.UpdateAsync(s =>
         s with { Devices = s.Devices.Select(d => d.Id == device.Id ? device : d).ToArray() });
 
+    private async Task ReplaceDeviceAsync(string discoveredDeviceId, ManagedDevice device) => await store.UpdateAsync(s =>
+        s with
+        {
+            Devices = s.Devices
+                .Where(d => d.Id != discoveredDeviceId && d.Id != device.Id)
+                .Append(device)
+                .OrderBy(d => d.IpAddress)
+                .ToArray()
+        });
+
     private async Task<ManagedDevice> WaitForDeviceAsync(ManagedDevice device, TimeSpan timeout, CancellationToken ct = default)
     {
         if (device.IsSimulation()) return await factory.Create(device).ReadAsync(ct);
@@ -571,7 +596,13 @@ public sealed class OnboardingService(
             try
             {
                 var read = await factory.Create(device).ReadAsync(ct);
-                return read with { IsOnboarded = device.IsOnboarded, NdiGroup = device.NdiGroup, NdiChannelName = device.NdiChannelName };
+                return read with
+                {
+                    Id = device.Id,
+                    IsOnboarded = device.IsOnboarded,
+                    NdiGroup = device.NdiGroup,
+                    NdiChannelName = device.NdiChannelName
+                };
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or System.Text.Json.JsonException) { last = ex; }
             await Task.Delay(TimeSpan.FromSeconds(3), ct);

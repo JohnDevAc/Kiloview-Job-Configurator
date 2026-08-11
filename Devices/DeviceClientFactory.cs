@@ -41,6 +41,16 @@ public sealed class DeviceClientFactory(
                 // A probe is expected to fail for non-Kiloview hosts and the other API family.
             }
         }
+
+        try
+        {
+            return await new N6DeviceApi(ipAddress, credentials, clients).ProbeWebOnlyAsync(ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or KeyNotFoundException)
+        {
+            // An N6 with a required initial password change or disabled HTTP API
+            // permission still has Web access. Surface it without mutating it during discovery.
+        }
         return null;
     }
 
