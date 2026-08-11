@@ -110,7 +110,8 @@ public sealed record AppState(
 
 public sealed record DiscoveryRequest(
     DeviceCredentials? Credentials,
-    bool Simulation = false);
+    bool Simulation = false,
+    bool CleanOnboarding = false);
 
 public sealed record DiscoveryResult(IReadOnlyList<ManagedDevice> Devices, IReadOnlyList<string> ScannedCidrs, TimeSpan Duration);
 

@@ -30,6 +30,12 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
         var addresses = cidrs.SelectMany(NetworkAddressing.ExpandCidr).Distinct().ToArray();
         if (addresses.Length > 8192) throw new ArgumentException("Discovery is limited to 8192 addresses per scan.");
         var credentials = request.Credentials ?? new DeviceCredentials();
+        var savedCredentialsByAddress = request.CleanOnboarding
+            ? state.Devices
+                .Where(device => !device.IsSimulation())
+                .GroupBy(device => device.IpAddress, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, DeviceCredentials>(StringComparer.OrdinalIgnoreCase);
         var found = new ConcurrentDictionary<string, ManagedDevice>();
 
         await Parallel.ForEachAsync(addresses, new ParallelOptions
@@ -39,7 +45,12 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
         }, async (ip, token) =>
         {
             var address = ip.ToString();
-            var kiloviewTask = ProbeKiloviewAsync(ip, address, credentials, token);
+            var kiloviewTask = ProbeKiloviewAsync(
+                ip,
+                address,
+                credentials,
+                savedCredentialsByAddress.GetValueOrDefault(address),
+                token);
             var teleToolTask = ProbeTeleToolAsync(ip, address, token);
             await Task.WhenAll(kiloviewTask, teleToolTask);
             var kiloview = await kiloviewTask;
@@ -57,10 +68,20 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
         IPAddress ip,
         string address,
         DeviceCredentials credentials,
+        DeviceCredentials? savedAddressCredentials,
         CancellationToken ct)
     {
         if (!await HasWebPortAsync(ip, 80, ct)) return null;
-        return await factory.ProbeAsync(address, credentials, ct);
+        var candidates = new[] { credentials }
+            .Concat(savedAddressCredentials is null ? [] : [savedAddressCredentials])
+            .Distinct()
+            .ToArray();
+        foreach (var candidate in candidates)
+        {
+            var device = await factory.ProbeAsync(address, candidate, ct);
+            if (device is not null) return device;
+        }
+        return null;
     }
 
     private async Task<ManagedDevice?> ProbeTeleToolAsync(IPAddress ip, string address, CancellationToken ct)
