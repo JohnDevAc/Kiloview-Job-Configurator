@@ -82,6 +82,7 @@
           <div class="details-grid">
             <label><span>Username</span><input name="username" value="admin"></label>
             <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"><small>Kiloview N6/N60 factory default is admin/admin. TeleTool Dev does not require device credentials.</small></label>
+            <label class="check"><input name="cleanOnboarding" type="checkbox"><span>Clean onboarding — delete all existing KiloLink devices/groups and previous configurator job devices before this run</span></label>
             <label class="check"><input name="simulation" type="checkbox"><span>Simulation mode — no hardware changes</span></label>
           </div>
         </details>
@@ -113,14 +114,14 @@
     </section>
 
     <section id="firmwareView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">FLEET FIRMWARE</p><h1>Update by model</h1><p>Point the application at the latest N6 and N60 firmware packages after initial onboarding.</p></div></div>
+      <div class="page-head"><div><p class="eyebrow">PRE-ONBOARDING FIRMWARE</p><h1 id="firmwareTitle">Stage current firmware</h1><p id="firmwareIntro">Outdated Kiloviews are updated at their discovered addresses before static IP, KiloLink, or NDI configuration.</p></div></div>
       <form id="firmwareForm" class="panel firmware-panel">
         <div id="firmwareCoverage" class="summary-strip"></div>
         <div class="firmware-files">
           <label id="n6FirmwareLabel"><span>Latest N6 firmware <small>(.bin)</small></span><input name="n6Firmware" type="file" accept=".bin,application/octet-stream"></label>
           <label id="n60FirmwareLabel"><span>Latest N60 firmware <small>(.bin)</small></span><input name="n60Firmware" type="file" accept=".bin,application/octet-stream"></label>
         </div>
-        <div class="note">Firmware packages are copied to this PC for the active job. KiloLink must place devices in Maintenance Mode before its batch upgrade. Do not disconnect power or network while an update is running.</div>
+        <div id="firmwareNote" class="note">Packages are copied to this PC and matched by model. Devices already on the supplied version are skipped; outdated devices update directly and must remain powered and connected.</div>
         <div id="firmwareStatus" class="firmware-status"></div>
         <div class="firmware-actions"><button id="skipFirmware" class="quiet" type="button">Skip for now</button><button id="stageFirmware" class="primary" type="submit"><span>Stage firmware</span><b>→</b></button></div>
       </form>
@@ -134,7 +135,7 @@
     </section>
 
     <section id="monitorView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><div class="page-actions"><button class="quiet" data-action="multicast">Multicast setup</button><button class="quiet" data-action="new-job">+ New onboarding</button></div></div>
+      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><div class="page-actions"><button id="nameDisplays" class="quiet hidden" data-action="name-displays">Name displays</button><button class="quiet" data-action="multicast">Multicast setup</button><button class="quiet" data-action="new-job">+ New onboarding</button></div></div>
       <div class="monitor-stats" id="monitorStats"></div>
       <div id="monitorGrid" class="device-groups"></div>
     </section>

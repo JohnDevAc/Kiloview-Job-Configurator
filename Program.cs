@@ -153,6 +153,8 @@ app.MapPost("/api/pc-onboarding/register", async (
     if (string.IsNullOrWhiteSpace(registration.NdiToolsVersion) || registration.NdiToolsVersion.Length > 40
         || string.IsNullOrWhiteSpace(registration.UtilityVersion) || registration.UtilityVersion.Length > 40)
         return Results.BadRequest(new { error = "The NDI Tools and onboarding utility versions are required." });
+    if (registration.OperatingSystemVersion?.Length > 128)
+        return Results.BadRequest(new { error = "The Windows operating-system version must be at most 128 characters." });
     if (!string.Equals(registration.EulaVersion, "1.0", StringComparison.Ordinal))
         return Results.BadRequest(new { error = "The current Kiloview Job Configurator EULA must be accepted." });
 
@@ -169,7 +171,10 @@ app.MapPost("/api/pc-onboarding/register", async (
         registration.EulaVersion,
         now,
         now,
-        "onboarded");
+        "onboarded",
+        OperatingSystemVersion: string.IsNullOrWhiteSpace(registration.OperatingSystemVersion)
+            ? null
+            : registration.OperatingSystemVersion.Trim());
     var state = await store.UpdateAsync(current =>
     {
         if (current.LastJob is null)
@@ -343,7 +348,9 @@ app.MapPut("/api/network/selection", async (
         selected.PrefixLength,
         preferredInterfaceConfigured,
         preferredInterfaceConfigured ? "applied" : "error",
-        localError);
+        localError,
+        OperatingSystemVersion: System.Runtime.InteropServices.RuntimeInformation.OSDescription,
+        NdiToolsVersion: accessManager.RuntimeVersion);
     await store.UpdateAsync(state => state with
     {
         SelectedNetworkAdapterId = selected.Id,
@@ -494,7 +501,9 @@ app.MapPost("/api/firmware/stage", async (HttpRequest request, FirmwareService f
 {
     try
     {
-        return Results.Ok(await firmware.StageMultipartAsync(request, ct));
+        var models = request.Query["models"].ToString()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return Results.Ok(await firmware.StageMultipartAsync(request, models, ct));
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (InvalidDataException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status413PayloadTooLarge); }
@@ -510,6 +519,7 @@ app.MapPost("/api/devices/{id}/role", async (string id, RoleUpdate update, Onboa
 {
     try { return Results.Ok(await onboarding.SetRoleAsync(id, update.Role, ct)); }
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (DeviceApiException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
@@ -565,6 +575,25 @@ app.MapDelete("/api/teletools/{id}", async (
         thumbnails.Forget(id);
         return Results.Ok(result);
     }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
+app.MapGet("/api/devices/{id}/hdmi-input", async (string id, OnboardingService onboarding, CancellationToken ct) =>
+{
+    try { return Results.Ok(await onboarding.ProbeEncoderInputAsync(id, ct)); }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (DeviceApiException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
+app.MapDelete("/api/devices/{id}", async (
+    string id,
+    OnboardingService onboarding,
+    CancellationToken ct) =>
+{
+    try { return Results.Ok(await onboarding.RemoveKiloviewAsync(id, ct)); }
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }

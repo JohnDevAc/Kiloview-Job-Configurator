@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -223,8 +224,20 @@ public sealed class TeleToolFleetService(
 
         if (Flag(status, "running"))
         {
-            var start = BuildStartPayload(status, applied, ndiName, ndiGroup);
-            await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(20), ct);
+            if (IsTestCard(status))
+            {
+                var start = BuildStreamSettings(status, applied, ndiName, ndiGroup);
+                await PostAsync(device.IpAddress, device.WebPort, "/api/test-card/stop", new { }, TimeSpan.FromSeconds(10), ct);
+                await PostAsync(device.IpAddress, device.WebPort, "/api/test-card/start", start, TimeSpan.FromSeconds(20), ct);
+            }
+            else if (ChannelUuid(status) is not null)
+            {
+                var start = BuildStartPayload(status, applied, ndiName, ndiGroup);
+                await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(20), ct);
+            }
+            // A stopped/unselected TeleTool is still fully onboarded. Its saved
+            // identity and discovery settings apply when an operator later
+            // chooses a TV channel and starts the stream.
         }
     }
 
@@ -493,6 +506,7 @@ public sealed class TeleToolFleetService(
         var rf = Object(status, "rf");
         var rfSignal = RfLabel(rf);
         var rfKind = RfKind(rf);
+        var systemTemperatureC = DecimalNumber(status, "system_temperature_c");
         var adoptionOk = adoption is null || Flag(adoption, "ok", true);
         var error = Text(status, "last_error") ?? Text(supervisor, "last_error");
         if (!adoptionOk) error = "Adopted by another active TeleTool Fleet Manager.";
@@ -533,6 +547,7 @@ public sealed class TeleToolFleetService(
             PipelineStatus = Text(supervisor, "pipeline_status") ?? Text(status, "pipeline_state"),
             RfSignal = rfSignal,
             RfSignalKind = rfKind,
+            SystemTemperatureC = systemTemperatureC,
             DanteAudioActive = dante?.Active,
             DanteAudioReady = dante?.Ready,
             DanteAudioStatus = dante?.Status,
@@ -599,19 +614,26 @@ public sealed class TeleToolFleetService(
         string ndiName,
         string ndiGroups)
     {
-        var supervisor = Object(status, "supervisor");
-        var lastStart = Object(supervisor, "last_start_request");
-        var channelUuid = FirstText(
-            Text(status, "channel_uuid"),
-            Text(status, "active_channel_uuid"),
-            Text(supervisor, "desired_channel_uuid"),
-            Text(lastStart, "channel_uuid"));
+        var channelUuid = ChannelUuid(status);
         if (channelUuid is null)
             throw new InvalidOperationException("Open this TeleTool UI and choose a TV channel before starting NDI from the configurator.");
 
+        var result = BuildStreamSettings(status, config, ndiName, ndiGroups);
+        result["channel_uuid"] = channelUuid;
+        return result;
+    }
+
+    private static Dictionary<string, object?> BuildStreamSettings(
+        JsonObject status,
+        JsonObject config,
+        string ndiName,
+        string ndiGroups)
+    {
+        var supervisor = Object(status, "supervisor");
+        var lastStart = Object(supervisor, "last_start_request");
+
         return new()
         {
-            ["channel_uuid"] = channelUuid,
             ["ndi_name"] = ndiName,
             ["ndi_groups"] = ndiGroups,
             ["profile"] = FirstText(Text(supervisor, "desired_profile"), Text(lastStart, "profile"), Text(status, "active_profile"), Text(config, "tvh_stream_profile")) ?? "pass",
@@ -635,6 +657,22 @@ public sealed class TeleToolFleetService(
             ["ndi_multicast_ttl"] = Number(lastStart, "ndi_multicast_ttl", Number(config, "ndi_multicast_ttl", 1))
         };
     }
+
+    private static string? ChannelUuid(JsonObject status)
+    {
+        var supervisor = Object(status, "supervisor");
+        var lastStart = Object(supervisor, "last_start_request");
+        return FirstText(
+            Text(status, "channel_uuid"),
+            Text(status, "active_channel_uuid"),
+            Text(supervisor, "desired_channel_uuid"),
+            Text(lastStart, "channel_uuid"));
+    }
+
+    private static bool IsTestCard(JsonObject status) =>
+        string.Equals(Text(status, "source_mode"), "test_card", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Text(Object(status, "supervisor"), "source_mode"), "test_card", StringComparison.OrdinalIgnoreCase) ||
+        (Text(status, "input_url")?.StartsWith("test-card:", StringComparison.OrdinalIgnoreCase) ?? false);
 
     private async Task ConfirmRunningMulticastAsync(
         ManagedDevice device,
@@ -822,6 +860,22 @@ public sealed class TeleToolFleetService(
         if (value.TryGetValue<long>(out var longResult) && longResult is >= int.MinValue and <= int.MaxValue) return (int)longResult;
         if (value.TryGetValue<string>(out var text) && int.TryParse(text, out result)) return result;
         return fallback;
+    }
+
+    private static double? DecimalNumber(JsonObject? source, string name)
+    {
+        if (source?[name] is not JsonValue value) return null;
+        double result;
+        if (!value.TryGetValue<double>(out result))
+        {
+            if (value.TryGetValue<decimal>(out var decimalResult)) result = (double)decimalResult;
+            else if (!value.TryGetValue<string>(out var text)
+                || !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out result)) return null;
+        }
+
+        return double.IsFinite(result) && result is >= -40 and <= 150
+            ? Math.Round(result, 1)
+            : null;
     }
 
     private static string? FirstText(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));

@@ -25,6 +25,7 @@ $startMenu = Join-Path $programs 'Kiloview Job Configurator'
 $legacyStartMenu = Join-Path $programs 'Kiloview Setup'
 $scheduledTaskName = 'Kiloview Job Configurator Service'
 $firewallRuleName = 'Kiloview Job Configurator LAN'
+$ndiFirewallRuleName = 'Kiloview Job Configurator NDI'
 $installedExe = Join-Path $installRoot 'KiloviewSetup.exe'
 
 $sourceExe = Join-Path $Source 'KiloviewSetup.exe'
@@ -133,6 +134,19 @@ New-NetFirewallRule `
     -RemoteAddress LocalSubnet `
     -EdgeTraversalPolicy Block | Out-Null
 
+Get-NetFirewallRule -DisplayName $ndiFirewallRuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule `
+    -DisplayName $ndiFirewallRuleName `
+    -Description 'Allows Kiloview Job Configurator to receive NDI multicast previews from the trusted local subnet.' `
+    -Direction Inbound `
+    -Action Allow `
+    -Enabled True `
+    -Profile Domain,Private `
+    -Program $exe `
+    -Protocol UDP `
+    -RemoteAddress LocalSubnet `
+    -EdgeTraversalPolicy Block | Out-Null
+
 $shortcutArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
 foreach ($shortcutPath in @((Join-Path $desktop 'Kiloview Job Configurator.lnk'), (Join-Path $startMenu 'Kiloview Job Configurator.lnk'))) {
     $shortcut = $shell.CreateShortcut($shortcutPath)
@@ -175,3 +189,4 @@ if (-not $healthy) { throw 'Kiloview Job Configurator was installed but did not 
 Start-Process 'http://localhost:8091'
 Write-Host "Kiloview Job Configurator installed for the current user at $installRoot"
 Write-Host 'LAN access is enabled on TCP 8091 for the local subnet when Windows is using a Domain or Private network profile.'
+Write-Host 'NDI multicast preview reception is enabled over UDP from the local subnet on Domain or Private network profiles.'

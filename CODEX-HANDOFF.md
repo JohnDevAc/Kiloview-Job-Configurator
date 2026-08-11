@@ -2,35 +2,72 @@
 
 Read this file before changing or publishing Kiloview Job Configurator.
 
-Last updated: 31 July 2026
+Last updated: 11 August 2026
 
 ## Current baseline
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active stable branch: `main`
-- Latest implementation: local-PC card relocation and remote Windows endpoint connectivity monitoring
-- Current version: `0.8.0`
+- Latest implementation: reliable parallel Kiloview N6/N60 onboarding and identity cards
+- Current version: `0.8.1`
 - Release channel: `Main`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0>
-- Next target release: to be assigned after `v0.8.0`
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.1>
+- Next target release: to be assigned after `v0.8.1`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.53` has been promoted to stable `v0.8.1`.
 
-## Stable 0.8.0 promotion
+## Stable 0.8.1 promotion
 
-- `main` was fast-forwarded to the fully validated `v0.8.0-dev.31`
-  implementation.
-- Shared release metadata was changed to the stable `0.8.0` version and the
-  `Main` update channel.
-- The stable application retains the development branch's completed
-  onboarding, TeleTool, Windows endpoint, multicast, updater, diagnostics,
-  installer, tray, performance, and high-DPI work without displaying the
-  development banner.
+- `main` includes the fully validated `v0.8.0-dev.53` implementation.
+- Shared release metadata uses stable version `0.8.1` and the `Main` update channel.
+- The Development prerelease remains available as `v0.8.0-dev.53`.
+
+## Dev.34 uniform Windows endpoint cards
+
+- Local and remote Windows endpoint cards now share one pill renderer and the
+  same order: availability, preferred NDI interface, adapter, NDI version, job
+  group, multicast allocation, and TTL.
+- `LocalPcEndpoint.NdiToolsVersion` is populated from the installed NDI runtime
+  so the local card can show the same NDI version pill as remote endpoints.
+- Remote connectivity and local readiness retain their distinct live status
+  logic, while their visual vocabulary is now consistent.
+
+## Dev.33 multicast preview firewall and Windows card labels
+
+- Both adopted TeleTool previews failed together after multicast was enabled while
+  Studio Monitor continued receiving the feeds. The embedded NDI finder saw both
+  sources, but its receiver obtained no video frames.
+- Root cause: the installed executable had no inbound UDP allow rule for the
+  active Private profile. The existing installer rule covered only TCP `8091`;
+  an unrelated Windows-generated UDP rule covered Public only.
+- Adding `Kiloview Job Configurator NDI` for the installed executable, inbound
+  UDP, Domain/Private profiles, and `LocalSubnet` immediately restored both
+  previews with zero capture failures.
+- The installer now provisions that restricted rule and the uninstaller removes
+  it alongside the LAN web rule.
+- Local and remote Windows card headers now use `Windows · <OS version>`.
+  `POST /api/pc-onboarding/register` accepts the optional JSON field
+  `operatingSystemVersion`; the companion project should send
+  `RuntimeInformation.OSDescription` (or an equivalent friendly Windows version)
+  on its next update. Older registrations remain valid and display
+  `VERSION UNKNOWN` until they register again.
+
+## Dev.32 TeleTool temperature integration
+
+- The existing TeleTool `/api/status?lite=1&stats=1&logs=0&rf=1` response now
+  supplies `system_temperature_c`; no extra request or polling loop is needed.
+- `ManagedDevice.SystemTemperatureC` stores the validated value, rounded to one
+  decimal place and limited to a plausible `-40°C` to `150°C` range.
+- Every TeleTool monitor card shows a compact temperature pill beside Dante and
+  RF: green below `70°C`, amber from `70°C`, red from `80°C`, and neutral when
+  unavailable. Text and tooltips accompany the colours.
+- Temperature-only changes are excluded from the card render signature and the
+  pill is updated in place, preventing unnecessary preview/card reconstruction.
 
 ## Dev.31 local-PC card relocation
 
@@ -209,7 +246,7 @@ All requested application work through `v0.8.0` has been committed, pushed, pack
 
 ## Validation already completed
 
-For `v0.8.0`:
+For `v0.8.0-dev.32`:
 
 - `dotnet format --verify-no-changes` passed.
 - Main Release build passed with zero warnings and zero errors.
@@ -218,6 +255,9 @@ For `v0.8.0`:
 - Isolated runtime checks confirmed that a reachable remote Windows endpoint
   stays online, the first two missed replies report an amber checking state,
   and the third consecutive failure reports offline.
+- End-to-end live checks through the Fleet Manager snapshot path returned valid
+  TeleTool temperatures of `57.3°C` and `58.4°C` while both devices remained
+  online.
 - The live preflight detected the installed NDI 6 Access Manager, allowed the
   running Discovery Server, and returned ready when no client applications
   were open.
@@ -225,30 +265,11 @@ For `v0.8.0`:
 
 ## Release procedure
 
-Stable releases must:
-
-1. Be made from `main`.
-2. Increment the version in `Directory.Build.props`.
-3. Set `ReleaseChannel` to `Main`.
-4. Use a tag such as `v0.8.0`.
-5. Be published as a normal GitHub release targeting `main`.
-6. Include:
-   - `Kiloview-Job-Configurator.exe`
-   - `Kiloview-Job-Configurator-Windows.zip`
-   - `SHA256SUMS.txt`
-7. Be built with:
-
-   ```powershell
-   .\scripts\Publish.ps1 -SetupExe
-   ```
-
-8. Be checked through the installed updater after publishing.
-
 Development releases must:
 
 1. Be made from `development`.
-2. Use a `-dev.N` version and the `Development` release channel.
-3. Use a tag such as `v0.8.0-dev.31`.
+2. Increment the version in `Directory.Build.props`.
+3. Use a tag such as `v0.8.0-dev.30`.
 4. Be published as a GitHub prerelease targeting `development`.
 5. Include:
    - `Kiloview-Job-Configurator.exe`

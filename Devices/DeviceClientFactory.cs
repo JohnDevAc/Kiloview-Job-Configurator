@@ -41,6 +41,16 @@ public sealed class DeviceClientFactory(
                 // A probe is expected to fail for non-Kiloview hosts and the other API family.
             }
         }
+
+        try
+        {
+            return await new N6DeviceApi(ipAddress, credentials, clients).ProbeWebOnlyAsync(ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or KeyNotFoundException)
+        {
+            // An N6 with a required initial password change or disabled HTTP API
+            // permission still has Web access. Surface it without mutating it during discovery.
+        }
         return null;
     }
 
@@ -64,12 +74,20 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct) =>
         await Change(d => d with { Hostname = hostname, NdiChannelName = channelName, NdiGroup = settings.JobName, IsOnboarded = true });
     public async Task SetRoleAsync(DeviceRole role, CancellationToken ct) => await Change(d => d with { Role = role });
+    public async Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct)
+    {
+        var device = await Device();
+        var signalPresent = device.Role == DeviceRole.Encoder && device.HdmiDisplayConnected != true;
+        return new(signalPresent, signalPresent ? "1920x1080p60" : null);
+    }
     public async Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct)
     {
         var device = await Device();
         return new(device.HdmiDisplayConnected == true, device.HdmiDisplayConnected == true ? device.HdmiOutputResolution ?? "1920x1080p60" : null);
     }
     public Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct) => Task.CompletedTask;
+    public async Task SetHostnameAsync(string hostname, CancellationToken ct) =>
+        await Change(d => d with { Hostname = hostname });
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct) =>
         await Change(d => d with { Hostname = hostname, NdiChannelName = channelName, NdiGroup = group });
     public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct) =>

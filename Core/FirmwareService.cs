@@ -13,14 +13,26 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
     public const long MaximumRequestBytes = MaximumFirmwareBytes * 2 + 1024L * 1024;
     private readonly string _directory = GetFirmwareDirectory(environment);
 
-    public async Task<FirmwareJob> StageMultipartAsync(HttpRequest request, CancellationToken ct)
+    public async Task<FirmwareJob> StageMultipartAsync(HttpRequest request, IReadOnlyCollection<string>? requiredModels, CancellationToken ct)
     {
         var state = await store.ReadAsync();
+        var requestedModels = (requiredModels ?? [])
+            .Select(model => model.Trim().ToUpperInvariant())
+            .Where(model => model.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (requestedModels.Any(model => model is not "N6" and not "N60"))
+            throw new ArgumentException("Firmware coverage may contain only N6 and N60.");
         var devices = state.Devices.Where(d => d.IsOnboarded && d.IsKiloview()).ToArray();
-        if (devices.Length == 0) throw new InvalidOperationException("Complete initial onboarding before staging firmware.");
+        if (requestedModels.Length == 0 && devices.Length == 0)
+            throw new InvalidOperationException("Select Kiloview devices in an onboarding plan before staging firmware.");
 
-        var needsN6 = devices.Any(d => IsModel(d, "N6"));
-        var needsN60 = devices.Any(d => IsModel(d, "N60"));
+        var needsN6 = requestedModels.Length > 0
+            ? requestedModels.Contains("N6", StringComparer.OrdinalIgnoreCase)
+            : devices.Any(d => IsModel(d, "N6"));
+        var needsN60 = requestedModels.Length > 0
+            ? requestedModels.Contains("N60", StringComparer.OrdinalIgnoreCase)
+            : devices.Any(d => IsModel(d, "N60"));
         if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var contentType)
             || !string.Equals(contentType.MediaType.Value, "multipart/form-data", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Firmware staging requires a multipart form upload.");
@@ -106,12 +118,27 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
             throw new InvalidOperationException("No locally stored KiloLink server credentials are available for this job.");
 
         var credential = credentials.ResolveAndStore(lastJob.KiloLinkServerIp, "", "");
+        var dispatchPackages = job.Packages.Where(package => devices
+            .Where(device => string.Equals(ModelOf(device), package.Model, StringComparison.OrdinalIgnoreCase))
+            .Any(device => !PackageMatchesInstalledVersion(package, device))).ToArray();
+        var currentModels = job.Packages.Except(dispatchPackages)
+            .Select(package => package.Model)
+            .OrderBy(model => model)
+            .ToArray();
+        if (dispatchPackages.Length == 0)
+        {
+            var message = "Every onboarded Kiloview already reports the version contained in its staged model-specific package.";
+            var completed = job with { Status = "completed", FinishedUtc = DateTimeOffset.UtcNow, Message = message };
+            await store.UpdateAsync(s => s with { FirmwareJob = completed });
+            return new(true, true, "completed", message);
+        }
         var uploadRunning = job with { Status = "uploading", Message = "Uploading model-specific packages to KiloLink Server and preparing the fleet dispatch." };
         await store.UpdateAsync(s => s with { FirmwareJob = uploadRunning });
         try
         {
-            var result = await kiloLink.DispatchFleetAsync(lastJob.KiloLinkServerIp, lastJob.KiloLinkWebPort, credential, job.Packages, devices, ct);
-            var message = $"KiloLink accepted {result.PackagesUploaded} firmware package(s) and dispatched updates to {result.DevicesDispatched} device(s). Monitor completion in KiloLink before removing power.";
+            var result = await kiloLink.DispatchFleetAsync(lastJob.KiloLinkServerIp, lastJob.KiloLinkWebPort, credential, dispatchPackages, devices, ct);
+            var alreadyCurrent = currentModels.Length == 0 ? "" : $" Already current and skipped: {string.Join(", ", currentModels)}.";
+            var message = $"KiloLink accepted {result.PackagesUploaded} firmware package(s) and dispatched updates to {result.DevicesDispatched} device(s).{alreadyCurrent} Monitor completion in KiloLink before removing power.";
             var dispatched = uploadRunning with { Status = "dispatched", Message = message };
             await store.UpdateAsync(s => s with { FirmwareJob = dispatched });
             return new(true, false, "dispatched", message, $"http://{lastJob.KiloLinkServerIp}:{lastJob.KiloLinkWebPort}/");
@@ -173,6 +200,9 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
     }
 
     private static bool IsModel(ManagedDevice device, string model) => string.Equals(ModelOf(device), model, StringComparison.OrdinalIgnoreCase);
+    private static bool PackageMatchesInstalledVersion(FirmwarePackage package, ManagedDevice device) =>
+        !string.IsNullOrWhiteSpace(device.FirmwareVersion) &&
+        package.FileName.Contains(device.FirmwareVersion, StringComparison.OrdinalIgnoreCase);
     private static string ModelOf(ManagedDevice device) => device.Model.StartsWith("N60", StringComparison.OrdinalIgnoreCase) ? "N60" : "N6";
 
     private static string GetFirmwareDirectory(IWebHostEnvironment environment)

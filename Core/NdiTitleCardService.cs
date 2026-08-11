@@ -34,7 +34,6 @@ public sealed class NdiTitleCardService(
         {
             _runtime ??= new NdiRuntime();
             if (!_senders.TryGetValue(device.Id, out var sender)
-                || !string.Equals(sender.Name, sourceName, StringComparison.Ordinal)
                 || !string.Equals(sender.Groups, publishedGroups, StringComparison.Ordinal))
             {
                 sender?.Dispose();
@@ -43,7 +42,15 @@ public sealed class NdiTitleCardService(
                 created = true;
                 logger.LogInformation("Started NDI identity source {Source} for {Device} in groups {Groups}", sourceName, device.Id, publishedGroups);
             }
-            else sender.Update(device);
+            else
+            {
+                // Keep the advertised NDI source stable while the operator edits
+                // the display name. Recreating it under the new hostname leaves
+                // hardware decoders tuned to a cached, now-dead source. Updating
+                // the frame in place changes the visible card immediately.
+                sender.Update(device);
+                sourceName = sender.Name;
+            }
         }
         // NDI discovery is asynchronous. Do not tell the UI that a newly-created
         // card is active until it has sent frames long enough to be advertised.
@@ -59,6 +66,20 @@ public sealed class NdiTitleCardService(
             _senders.Clear();
             _runtime?.Dispose();
             _runtime = null;
+        }
+    }
+
+    public void Forget(string id)
+    {
+        lock (_gate)
+        {
+            if (!_senders.Remove(id, out var sender)) return;
+            sender.Dispose();
+            if (_senders.Count == 0)
+            {
+                _runtime?.Dispose();
+                _runtime = null;
+            }
         }
     }
 
@@ -193,8 +214,11 @@ public sealed class NdiTitleCardService(
                 // normally zero. Advertising it as BGRA makes receivers treat the
                 // entire identity card as fully transparent (black in Studio Monitor).
                 FourCC = 0x58524742, // BGRX
-                FrameRateN = 10_000,
-                FrameRateD = 1_000,
+                // Hardware NDI decoders commonly accept broadcast frame rates
+                // only. Studio Monitor tolerates the former 10 fps card, but an
+                // N6/N60 can tune to it without producing HDMI output.
+                FrameRateN = 60_000,
+                FrameRateD = 1_001,
                 PictureAspectRatio = 16f / 9f,
                 FrameFormatType = 1, // progressive
                 Timecode = long.MaxValue,

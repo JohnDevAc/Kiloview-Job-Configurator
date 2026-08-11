@@ -40,6 +40,7 @@ public sealed record ManagedDevice
     public string? PipelineStatus { get; init; }
     public string? RfSignal { get; init; }
     public string? RfSignalKind { get; init; }
+    public double? SystemTemperatureC { get; init; }
     public bool? DanteAudioActive { get; init; }
     public bool? DanteAudioReady { get; init; }
     public string? DanteAudioStatus { get; init; }
@@ -89,6 +90,7 @@ public sealed record KiloLinkServerDiscovery(string ServerIp, int WebPort, strin
 public sealed record NdiDiscoveryServerDiscovery(string ServerIp, int Port);
 public sealed record KiloLinkAuthorizationResult(string SerialNumber, string Hostname, string AuthorizationCode, bool Created);
 public sealed record KiloLinkFleetResult(int PackagesUploaded, int DevicesDispatched, IReadOnlyList<string> Models);
+public sealed record KiloLinkClearResult(int DevicesDeleted, int GroupsDeleted);
 
 public sealed record AppState(
     IReadOnlyList<ManagedDevice> Devices,
@@ -108,7 +110,8 @@ public sealed record AppState(
 
 public sealed record DiscoveryRequest(
     DeviceCredentials? Credentials,
-    bool Simulation = false);
+    bool Simulation = false,
+    bool CleanOnboarding = false);
 
 public sealed record DiscoveryResult(IReadOnlyList<ManagedDevice> Devices, IReadOnlyList<string> ScannedCidrs, TimeSpan Duration);
 
@@ -127,7 +130,8 @@ public sealed record OnboardingRequest(
     IReadOnlyDictionary<string, DeviceRole>? RoleOverrides = null,
     int KiloLinkPort = 50000,
     int KiloLinkWebPort = 80,
-    string Dns = "8.8.8.8");
+    string Dns = "8.8.8.8",
+    bool CleanOnboarding = false);
 
 public sealed record DevicePlan(
     string DeviceId,
@@ -151,7 +155,9 @@ public sealed record OnboardingProgress(Guid RunId, string Status, int Completed
 
 public sealed record RoleUpdate(DeviceRole Role);
 public sealed record TeleToolRemovalResult(string Id, string Hostname, int ManagedTeleToolCount, string FleetStatus);
+public sealed record KiloviewRemovalResult(string Id, string Hostname, int ManagedKiloviewCount, bool KiloLinkRecordRemoved, string Status);
 public sealed record IdentityUpdate(string Hostname, string NdiChannelName);
+public sealed record HdmiInputProbeResult(bool SignalPresent, string? Resolution);
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
 public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
 public sealed record MulticastSetupRequest(
@@ -175,7 +181,9 @@ public sealed record LocalPcEndpoint(
     int PrefixLength,
     bool PreferredInterfaceConfigured,
     string Status,
-    string? Error = null);
+    string? Error = null,
+    string? OperatingSystemVersion = null,
+    string? NdiToolsVersion = null);
 public sealed record RemoteWindowsPcEndpoint(
     string EndpointId,
     string Hostname,
@@ -192,7 +200,8 @@ public sealed record RemoteWindowsPcEndpoint(
     string? Error = null,
     DateTimeOffset? LastConnectivityCheckUtc = null,
     int ConsecutiveConnectivityFailures = 0,
-    string ConnectivityStatus = "unknown");
+    string ConnectivityStatus = "unknown",
+    string? OperatingSystemVersion = null);
 public sealed record WindowsPcRegistration(
     string EndpointId,
     string Hostname,
@@ -202,7 +211,8 @@ public sealed record WindowsPcRegistration(
     bool PreferredInterfaceConfigured,
     string NdiToolsVersion,
     string UtilityVersion,
-    string EulaVersion);
+    string EulaVersion,
+    string? OperatingSystemVersion = null);
 public sealed record MulticastDeviceConfiguration(
     string Group,
     string? NetPrefix,

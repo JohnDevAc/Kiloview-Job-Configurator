@@ -16,12 +16,16 @@ public interface IDeviceApi
     Task SetNetworkAsync(string address, string mask, string gateway, string dns, CancellationToken ct);
     Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct);
     Task SetRoleAsync(DeviceRole role, CancellationToken ct);
+    Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct);
     Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct);
     Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct);
+    Task SetHostnameAsync(string hostname, CancellationToken ct);
     Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct);
     Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct);
     Task DisableMulticastAsync(CancellationToken ct);
     Task BlankAsync(CancellationToken ct);
+    Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct) =>
+        Task.FromException(new NotSupportedException("Direct firmware updates are not supported for this device family."));
 }
 
 internal abstract class HttpDeviceApi(
@@ -161,4 +165,11 @@ internal abstract class HttpDeviceApi(
 
     protected static string String(JsonElement element, string property, string fallback = "") =>
         element.TryGetProperty(property, out var value) ? value.ToString() : fallback;
+
+    protected static JsonElement Payload(JsonElement root) =>
+        root.ValueKind == JsonValueKind.Object &&
+        root.TryGetProperty("data", out var data) &&
+        data.ValueKind == JsonValueKind.Object
+            ? data
+            : root;
 }

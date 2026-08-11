@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net.Http.Headers;
 using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
@@ -8,13 +9,46 @@ internal sealed class N6DeviceApi(
     DeviceCredentials credentials,
     IHttpClientFactory clients) : HttpDeviceApi(ipAddress, credentials, clients), IDeviceApi
 {
-    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
+    public async Task<ManagedDevice?> ProbeWebOnlyAsync(CancellationToken ct)
     {
-        var client = NewClient(TimeSpan.FromSeconds(8));
+        using var client = NewClient(TimeSpan.FromSeconds(8));
+        using var login = await PostAsync(client, "/api/users/login.json",
+            new { user = Credentials.Username, password = Credentials.Password },
+            "probe N6 web-access state",
+            ct);
+        var data = login.RootElement.GetProperty("data");
+        var firstLogin = data.TryGetProperty("changed", out var changed) && changed.ValueKind == JsonValueKind.False;
+
+        return new ManagedDevice
+        {
+            Id = $"N6-FIRST-LOGIN-{IpAddress}",
+            IpAddress = IpAddress,
+            MacAddress = IpAddress,
+            Hostname = firstLogin ? "N6 (first login)" : "N6 (API disabled)",
+            Model = "N6",
+            Family = DeviceFamily.N6,
+            Role = DeviceRole.Unknown,
+            Health = DeviceHealth.Online,
+            LastSeenUtc = DateTimeOffset.UtcNow,
+            Credentials = Credentials,
+            ManagementState = firstLogin ? "first-login" : "api-disabled",
+            ManagementMessage = firstLogin
+                ? "Factory N6 detected; onboarding will initialize its administrator password and API permission after confirmation."
+                : "N6 Web login detected with HTTP API permission disabled; onboarding will enable it after confirmation."
+        };
+    }
+
+    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct, TimeSpan? timeout = null)
+    {
+        var client = NewClient(timeout ?? TimeSpan.FromSeconds(8));
         using var login = await PostAsync(client, "/api/user/authorize.json", new { user = Credentials.Username, password = Credentials.Password }, "N6 login", ct);
         var data = login.RootElement.GetProperty("data");
         var token = String(data, "token");
-        Cookies.Add(new Uri($"http://{IpAddress}"), new System.Net.Cookie("token", token));
+        var uri = new Uri($"http://{IpAddress}");
+        Cookies.Add(uri, new System.Net.Cookie("username", Credentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("alias", String(data, "alias", "Admin")));
+        Cookies.Add(uri, new System.Net.Cookie("token", token));
         ApplyCookies(client);
         return client;
     }
@@ -22,60 +56,119 @@ internal sealed class N6DeviceApi(
     public async Task<ManagedDevice> ReadAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var version = await GetAsync(client, "/api/sys/version.json", "read N6 version", ct);
+        using var version = await GetAsync(client, "/api/firmware/get.json", "read N6 version", ct);
         using var hostname = await GetAsync(client, "/api/device/get_hostname.json", "read N6 hostname", ct);
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
-        using var mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode", ct);
+        JsonDocument? mode = null;
+        string? modeWarning = null;
+        try { mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode", ct); }
+        catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
+        {
+            // The N6 web and network APIs can be healthy while its codec-mode
+            // service is restarting. Keep the unit discoverable so onboarding
+            // can run the guarded mode recovery path instead of losing it.
+            modeWarning = "N6 mode service is not ready; role will be recovered during onboarding.";
+        }
         var net = network.RootElement.GetProperty("data")[0];
         var ver = version.RootElement.GetProperty("data");
-        var serial = String(ver, "serialNumber", String(ver, "serial_number", String(net, "mac", IpAddress)));
+        var hostnameText = String(hostname.RootElement.GetProperty("data"), "hostname", "N6");
+        var serialFromHostname = hostnameText.StartsWith("N6-", StringComparison.OrdinalIgnoreCase)
+            ? hostnameText[3..]
+            : "";
+        var serial = String(ver, "serialNumber", String(ver, "serial_number", serialFromHostname));
         var mac = String(net, "mac", serial);
-        var modeName = String(mode.RootElement.GetProperty("data"), "mode");
-        return new ManagedDevice
+        if (string.IsNullOrWhiteSpace(serial)) serial = mac;
+        var modeName = mode is null ? "" : String(mode.RootElement.GetProperty("data"), "mode");
+        var result = new ManagedDevice
         {
             Id = string.IsNullOrWhiteSpace(serial) ? mac : serial,
             IpAddress = String(net, "ip", IpAddress),
             MacAddress = mac,
-            Hostname = String(hostname.RootElement.GetProperty("data"), "hostname", "N6"),
+            Hostname = hostnameText,
             Model = "N6",
             Family = DeviceFamily.N6,
             FirmwareVersion = String(ver, "softwareVersion"),
             IsStatic = String(net, "dynamic") == "n",
-            Role = modeName == "decoder" ? DeviceRole.Decoder : DeviceRole.Encoder,
+            Role = modeName == "decoder" ? DeviceRole.Decoder : modeName == "encoder" ? DeviceRole.Encoder : DeviceRole.Unknown,
             Health = DeviceHealth.Online,
             LastSeenUtc = DateTimeOffset.UtcNow,
-            Credentials = Credentials
+            Credentials = Credentials,
+            ManagementState = modeWarning is null ? null : "mode-recovery-required",
+            ManagementMessage = modeWarning
         };
+        mode?.Dispose();
+        return result;
     }
 
     public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct)
     {
-        using var original = await AuthorizedAsync(ct);
-        var accepted = await TryAcceptLicenseAsync(original, ct);
+        using var web = NewClient(TimeSpan.FromSeconds(8));
+        using var login = await PostAsync(web, "/api/users/login.json",
+            new { user = Credentials.Username, password = Credentials.Password },
+            "start N6 access provisioning",
+            ct);
+        var loginData = login.RootElement.GetProperty("data");
+        var uri = new Uri($"http://{IpAddress}");
+        Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("alias", String(loginData, "alias", "Admin")));
+        Cookies.Add(uri, new System.Net.Cookie("token", String(loginData, "token")));
+        ApplyCookies(web);
         if (!string.Equals(Credentials.Username, targetCredentials.Username, StringComparison.Ordinal) ||
             !string.Equals(Credentials.Password, targetCredentials.Password, StringComparison.Ordinal))
         {
-            using var changed = await PostAsync(original, "/api/users/modify.json", new
+            using var changed = await PostAsync(web, "/api/users/modify.json", new
             {
-                id = targetCredentials.Username,
-                alias = "Admin",
-                api = true,
-                web = true,
-                password = targetCredentials.Password
+                id = Credentials.Username,
+                username = targetCredentials.Username,
+                password = targetCredentials.Password,
+                passwordAgain = targetCredentials.Password
             }, "set N6 onboarding credentials", ct);
         }
 
+        // The mandatory first-login form only submits password fields. Re-authenticate
+        // with the replacement credentials and enable API access in a separate user edit.
+        using var permissions = NewClient(TimeSpan.FromSeconds(8));
+        using var permissionLogin = await PostAsync(permissions, "/api/users/login.json",
+            new { user = targetCredentials.Username, password = targetCredentials.Password },
+            "re-authenticate N6 for API permission",
+            ct);
+        var permissionData = permissionLogin.RootElement.GetProperty("data");
+        Cookies.Add(uri, new System.Net.Cookie("user", targetCredentials.Username));
+        Cookies.Add(uri, new System.Net.Cookie("alias", String(permissionData, "alias", "Admin")));
+        Cookies.Add(uri, new System.Net.Cookie("token", String(permissionData, "token")));
+        ApplyCookies(permissions);
+        using var apiPermission = await PostAsync(permissions, "/api/users/modify.json", new
+        {
+            id = targetCredentials.Username,
+            alias = String(permissionData, "alias", "Admin"),
+            web = true,
+            api = true
+        }, "enable N6 HTTP API permission", ct);
+
         var replacement = new N6DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
-        accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
-        if (!accepted)
-            throw new DeviceApiException("The N6 accepted its new login, but its firmware did not expose a recognized EULA acceptance endpoint. Open the device UI once or provide its Web UI bundle for API matching.");
+        _ = await replacement.TryAcceptLicenseAsync(verified, ct);
+    }
+
+    public async Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct, TimeSpan.FromMinutes(20));
+        await using var file = new FileStream(package.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
+        using var form = new MultipartFormDataContent();
+        using var content = new StreamContent(file);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(content, "upload", package.FileName);
+        form.Add(new StringContent(package.FileName), "path");
+        ApplyCookies(client);
+        using var response = await client.PostAsync("/api/firmware/upgrade.json", form, ct);
+        using var accepted = await ReadJsonAsync(response, "upload N6 firmware", ct);
     }
 
     private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)
     {
         var known = new[]
         {
+            "/api/users/accept_eula.json",
             "/api/sys/accept_eula.json",
             "/api/sys/eula/accept.json",
             "/api/device/accept_eula.json",
@@ -96,17 +189,28 @@ internal sealed class N6DeviceApi(
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
         var net = network.RootElement.GetProperty("data")[0];
         var device = String(net, "device", "eth0");
-        using var _ = await PostAsync(client, "/api/network/set.json", new { device, dynamic = "n", ip = address, mask, gw = gateway, dns }, "set N6 static address", ct);
+        try
+        {
+            using var _ = await PostAsync(client, "/api/network/modify.json", new { device, dynamic = "n", ip = address, mask, gw = gateway, dns }, "set N6 static address", ct);
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { /* Expected while the address changes. */ }
+        catch (HttpRequestException) { /* The caller verifies the device at its target address. */ }
     }
 
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
         await ConfigureKiloLinkAsync(client, settings, ct);
-        using var discovery = await PostAsync(client, "/api/device/set_discovery_server.json", new { address = settings.NdiDiscoveryServerIp, enable = true }, "set N6 NDI discovery server", ct);
+        using var discovery = await PostAsync(client, "/api/device/set_discovery_server.json",
+            new { enable = true, servers = new[] { new { ip = settings.NdiDiscoveryServerIp, group_name = settings.JobName } } },
+            "set N6 NDI discovery server",
+            ct);
         foreach (var type in new[] { "ndihx", "ndifull" })
         {
-            using var stream = await PostAsync(client, "/api/encoder/ndi/set_config.json", new { types = type, device_group = settings.JobName, channel_name = channelName }, $"set N6 {type} identity", ct);
+            using var stream = await PostAsync(client, "/api/device/modify.json",
+                new { types = type, device_group = settings.JobName, channel_name = channelName, machine_name = hostname },
+                $"set N6 {type} identity",
+                ct);
         }
         using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
     }
@@ -120,14 +224,55 @@ internal sealed class N6DeviceApi(
             try { using var _ = await PostAsync(client, path, body, "configure N6 KiloLink", ct); return; }
             catch (DeviceApiException ex) { last = ex; }
         }
+        try
+        {
+            using var _ = await PostAsync(client, "/kilolink/kilolink/Set.json",
+                new { cfg = body },
+                "configure N6 KiloLink",
+                ct);
+            return;
+        }
+        catch (DeviceApiException ex) { last = ex; }
+        try
+        {
+            var legacy = $"/api/platform/set.json?MASTER_ADDR={Uri.EscapeDataString(settings.KiloLinkServerIp)}&MASTER_PORT={settings.KiloLinkPort}&AUTH_CODE={Uri.EscapeDataString(settings.KiloLinkOnboardingCode)}";
+            using var _ = await GetAsync(client, legacy, "configure N6 KiloLink", ct);
+            return;
+        }
+        catch (DeviceApiException ex) { last = ex; }
         throw new DeviceApiException("This N6 firmware did not expose the KiloLink configuration endpoint. Update its firmware or configure KiloLink once in the device UI.", last);
     }
 
     public async Task SetRoleAsync(DeviceRole role, CancellationToken ct)
     {
         if (role == DeviceRole.Unknown) throw new ArgumentException("Role must be Encoder or Decoder.");
+        var target = role == DeviceRole.Decoder ? "decoder" : "encoder";
+        try
+        {
+            await SwitchModeAndWaitAsync(target, ct);
+        }
+        catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
+        {
+            // A rejected switch is a codec-proxy fault, not evidence that the
+            // opposite mode is active. Rebooting and retrying here previously
+            // made a sick unit repeatedly restart during onboarding.
+            throw new DeviceApiException(
+                $"The N6 codec proxy service is unavailable (0201001), so the device was not switched to {target} mode. Power-cycle the N6 and retry after its web UI no longer reports a codec proxy error.",
+                ex);
+        }
+    }
+
+    public async Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct)
+    {
         using var client = await AuthorizedAsync(ct);
-        using var _ = await PostAsync(client, "/api/mode/switch.json", new { mode = role == DeviceRole.Decoder ? "decoder" : "encoder" }, "switch N6 mode", ct);
+        using var status = await GetAsync(client, "/api/device/status.json?types=ndihx", "read N6 HDMI input", ct);
+        var data = Payload(status.RootElement);
+        var signal = FirstString(data, "signal", "video_signal", "input_signal");
+        var resolution = FirstString(data, "resolution", "input_resolution", "video_resolution");
+        var present = !string.IsNullOrWhiteSpace(signal)
+            ? SignalIsPresent(signal)
+            : SignalIsPresent(resolution);
+        return new(present, present && !string.IsNullOrWhiteSpace(resolution) ? resolution : null);
     }
 
     public async Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct)
@@ -137,6 +282,89 @@ internal sealed class N6DeviceApi(
         var resolution = String(output.RootElement.GetProperty("data"), "resolution");
         var connected = !string.IsNullOrWhiteSpace(resolution) && resolution is not "none" and not "0" and not "unknown";
         return new(connected, connected ? resolution : null);
+    }
+
+    private async Task SwitchModeAndWaitAsync(string target, CancellationToken ct)
+    {
+        using (var client = await AuthorizedAsync(ct))
+        {
+            try
+            {
+                using var current = await GetAsync(client, "/api/mode/get.json", "read N6 mode before switch", ct);
+                if (string.Equals(String(Payload(current.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+            catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
+            {
+                // Do not reboot before trying the switch. Firmware 2.00 can
+                // reject mode/get with 0201001 while mode/switch still works.
+            }
+            using var switched = await PostAsync(client, "/api/mode/switch.json", new { mode = target }, "switch N6 mode", ct);
+        }
+
+        var end = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(50);
+        DeviceApiException? last = null;
+        while (DateTimeOffset.UtcNow < end)
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            try
+            {
+                using var client = await AuthorizedAsync(ct);
+                using var mode = await GetAsync(client, "/api/mode/get.json", "verify N6 mode", ct);
+                if (string.Equals(String(Payload(mode.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+            catch (DeviceApiException ex) { last = ex; }
+            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
+            {
+                last = new DeviceApiException("N6 was unavailable while changing mode.", ex);
+            }
+
+            // Firmware 2.00 can leave mode/get unavailable after a successful
+            // transition. Confirm the target codec service itself rather than
+            // failing a working decoder/encoder solely on that status endpoint.
+            try
+            {
+                using var client = await AuthorizedAsync(ct);
+                using var targetService = target == "decoder"
+                    ? await GetAsync(client, "/api/decoderMode/current/get.json", "verify N6 decoder service", ct)
+                    : await GetAsync(client, "/api/device/status.json?types=ndihx", "verify N6 encoder service", ct);
+                return;
+            }
+            catch (Exception ex) when (ex is DeviceApiException or HttpRequestException or TaskCanceledException)
+            {
+                if (ct.IsCancellationRequested) throw;
+                last = ex as DeviceApiException ?? new DeviceApiException($"N6 {target} service is not ready.", ex);
+            }
+        }
+        throw new DeviceApiException($"N6 mode service did not become ready in {target} mode.", last);
+    }
+
+    private static bool IsModeServiceUnavailable(DeviceApiException ex) =>
+        ex.Message.Contains("0201001", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("mode service did not", StringComparison.OrdinalIgnoreCase);
+
+    private static string FirstString(JsonElement element, params string[] properties)
+    {
+        foreach (var property in properties)
+        {
+            var value = String(element, property);
+            if (!string.IsNullOrWhiteSpace(value)) return value;
+        }
+        return "";
+    }
+
+    private static bool SignalIsPresent(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var normalized = value.Trim().Replace("_", " ").Replace("-", " ");
+        return normalized is not "0" &&
+               !normalized.Equals("none", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("no signal", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("unknown", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("offline", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("false", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct)
@@ -160,7 +388,7 @@ internal sealed class N6DeviceApi(
                         if (!string.IsNullOrWhiteSpace(url))
                         {
                             using var selected = await PostAsync(client, "/api/decoder/current/set.json", new { name, url }, "show N6 identity card", ct);
-                            return;
+                            if (await WaitForIdentitySelectionAsync(client, source, url, ct)) return;
                         }
                     }
                 }
@@ -171,15 +399,44 @@ internal sealed class N6DeviceApi(
         throw new DeviceApiException($"The N6 did not discover its NDI identity source '{source.Name}'.");
     }
 
+    private async Task<bool> WaitForIdentitySelectionAsync(HttpClient client, TitleCardSource source, string url, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+            foreach (var path in new[] { "/api/decoder/current/get.json", "/api/decoderMode/current/get.json" })
+            {
+                try
+                {
+                    using var current = await GetAsync(client, path, "verify N6 identity card", ct);
+                    var data = current.RootElement.TryGetProperty("data", out var value) ? value : default;
+                    if (data.ValueKind != JsonValueKind.Object) continue;
+                    var currentName = String(data, "name");
+                    var currentUrl = String(data, "original_url", String(data, "url", String(data, "ip")));
+                    if (currentName.Contains(source.Name, StringComparison.OrdinalIgnoreCase) ||
+                        (!string.IsNullOrWhiteSpace(currentUrl) && string.Equals(currentUrl, url, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                }
+                catch (DeviceApiException) { }
+            }
+        }
+        return false;
+    }
+
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
         foreach (var type in new[] { "ndihx", "ndifull" })
         {
             try { using var stream = await PostAsync(client, "/api/encoder/ndi/set_config.json", new { types = type, device_group = group, channel_name = channelName }, $"set N6 {type} name", ct); }
             catch (DeviceApiException) when (type == "ndifull") { /* Full NDI can be disabled on some firmware. */ }
         }
+    }
+
+    public async Task SetHostnameAsync(string hostname, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var changed = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
     }
 
     public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct)

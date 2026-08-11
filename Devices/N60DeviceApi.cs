@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net.Http.Headers;
 using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
@@ -8,14 +9,16 @@ internal sealed class N60DeviceApi(
     DeviceCredentials credentials,
     IHttpClientFactory clients) : HttpDeviceApi(ipAddress, credentials, clients), IDeviceApi
 {
-    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
+    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct, TimeSpan? timeout = null)
     {
-        var client = NewClient(TimeSpan.FromSeconds(8));
+        var client = NewClient(timeout ?? TimeSpan.FromSeconds(8));
         client.DefaultRequestHeaders.TryAddWithoutValidation("App", "{\"language\":\"en\"}");
         using var login = await PostAsync(client, "/api/systemctrl/users/login", new { username = Credentials.Username, password = Credentials.Password }, "N60 login", ct);
         var data = login.RootElement.GetProperty("data");
         var token = String(data, "token");
         var alias = String(data, "alias", "Admin");
+        client.DefaultRequestHeaders.Remove("Authorization");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", token);
         var uri = new Uri($"http://{IpAddress}");
         Cookies.Add(uri, new System.Net.Cookie("language", "en"));
         Cookies.Add(uri, new System.Net.Cookie("user", Credentials.Username));
@@ -56,7 +59,7 @@ internal sealed class N60DeviceApi(
     public async Task ProvisionAccessAsync(DeviceCredentials targetCredentials, CancellationToken ct)
     {
         using var original = await AuthorizedAsync(ct);
-        var accepted = await TryAcceptLicenseAsync(original, ct);
+        _ = await TryAcceptLicenseAsync(original, ct);
         if (!string.Equals(Credentials.Username, targetCredentials.Username, StringComparison.Ordinal) ||
             !string.Equals(Credentials.Password, targetCredentials.Password, StringComparison.Ordinal))
         {
@@ -81,15 +84,28 @@ internal sealed class N60DeviceApi(
 
         var replacement = new N60DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
-        accepted = await replacement.TryAcceptLicenseAsync(verified, ct) || accepted;
-        if (!accepted)
-            throw new DeviceApiException("The N60 accepted its new login, but its firmware did not expose a recognized EULA acceptance endpoint. Open the device UI once or provide its Web UI bundle for API matching.");
+        _ = await replacement.TryAcceptLicenseAsync(verified, ct);
+    }
+
+    public async Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct, TimeSpan.FromMinutes(20));
+        await using var file = new FileStream(package.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
+        using var form = new MultipartFormDataContent();
+        using var content = new StreamContent(file);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(content, "file", package.FileName);
+        form.Add(new StringContent(package.FileName), "path");
+        ApplyCookies(client);
+        using var response = await client.PostAsync("/api/systemctrl/system/upload", form, ct);
+        using var accepted = await ReadJsonAsync(response, "upload N60 firmware", ct);
     }
 
     private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)
     {
         var known = new[]
         {
+            "/api/users/accept_eula.json",
             "/api/systemctrl/system/acceptEula",
             "/api/systemctrl/system/setEula",
             "/api/systemctrl/eula/accept",
@@ -112,36 +128,110 @@ internal sealed class N60DeviceApi(
         var active = network.RootElement.GetProperty("data").EnumerateArray().FirstOrDefault(e => String(e, "status") == "up");
         if (active.ValueKind == JsonValueKind.Undefined) active = network.RootElement.GetProperty("data")[0];
         var ifname = String(active, "device", "eth0");
-        using var _ = await PostAsync(client, "/api/networkmanager/network/SetEthernets",
-            new { ifname, address, netmask = mask, gw = gateway, mac = String(active, "mac"), method = "static", dns },
-            "set N60 static address", ct);
+        try
+        {
+            using var _ = await PostAsync(client, "/api/networkmanager/network/SetEthernets",
+                new { ifname, address, netmask = mask, gw = gateway, mac = String(active, "mac"), method = "static", dns },
+                "set N60 static address", ct);
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested) { /* Expected while the address changes. */ }
+        catch (HttpRequestException) { /* The caller verifies the device at its target address. */ }
     }
 
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var networks = await GetAsync(client, "/api/KiloLink/networks", "read N60 KiloLink interfaces", ct);
+        using var networks = await GetAsync(client, "/api/kilolink/networks", "read N60 KiloLink interfaces", ct);
         var interfaces = networks.RootElement.TryGetProperty("list", out var list)
             ? list.EnumerateArray().Select(x => x.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray()
             : new[] { "eth0" };
-        using var kilo = await PostAsync(client, "/api/KiloLink/set", new { ip = settings.KiloLinkServerIp, port = settings.KiloLinkPort, ifname = interfaces, key = settings.KiloLinkOnboardingCode, crypto = false, enable = true }, "configure N60 KiloLink", ct);
+        using var kilo = await PostAsync(client, "/api/kilolink/set", new { ip = settings.KiloLinkServerIp, port = settings.KiloLinkPort, ifname = interfaces, key = settings.KiloLinkOnboardingCode, crypto = false, enable = true }, "configure N60 KiloLink", ct);
         await SetIdentityAndDiscoveryAsync(client, hostname, channelName, settings.JobName, settings.NdiDiscoveryServerIp, ct);
     }
 
     private async Task SetIdentityAndDiscoveryAsync(HttpClient client, string hostname, string channel, string group, string? discoveryIp, CancellationToken ct)
     {
-        using var host = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
+        if (!string.IsNullOrWhiteSpace(hostname))
+        {
+            using var host = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
+        }
+        if (!string.IsNullOrWhiteSpace(discoveryIp))
+        {
+            using var discovery = await RetryRateLimitedAsync(
+                () => PostAsync(client, "/api/codec/discovery/setDiscoveryServer",
+                    new { enable = true, servers = new[] { new { ip = discoveryIp, group_name = group } } },
+                    "set N60 NDI discovery server",
+                    ct),
+                ct);
+        }
         foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
         {
             try
             {
-                object body = string.IsNullOrWhiteSpace(discoveryIp)
-                    ? new { group, channel_name = channel, types = stream.Item2 }
-                    : new { group, channel_name = channel, types = stream.Item2, discovery_server = new { enable = true, address = discoveryIp } };
-                using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", body, $"configure N60 {stream.Item2}", ct);
+                // The N60 rejects otherwise valid back-to-back codec mutations.
+                // Pace each stream write as well as retrying its explicit
+                // "Request too often" response below.
+                await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+                // Current N60 firmware exposes both the NDI sender group and the
+                // Discovery Server registration group. Supplying only `group`
+                // leaves the NDI-FULL sender group blank even though the request
+                // returns success.
+                object body = new { group, group_server = group, channel_name = channel };
+                using var configured = await RetryRateLimitedAsync(
+                    () => PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", body, $"configure N60 {stream.Item2}", ct),
+                    ct);
+                await VerifyNdiGroupAsync(client, stream.Item1, stream.Item2, group, ct);
             }
-            catch (DeviceApiException) when (stream.Item1 == "main_full") { /* Full NDI can be disabled. */ }
+            catch (DeviceApiException) when (stream.Item1 == "main_full")
+            {
+                // Ignore only a genuinely unavailable/disabled NDI-FULL stream.
+                // If the stream is enabled, a rejected or non-persistent group
+                // setting must fail onboarding instead of being silently hidden.
+                bool enabled;
+                try
+                {
+                    using var current = await RetryRateLimitedAsync(
+                        () => GetAsync(client, "/api/codec/streams/main_full/ndi-full/get", "check N60 ndi-full availability", ct),
+                        ct);
+                    var currentData = Payload(current.RootElement);
+                    enabled = currentData.TryGetProperty("enable", out var value) &&
+                              (value.ValueKind == JsonValueKind.True ||
+                               (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out var parsed) && parsed));
+                }
+                catch (DeviceApiException) { continue; }
+                if (enabled) throw;
+            }
         }
+    }
+
+    private async Task VerifyNdiGroupAsync(HttpClient client, string stream, string type, string expectedGroup, CancellationToken ct)
+    {
+        string actualGroup = "";
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350 * attempt), ct);
+            using var verified = await RetryRateLimitedAsync(
+                () => GetAsync(client, $"/api/codec/streams/{stream}/{type}/get", $"verify N60 {type} identity", ct),
+                ct);
+            actualGroup = String(Payload(verified.RootElement), "group");
+            if (string.Equals(actualGroup, expectedGroup, StringComparison.Ordinal)) return;
+        }
+        throw new DeviceApiException($"N60 {type} retained NDI group '{actualGroup}' instead of '{expectedGroup}'.");
+    }
+
+    private static async Task<JsonDocument> RetryRateLimitedAsync(Func<Task<JsonDocument>> request, CancellationToken ct)
+    {
+        DeviceApiException? last = null;
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            try { return await request(); }
+            catch (DeviceApiException ex) when (ex.Message.Contains("Request too often", StringComparison.OrdinalIgnoreCase))
+            {
+                last = ex;
+                await Task.Delay(TimeSpan.FromMilliseconds(750 * attempt), ct);
+            }
+        }
+        throw last ?? new DeviceApiException("N60 request did not complete.");
     }
 
     public async Task SetRoleAsync(DeviceRole role, CancellationToken ct)
@@ -152,6 +242,25 @@ internal sealed class N60DeviceApi(
         if (!response.IsSuccessStatusCode) throw new DeviceApiException($"Switch N60 mode failed with HTTP {(int)response.StatusCode}.");
     }
 
+    public async Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var capture = await PostAsync(client, "/api/codec/encoder/main/get_capture", new { }, "read N60 HDMI input", ct);
+        // N60 2.45 returns capture fields at the JSON root; older builds wrap
+        // the same object in `data`. Accept both shapes.
+        var data = Payload(capture.RootElement);
+        var signal = String(data, "signal");
+        var present = SignalIsPresent(signal);
+        var resolution = String(data, "resolution");
+        if (string.IsNullOrWhiteSpace(resolution) &&
+            data.TryGetProperty("width", out var width) && data.TryGetProperty("height", out var height))
+        {
+            var frameRate = String(data, "framerate");
+            resolution = $"{width}x{height}{(string.IsNullOrWhiteSpace(frameRate) ? "" : $"p{frameRate}")}";
+        }
+        return new(present, present && !string.IsNullOrWhiteSpace(resolution) ? resolution : null);
+    }
+
     public async Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
@@ -159,6 +268,18 @@ internal sealed class N60DeviceApi(
         var resolution = String(output.RootElement.GetProperty("data"), "output_resolution");
         var connected = !string.IsNullOrWhiteSpace(resolution) && resolution is not "none" and not "0" and not "unknown";
         return new(connected, connected ? resolution : null);
+    }
+
+    private static bool SignalIsPresent(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var normalized = value.Trim().Replace("_", " ").Replace("-", " ");
+        return normalized is not "0" &&
+               !normalized.Equals("none", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("no signal", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("unknown", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("offline", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("false", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct)
@@ -174,7 +295,11 @@ internal sealed class N60DeviceApi(
                 var data = discovery.RootElement.TryGetProperty("data", out var rows) && rows.ValueKind == JsonValueKind.Array ? rows : default;
                 if (data.ValueKind == JsonValueKind.Array)
                 {
-                    var match = data.EnumerateArray().FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
+                    // N60 groups sources from the same sender machine beneath a
+                    // top-level row. Each identity card uses its own NDI source,
+                    // so later cards can appear only in a row's `children` array.
+                    var match = FlattenDiscoveryRows(data)
+                        .FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
                     if (match.ValueKind == JsonValueKind.Object)
                     {
                         var name = String(match, "name", source.Name);
@@ -183,8 +308,25 @@ internal sealed class N60DeviceApi(
                         var id = match.TryGetProperty("id", out var index) && index.TryGetInt32(out var value) ? value : 0;
                         if (!string.IsNullOrWhiteSpace(url))
                         {
-                            using var selected = await PostAsync(client, "/api/codec/decode/addSpec", new { id, name, url, group }, "show N60 identity card", ct);
-                            return;
+                            var selection = new { id, name, url, group };
+                            DeviceApiException? selectionError = null;
+                            foreach (var path in new[] { "/api/codec/decode/add", "/api/codec/decode/addSpec" })
+                            {
+                                try
+                                {
+                                    using var selected = await PostAsync(client, path, selection, "show N60 identity card", ct);
+                                    if (await WaitForIdentitySelectionAsync(client, source, url, ct))
+                                    {
+                                        // Source selection can restore the decoder's
+                                        // stored forced output. Normalize only after
+                                        // the identity source is confirmed active.
+                                        await EnsureIdentityOutputAsync(client, ct);
+                                        return;
+                                    }
+                                }
+                                catch (DeviceApiException ex) { selectionError = ex; }
+                            }
+                            if (selectionError is not null) throw selectionError;
                         }
                     }
                 }
@@ -195,10 +337,86 @@ internal sealed class N60DeviceApi(
         throw new DeviceApiException($"The N60 did not discover its NDI identity source '{source.Name}'.");
     }
 
+    private async Task EnsureIdentityOutputAsync(HttpClient client, CancellationToken ct)
+    {
+        using var current = await GetAsync(client, "/api/codec/decode/get", "read N60 identity-card output", ct);
+        var data = Payload(current.RootElement);
+        var outputMode = Number(data, "output_mode", 0);
+        var outputChoice = String(data, "output_resolution_choose");
+        var outputFrameRate = Number(data, "output_framerate", 0);
+        if (outputMode == 0 &&
+            string.Equals(outputChoice, "auto", StringComparison.OrdinalIgnoreCase) &&
+            outputFrameRate == 0)
+            return;
+
+        // Identity cards are broadcast at 1080p59.94. A decoder left on a
+        // forced output such as 2160p25/59.94 can receive the card correctly
+        // while its attached display remains black. Auto makes HDMI follow the
+        // broadcast-standard card format and preserves the device's audio,
+        // HDCP, and colour-space choices.
+        using var configured = await PostAsync(client, "/api/codec/decode/output_set", new
+        {
+            output_resolution = "auto",
+            output_framerate = 0,
+            hdmi_channels = Number(data, "hdmi_channels", 2),
+            line_out_channels = Number(data, "line_out_channels", 2),
+            hdcp = Number(data, "hdcp", 1),
+            out_colorspace = Number(data, "out_colorspace", 0)
+        }, "set N60 identity-card HDMI output to Auto", ct);
+    }
+
+    private static int Number(JsonElement element, string property, int fallback)
+    {
+        if (!element.TryGetProperty(property, out var value)) return fallback;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)) return number;
+        return int.TryParse(value.ToString(), out number) ? number : fallback;
+    }
+
+    private static IEnumerable<JsonElement> FlattenDiscoveryRows(JsonElement rows)
+    {
+        if (rows.ValueKind != JsonValueKind.Array) yield break;
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Object) continue;
+            yield return row;
+            if (!row.TryGetProperty("children", out var children)) continue;
+            foreach (var child in FlattenDiscoveryRows(children)) yield return child;
+        }
+    }
+
+    private async Task<bool> WaitForIdentitySelectionAsync(HttpClient client, TitleCardSource source, string url, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+            try
+            {
+                using var current = await GetAsync(client, "/api/codec/decode/get", "verify N60 identity card", ct);
+                var data = current.RootElement.TryGetProperty("data", out var value) ? value : default;
+                if (data.ValueKind == JsonValueKind.Object)
+                {
+                    var currentName = String(data, "name");
+                    var currentUrl = String(data, "original_url", String(data, "url"));
+                    if (currentName.Contains(source.Name, StringComparison.OrdinalIgnoreCase) ||
+                        (!string.IsNullOrWhiteSpace(currentUrl) && string.Equals(currentUrl, url, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                }
+            }
+            catch (DeviceApiException) when (attempt < 7) { }
+        }
+        return false;
+    }
+
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        await SetIdentityAndDiscoveryAsync(client, hostname, channelName, group, null, ct);
+        await SetIdentityAndDiscoveryAsync(client, "", channelName, group, null, ct);
+    }
+
+    public async Task SetHostnameAsync(string hostname, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var changed = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
     }
 
     public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct)
