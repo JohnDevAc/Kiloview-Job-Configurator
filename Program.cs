@@ -519,6 +519,7 @@ app.MapPost("/api/devices/{id}/role", async (string id, RoleUpdate update, Onboa
 {
     try { return Results.Ok(await onboarding.SetRoleAsync(id, update.Role, ct)); }
     catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (DeviceApiException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 

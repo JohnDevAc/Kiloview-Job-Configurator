@@ -178,6 +178,23 @@ internal sealed class N60DeviceApi(
         if (!response.IsSuccessStatusCode) throw new DeviceApiException($"Switch N60 mode failed with HTTP {(int)response.StatusCode}.");
     }
 
+    public async Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var capture = await PostAsync(client, "/api/codec/encoder/main/get_capture", new { }, "read N60 HDMI input", ct);
+        var data = capture.RootElement.GetProperty("data");
+        var signal = String(data, "signal");
+        var present = SignalIsPresent(signal);
+        var resolution = String(data, "resolution");
+        if (string.IsNullOrWhiteSpace(resolution) &&
+            data.TryGetProperty("width", out var width) && data.TryGetProperty("height", out var height))
+        {
+            var frameRate = String(data, "framerate");
+            resolution = $"{width}x{height}{(string.IsNullOrWhiteSpace(frameRate) ? "" : $"p{frameRate}")}";
+        }
+        return new(present, present && !string.IsNullOrWhiteSpace(resolution) ? resolution : null);
+    }
+
     public async Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
@@ -185,6 +202,18 @@ internal sealed class N60DeviceApi(
         var resolution = String(output.RootElement.GetProperty("data"), "output_resolution");
         var connected = !string.IsNullOrWhiteSpace(resolution) && resolution is not "none" and not "0" and not "unknown";
         return new(connected, connected ? resolution : null);
+    }
+
+    private static bool SignalIsPresent(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var normalized = value.Trim().Replace("_", " ").Replace("-", " ");
+        return normalized is not "0" &&
+               !normalized.Equals("none", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("no signal", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("unknown", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("offline", StringComparison.OrdinalIgnoreCase) &&
+               !normalized.Equals("false", StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct)
@@ -209,8 +238,18 @@ internal sealed class N60DeviceApi(
                         var id = match.TryGetProperty("id", out var index) && index.TryGetInt32(out var value) ? value : 0;
                         if (!string.IsNullOrWhiteSpace(url))
                         {
-                            using var selected = await PostAsync(client, "/api/codec/decode/addSpec", new { id, name, url, group }, "show N60 identity card", ct);
-                            return;
+                            var selection = new { id, name, url, group };
+                            DeviceApiException? selectionError = null;
+                            foreach (var path in new[] { "/api/codec/decode/add", "/api/codec/decode/addSpec" })
+                            {
+                                try
+                                {
+                                    using var selected = await PostAsync(client, path, selection, "show N60 identity card", ct);
+                                    if (await WaitForIdentitySelectionAsync(client, source, url, ct)) return;
+                                }
+                                catch (DeviceApiException ex) { selectionError = ex; }
+                            }
+                            if (selectionError is not null) throw selectionError;
                         }
                     }
                 }
@@ -219,6 +258,29 @@ internal sealed class N60DeviceApi(
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
         }
         throw new DeviceApiException($"The N60 did not discover its NDI identity source '{source.Name}'.");
+    }
+
+    private async Task<bool> WaitForIdentitySelectionAsync(HttpClient client, TitleCardSource source, string url, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+            try
+            {
+                using var current = await GetAsync(client, "/api/codec/decode/get", "verify N60 identity card", ct);
+                var data = current.RootElement.TryGetProperty("data", out var value) ? value : default;
+                if (data.ValueKind == JsonValueKind.Object)
+                {
+                    var currentName = String(data, "name");
+                    var currentUrl = String(data, "original_url", String(data, "url"));
+                    if (currentName.Contains(source.Name, StringComparison.OrdinalIgnoreCase) ||
+                        (!string.IsNullOrWhiteSpace(currentUrl) && string.Equals(currentUrl, url, StringComparison.OrdinalIgnoreCase)))
+                        return true;
+                }
+            }
+            catch (DeviceApiException) when (attempt < 7) { }
+        }
+        return false;
     }
 
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)

@@ -74,6 +74,12 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
     public async Task ConfigureOnboardingAsync(OnboardingRequest settings, string hostname, string channelName, CancellationToken ct) =>
         await Change(d => d with { Hostname = hostname, NdiChannelName = channelName, NdiGroup = settings.JobName, IsOnboarded = true });
     public async Task SetRoleAsync(DeviceRole role, CancellationToken ct) => await Change(d => d with { Role = role });
+    public async Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct)
+    {
+        var device = await Device();
+        var signalPresent = device.Role == DeviceRole.Encoder && device.HdmiDisplayConnected != true;
+        return new(signalPresent, signalPresent ? "1920x1080p60" : null);
+    }
     public async Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct)
     {
         var device = await Device();

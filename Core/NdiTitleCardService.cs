@@ -34,7 +34,6 @@ public sealed class NdiTitleCardService(
         {
             _runtime ??= new NdiRuntime();
             if (!_senders.TryGetValue(device.Id, out var sender)
-                || !string.Equals(sender.Name, sourceName, StringComparison.Ordinal)
                 || !string.Equals(sender.Groups, publishedGroups, StringComparison.Ordinal))
             {
                 sender?.Dispose();
@@ -43,7 +42,15 @@ public sealed class NdiTitleCardService(
                 created = true;
                 logger.LogInformation("Started NDI identity source {Source} for {Device} in groups {Groups}", sourceName, device.Id, publishedGroups);
             }
-            else sender.Update(device);
+            else
+            {
+                // Keep the advertised NDI source stable while the operator edits
+                // the display name. Recreating it under the new hostname leaves
+                // hardware decoders tuned to a cached, now-dead source. Updating
+                // the frame in place changes the visible card immediately.
+                sender.Update(device);
+                sourceName = sender.Name;
+            }
         }
         // NDI discovery is asynchronous. Do not tell the UI that a newly-created
         // card is active until it has sent frames long enough to be advertised.

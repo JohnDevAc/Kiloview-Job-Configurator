@@ -89,8 +89,8 @@ public sealed class OnboardingService(
             warnings.Add($"Confirming authorizes the application to accept the Kiloview EULA on each selected Kiloview and set its device login to admin / {request.JobName}.");
             warnings.Add("Model-specific firmware is staged before confirmation. Outdated Kiloviews are upgraded and verified at their current address before static IP or KiloLink changes begin.");
             warnings.Add("KiloLink authorization codes will be generated for Kiloview units; each KiloLink alias will match the assigned hostname.");
-            warnings.Add("Kiloview role detection temporarily switches those units to decoder mode. N60 firmware can take about one minute to change mode.");
-            warnings.Add("Keep all intended HDMI displays powered on until Kiloview role detection completes.");
+            warnings.Add("Kiloview role detection checks the live HDMI input while each unit is in encoder mode. Units with an active input remain encoders; units with no input switch to decoder mode so they can show display-identification cards.");
+            warnings.Add("Keep intended HDMI input sources powered on until role detection completes. Decoder assignment means no encoder input was detected; it does not claim that HDMI output hot-plug was electrically verified.");
         }
         if (request.CleanOnboarding)
             warnings.Add("CLEAN ONBOARDING: confirming permanently deletes every existing device and real device group from KiloLink Server and clears prior configurator job devices before this plan starts.");
@@ -313,9 +313,9 @@ public sealed class OnboardingService(
                     device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                     CompleteStep(device, "Reconnect", "Device reachable on static IP");
 
-                    if (device.Role == DeviceRole.Decoder)
+                    if (device.Role != DeviceRole.Encoder)
                     {
-                        Step(device, "Prepare", "running", "Temporarily switching to encoder mode for NDI setup");
+                        Step(device, "Prepare", "running", "Ensuring encoder mode is ready for NDI setup and input detection");
                         await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, CancellationToken.None);
                         device = device with { Role = DeviceRole.Encoder };
                         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
@@ -359,45 +359,44 @@ public sealed class OnboardingService(
                 }
             }
 
-            // Start every mode change first, then allow a single negotiation window for all displays.
-            foreach (var device in ready)
-            {
-                try
-                {
-                    Step(device, "HDMI probe", "running", "Switching to decoder mode");
-                    if (device.Role != DeviceRole.Decoder) await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, CancellationToken.None);
-                    await SaveDeviceAsync(device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring });
-                }
-                catch (Exception ex) { FailStep(device, "HDMI probe", ex.Message); }
-            }
-
-            if (ready.Any(d => !d.IsSimulation())) await Task.Delay(TimeSpan.FromSeconds(70));
-            else await Task.Delay(350);
-
             foreach (var original in ready)
             {
                 var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == original.Id) ?? original;
                 try
                 {
-                    device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(30));
-                    var probe = await factory.Create(device).ProbeHdmiAsync(CancellationToken.None);
                     var overrideRole = DeviceRole.Unknown;
                     var forced = plan.Settings.RoleOverrides is not null && plan.Settings.RoleOverrides.TryGetValue(device.Id, out overrideRole) && overrideRole != DeviceRole.Unknown;
-                    var role = forced ? overrideRole : probe.Connected ? DeviceRole.Decoder : DeviceRole.Encoder;
-                    if (role == DeviceRole.Encoder)
+                    Step(device, "HDMI role detection", "running", forced
+                        ? $"Applying explicit {overrideRole} role"
+                        : "Checking for a live HDMI input in encoder mode");
+
+                    var input = forced
+                        ? new HdmiInputProbeResult(false, null)
+                        : await factory.Create(device).ProbeEncoderInputAsync(CancellationToken.None);
+                    var role = forced ? overrideRole : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
+
+                    if (role == DeviceRole.Decoder)
                     {
-                        await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, CancellationToken.None);
+                        await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, CancellationToken.None);
+                        device = device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring };
+                        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 60));
                     }
                     device = device with
                     {
                         Role = role,
-                        HdmiDisplayConnected = probe.Connected,
-                        HdmiOutputResolution = probe.NegotiatedResolution,
+                        HdmiDisplayConnected = null,
+                        HdmiOutputResolution = null,
                         Health = DeviceHealth.Online,
-                        LastError = null
+                        LastError = null,
+                        ManagementState = null,
+                        ManagementMessage = null
                     };
                     await SaveDeviceAsync(device);
-                    CompleteStep(device, "HDMI probe", forced ? $"Role overridden to {role}" : probe.Connected ? $"Decoder — negotiated {probe.NegotiatedResolution}" : "No negotiated output; returned to encoder mode");
+                    CompleteStep(device, "HDMI role detection", forced
+                        ? $"Role set explicitly to {role}"
+                        : input.SignalPresent
+                            ? $"Encoder — live HDMI input{(string.IsNullOrWhiteSpace(input.Resolution) ? "" : $" at {input.Resolution}")}"
+                            : "Decoder — no live encoder input; ready for display identification");
 
                     // Identity is persisted now; decoder cards can fine-tune both names on the next UI page.
                     CompleteStep(device, "Identity", device.Hostname);
@@ -405,7 +404,7 @@ public sealed class OnboardingService(
                 catch (Exception ex)
                 {
                     await SaveDeviceAsync(device with { Health = DeviceHealth.Error, LastError = ex.Message });
-                    FailStep(device, "HDMI probe", ex.Message);
+                    FailStep(device, "HDMI role detection", ex.Message);
                 }
             }
 
@@ -419,9 +418,11 @@ public sealed class OnboardingService(
                 },
                 FirmwareJob = CompleteFirmwareJob(s.FirmwareJob)
             });
+            var readyIds = ready.Select(device => device.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var needsRoleSelection = (await store.ReadAsync()).Devices.Any(device => readyIds.Contains(device.Id) && device.Role == DeviceRole.Unknown);
             Finish(Progress.Steps.Any(s => s.Status == "error")
                 ? "completed-with-errors"
-                : ready.Count > 0 ? "awaiting-decoder-names" : "completed");
+                : needsRoleSelection ? "awaiting-role-selection" : ready.Count > 0 ? "awaiting-decoder-names" : "completed");
         }
         catch (Exception ex)
         {
@@ -608,9 +609,22 @@ public sealed class OnboardingService(
 
     public async Task<ManagedDevice> SetRoleAsync(string id, DeviceRole role, CancellationToken ct)
     {
+        if (role == DeviceRole.Unknown) throw new ArgumentException("Choose Encoder or Decoder.");
         var device = await GetDeviceAsync(id);
         await factory.Create(device).SetRoleAsync(role, ct);
         device = device with { Role = role, Health = DeviceHealth.Configuring, LastError = null };
+        await SaveDeviceAsync(device);
+        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 60), ct);
+        device = device with
+        {
+            Role = role,
+            Health = DeviceHealth.Online,
+            LastError = null,
+            ManagementState = null,
+            ManagementMessage = null,
+            HdmiDisplayConnected = null,
+            HdmiOutputResolution = null
+        };
         await SaveDeviceAsync(device);
         return device;
     }
@@ -638,6 +652,17 @@ public sealed class OnboardingService(
         {
             await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, ct);
             device = await WaitForDeviceAsync(device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring }, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45), ct);
+            // Some Kiloview firmware reports the previous hostname briefly after
+            // the mode transition. The title-card sender and KiloLink alias must
+            // use the values the operator just applied, not that stale readback.
+            device = device with
+            {
+                Hostname = update.Hostname.Trim(),
+                NdiChannelName = update.NdiChannelName.Trim(),
+                Role = DeviceRole.Decoder,
+                Health = DeviceHealth.Online,
+                LastError = null
+            };
             await SaveDeviceAsync(device);
             var source = await titleCards.StartOrUpdateAsync(device, ct);
             await factory.Create(device).ShowIdentityAsync(source, ct);

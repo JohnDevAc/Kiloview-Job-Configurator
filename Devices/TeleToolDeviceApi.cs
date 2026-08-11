@@ -20,6 +20,9 @@ internal sealed class TeleToolDeviceApi(ManagedDevice device, TeleToolFleetServi
         return Task.CompletedTask;
     }
 
+    public Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct) =>
+        Task.FromResult(new HdmiInputProbeResult(true, null));
+
     public Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct) => Task.FromResult(new HdmiProbeResult(false, null));
 
     public Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct) => Task.CompletedTask;

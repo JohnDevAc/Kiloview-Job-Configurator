@@ -156,6 +156,7 @@ public sealed record OnboardingProgress(Guid RunId, string Status, int Completed
 public sealed record RoleUpdate(DeviceRole Role);
 public sealed record TeleToolRemovalResult(string Id, string Hostname, int ManagedTeleToolCount, string FleetStatus);
 public sealed record IdentityUpdate(string Hostname, string NdiChannelName);
+public sealed record HdmiInputProbeResult(bool SignalPresent, string? Resolution);
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
 public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
 public sealed record MulticastSetupRequest(
