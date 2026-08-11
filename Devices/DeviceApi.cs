@@ -22,6 +22,8 @@ public interface IDeviceApi
     Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct);
     Task DisableMulticastAsync(CancellationToken ct);
     Task BlankAsync(CancellationToken ct);
+    Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct) =>
+        Task.FromException(new NotSupportedException("Direct firmware updates are not supported for this device family."));
 }
 
 internal abstract class HttpDeviceApi(

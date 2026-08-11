@@ -141,6 +141,47 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         return new(serialNumber, hostname, generated, true);
     }
 
+    public async Task<KiloLinkClearResult> ClearDeviceInventoryAsync(
+        string serverIp,
+        int webPort,
+        KiloLinkCredential credential,
+        CancellationToken ct)
+    {
+        using var session = await LoginAsync(serverIp, webPort, credential, ct);
+        using var devicesResponse = await PostAsync(session.Client, "api/tools/getDeviceList.json", new { dn = "", @virtual = false }, ct);
+        var deviceDns = Flatten(Data(devicesResponse), "list")
+            .Select(row => GetString(row, "dn"))
+            .Where(dn => !string.IsNullOrWhiteSpace(dn))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToArray();
+        if (deviceDns.Length > 0)
+        {
+            using var deleted = await PostAsync(session.Client, "api/tools/deleteMany.json",
+                new { list = deviceDns.Select(Uri.EscapeDataString).ToArray() }, ct);
+        }
+
+        using var treeResponse = await PostWithoutBodyAsync(session.Client, "api/tools/searchFix.json", ct);
+        const string rootDn = "ou=KVDevices,cn=admin,dc=kiloview,dc=com";
+        var groupDns = Flatten(Data(treeResponse), "children")
+            .Where(row => string.Equals(GetStringDeep(row, "type"), "organization", StringComparison.OrdinalIgnoreCase))
+            .Select(row => GetStringDeep(row, "dn"))
+            .Where(dn => !string.IsNullOrWhiteSpace(dn)
+                && !string.Equals(dn, rootDn, StringComparison.OrdinalIgnoreCase)
+                && dn.Contains(rootDn, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .OrderByDescending(dn => dn.Count(ch => ch == ','))
+            .ToArray();
+        foreach (var dn in groupDns)
+        {
+            using var deleted = await PostAsync(session.Client, "api/tools/delete.json",
+                new { dn = Uri.EscapeDataString(dn) }, ct);
+        }
+
+        return new(deviceDns.Length, groupDns.Length);
+    }
+
     public async Task<KiloLinkFleetResult> DispatchFleetAsync(
         string serverIp,
         int webPort,
@@ -278,24 +319,35 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
     {
         var dn = GetStringDeep(existing, "dn") ?? throw new InvalidOperationException("The existing KiloLink device record has no DN.");
         var type = GetStringDeep(existing, "type") ?? "device";
-        var cfg = DeviceConfig(existing, hostname, GetStringDeep(existing, "serialNumber") ?? "", GetStringDeep(existing, "description") ?? "");
-        using var response = await PostAsync(client, "api/tools/rename.json", new { dn, type, cfg, @new = hostname }, ct);
+        var cfg = EncodedDeviceConfig(existing, hostname, GetStringDeep(existing, "serialNumber") ?? "", GetStringDeep(existing, "description") ?? "");
+        using var response = await PostAsync(client, "api/tools/rename.json", new
+        {
+            dn = Uri.EscapeDataString(dn),
+            type = Uri.EscapeDataString(type),
+            cfg,
+            @new = Uri.EscapeDataString(hostname)
+        }, ct);
     }
 
     private static async Task ModifyDeviceAsync(HttpClient client, JsonElement existing, string hostname, string serial, string code, CancellationToken ct)
     {
         var dn = GetStringDeep(existing, "dn") ?? throw new InvalidOperationException("The existing KiloLink device record has no DN.");
         var type = GetStringDeep(existing, "type") ?? "device";
-        var cfg = DeviceConfig(existing, hostname, serial, code);
-        using var response = await PostAsync(client, "api/tools/modify.json", new { dn, type, cfg }, ct);
+        var cfg = EncodedDeviceConfig(existing, hostname, serial, code);
+        using var response = await PostAsync(client, "api/tools/modify.json", new
+        {
+            dn = Uri.EscapeDataString(dn),
+            type = Uri.EscapeDataString(type),
+            cfg
+        }, ct);
     }
 
-    private static object DeviceConfig(JsonElement existing, string hostname, string serial, string code) => new
+    private static object EncodedDeviceConfig(JsonElement existing, string hostname, string serial, string code) => new
     {
-        cn = hostname,
-        serialNumber = serial,
-        description = code,
-        o = GetStringDeep(existing, "o") ?? ""
+        cn = Uri.EscapeDataString(hostname),
+        serialNumber = Uri.EscapeDataString(serial),
+        description = Uri.EscapeDataString(code),
+        o = Uri.EscapeDataString(GetStringDeep(existing, "o") ?? "")
     };
 
     private static string FindDefaultDeviceGroup(JsonElement tree)

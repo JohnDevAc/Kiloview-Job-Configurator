@@ -13,14 +13,26 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
     public const long MaximumRequestBytes = MaximumFirmwareBytes * 2 + 1024L * 1024;
     private readonly string _directory = GetFirmwareDirectory(environment);
 
-    public async Task<FirmwareJob> StageMultipartAsync(HttpRequest request, CancellationToken ct)
+    public async Task<FirmwareJob> StageMultipartAsync(HttpRequest request, IReadOnlyCollection<string>? requiredModels, CancellationToken ct)
     {
         var state = await store.ReadAsync();
+        var requestedModels = (requiredModels ?? [])
+            .Select(model => model.Trim().ToUpperInvariant())
+            .Where(model => model.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (requestedModels.Any(model => model is not "N6" and not "N60"))
+            throw new ArgumentException("Firmware coverage may contain only N6 and N60.");
         var devices = state.Devices.Where(d => d.IsOnboarded && d.IsKiloview()).ToArray();
-        if (devices.Length == 0) throw new InvalidOperationException("Complete initial onboarding before staging firmware.");
+        if (requestedModels.Length == 0 && devices.Length == 0)
+            throw new InvalidOperationException("Select Kiloview devices in an onboarding plan before staging firmware.");
 
-        var needsN6 = devices.Any(d => IsModel(d, "N6"));
-        var needsN60 = devices.Any(d => IsModel(d, "N60"));
+        var needsN6 = requestedModels.Length > 0
+            ? requestedModels.Contains("N6", StringComparer.OrdinalIgnoreCase)
+            : devices.Any(d => IsModel(d, "N6"));
+        var needsN60 = requestedModels.Length > 0
+            ? requestedModels.Contains("N60", StringComparer.OrdinalIgnoreCase)
+            : devices.Any(d => IsModel(d, "N60"));
         if (!MediaTypeHeaderValue.TryParse(request.ContentType, out var contentType)
             || !string.Equals(contentType.MediaType.Value, "multipart/form-data", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Firmware staging requires a multipart form upload.");

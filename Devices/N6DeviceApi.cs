@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net.Http.Headers;
 using KiloviewSetup.Core;
 
 namespace KiloviewSetup.Devices;
@@ -134,6 +135,21 @@ internal sealed class N6DeviceApi(
         var replacement = new N6DeviceApi(IpAddress, targetCredentials, Clients);
         using var verified = await replacement.AuthorizedAsync(ct);
         _ = await replacement.TryAcceptLicenseAsync(verified, ct);
+    }
+
+    public async Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        client.Timeout = TimeSpan.FromMinutes(20);
+        await using var file = new FileStream(package.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
+        using var form = new MultipartFormDataContent();
+        using var content = new StreamContent(file);
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(content, "upload", package.FileName);
+        form.Add(new StringContent(package.FileName), "path");
+        ApplyCookies(client);
+        using var response = await client.PostAsync("/api/firmware/upgrade.json", form, ct);
+        using var accepted = await ReadJsonAsync(response, "upload N6 firmware", ct);
     }
 
     private async Task<bool> TryAcceptLicenseAsync(HttpClient client, CancellationToken ct)

@@ -90,6 +90,7 @@ public sealed record KiloLinkServerDiscovery(string ServerIp, int WebPort, strin
 public sealed record NdiDiscoveryServerDiscovery(string ServerIp, int Port);
 public sealed record KiloLinkAuthorizationResult(string SerialNumber, string Hostname, string AuthorizationCode, bool Created);
 public sealed record KiloLinkFleetResult(int PackagesUploaded, int DevicesDispatched, IReadOnlyList<string> Models);
+public sealed record KiloLinkClearResult(int DevicesDeleted, int GroupsDeleted);
 
 public sealed record AppState(
     IReadOnlyList<ManagedDevice> Devices,
@@ -128,7 +129,8 @@ public sealed record OnboardingRequest(
     IReadOnlyDictionary<string, DeviceRole>? RoleOverrides = null,
     int KiloLinkPort = 50000,
     int KiloLinkWebPort = 80,
-    string Dns = "8.8.8.8");
+    string Dns = "8.8.8.8",
+    bool CleanOnboarding = false);
 
 public sealed record DevicePlan(
     string DeviceId,

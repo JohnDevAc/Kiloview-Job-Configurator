@@ -501,7 +501,9 @@ app.MapPost("/api/firmware/stage", async (HttpRequest request, FirmwareService f
 {
     try
     {
-        return Results.Ok(await firmware.StageMultipartAsync(request, ct));
+        var models = request.Query["models"].ToString()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return Results.Ok(await firmware.StageMultipartAsync(request, models, ct));
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
     catch (InvalidDataException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status413PayloadTooLarge); }

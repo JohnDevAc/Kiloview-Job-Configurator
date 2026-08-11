@@ -87,10 +87,13 @@ public sealed class OnboardingService(
         if (selected.Any(d => d.IsKiloview()))
         {
             warnings.Add($"Confirming authorizes the application to accept the Kiloview EULA on each selected Kiloview and set its device login to admin / {request.JobName}.");
+            warnings.Add("Model-specific firmware is staged before confirmation. Outdated Kiloviews are upgraded and verified at their current address before static IP or KiloLink changes begin.");
             warnings.Add("KiloLink authorization codes will be generated for Kiloview units; each KiloLink alias will match the assigned hostname.");
             warnings.Add("Kiloview role detection temporarily switches those units to decoder mode. N60 firmware can take about one minute to change mode.");
             warnings.Add("Keep all intended HDMI displays powered on until Kiloview role detection completes.");
         }
+        if (request.CleanOnboarding)
+            warnings.Add("CLEAN ONBOARDING: confirming permanently deletes every existing device and real device group from KiloLink Server and clears prior configurator job devices before this plan starts.");
         if (selected.Any(d => d.IsTeleTool()))
         {
             warnings.Add($"TeleTools will remain encoders and receive hostnames, NDI channel names, Discovery Server {request.NdiDiscoveryServerIp}, and NDI group '{request.JobName}' from the TeleTool Dev API.");
@@ -133,12 +136,19 @@ public sealed class OnboardingService(
             if (plan.ExpiresUtc <= DateTimeOffset.UtcNow)
                 throw new InvalidOperationException("This onboarding plan expired. Generate a new plan.");
             await ValidatePlanAsync(plan, ct);
+            await ValidateFirmwareCoverageAsync(plan);
+            if (plan.Settings.CleanOnboarding)
+                await PrepareCleanOnboardingAsync(plan, ct);
             await ApplyLocalNdiJobAsync(plan.Settings, ct);
+            await store.UpdateAsync(state => state.FirmwareJob is null ? state : state with
+            {
+                FirmwareJob = state.FirmwareJob with { Status = "running", FinishedUtc = null, Message = "Applying model firmware before network and KiloLink configuration." }
+            });
             lock (_progressGate)
             {
                 if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
                 titleCards.StopAll();
-                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 8));
+                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 9));
                 _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
                 _run = Task.Run(() => ExecuteAsync(plan));
                 return new { _progress.RunId, _progress.Status };
@@ -269,6 +279,18 @@ public sealed class OnboardingService(
                     };
                     await ReplaceDeviceAsync(discoveredDeviceId, device);
 
+                    Step(device, "Firmware", "running", "Checking staged model firmware before network changes");
+                    try
+                    {
+                        device = await ApplyFirmwareBeforeConfigurationAsync(device);
+                        CompleteStep(device, "Firmware", $"Verified {device.FirmwareVersion}");
+                    }
+                    catch (Exception ex)
+                    {
+                        FailStep(device, "Firmware", ex.Message);
+                        throw;
+                    }
+
                     Step(device, "Static IP & DNS", "running", item.ExistingStaticDevice
                         ? $"Retaining existing network settings at {item.TargetIp}"
                         : $"Assigning {item.TargetIp}; DNS {plan.Settings.Dns}");
@@ -395,7 +417,7 @@ public sealed class OnboardingService(
                     KiloLinkWebPort = plan.Settings.KiloLinkWebPort,
                     Simulation = plan.Devices.Count > 0 && plan.Devices.All(d => d.Family is DeviceFamily.Simulated or DeviceFamily.SimulatedTeleTool)
                 },
-                FirmwareJob = null
+                FirmwareJob = CompleteFirmwareJob(s.FirmwareJob)
             });
             Finish(Progress.Steps.Any(s => s.Status == "error")
                 ? "completed-with-errors"
@@ -407,6 +429,108 @@ public sealed class OnboardingService(
             Finish("failed");
         }
     }
+
+    private async Task ValidateFirmwareCoverageAsync(OnboardingPlan plan)
+    {
+        var required = plan.Devices
+            .Where(device => device.Family is DeviceFamily.N6 or DeviceFamily.N60)
+            .Select(device => device.Family == DeviceFamily.N60 ? "N60" : "N6")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (required.Length == 0) return;
+        var job = (await store.ReadAsync()).FirmwareJob
+            ?? throw new InvalidOperationException("Stage the latest model firmware before starting Kiloview onboarding.");
+        foreach (var model in required)
+        {
+            var package = job.Packages.FirstOrDefault(candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase));
+            if (package is null || !File.Exists(package.LocalPath))
+                throw new InvalidOperationException($"Stage the latest {model} firmware before starting onboarding.");
+        }
+    }
+
+    private async Task PrepareCleanOnboardingAsync(OnboardingPlan plan, CancellationToken ct)
+    {
+        var selectedIds = plan.Devices.Select(device => device.DeviceId).ToHashSet(StringComparer.Ordinal);
+        if (plan.Devices.Any(device => device.Family is DeviceFamily.N6 or DeviceFamily.N60))
+        {
+            var credential = credentialStore.ResolveAndStore(
+                plan.Settings.KiloLinkServerIp,
+                plan.Settings.KiloLinkUsername,
+                plan.Settings.KiloLinkPassword);
+            await kiloLink.ClearDeviceInventoryAsync(
+                plan.Settings.KiloLinkServerIp,
+                plan.Settings.KiloLinkWebPort,
+                credential,
+                ct);
+        }
+        titleCards.StopAll();
+        await store.UpdateAsync(state => state with
+        {
+            Devices = state.Devices.Where(device => selectedIds.Contains(device.Id)).ToArray(),
+            LastJob = null,
+            Multicast = null,
+            TeleToolManagerId = null,
+            RemoteWindowsPcs = null
+        });
+    }
+
+    private async Task<ManagedDevice> ApplyFirmwareBeforeConfigurationAsync(ManagedDevice device)
+    {
+        if (device.IsSimulation()) return device;
+        var job = (await store.ReadAsync()).FirmwareJob
+            ?? throw new InvalidOperationException("The staged firmware job is no longer available.");
+        var model = device.Family == DeviceFamily.N60 ? "N60" : "N6";
+        var package = job.Packages.First(candidate => string.Equals(candidate.Model, model, StringComparison.OrdinalIgnoreCase));
+        if (PackageMatchesInstalledVersion(package, device)) return device;
+
+        await factory.Create(device).UpdateFirmwareAsync(package, CancellationToken.None);
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(8);
+        Exception? last = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            try
+            {
+                var read = await factory.Create(device).ReadAsync(CancellationToken.None);
+                read = read with
+                {
+                    Id = device.Id,
+                    Credentials = device.Credentials,
+                    LicenseAccepted = device.LicenseAccepted,
+                    Health = DeviceHealth.Configuring
+                };
+                if (PackageMatchesInstalledVersion(package, read))
+                {
+                    await SaveDeviceAsync(read);
+                    return read;
+                }
+                last = new InvalidOperationException($"Device returned on firmware {read.FirmwareVersion}, waiting for the staged version.");
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException or InvalidOperationException or System.Text.Json.JsonException)
+            {
+                last = ex;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(4));
+        }
+        throw new DeviceApiException($"{model} did not return on the staged firmware within eight minutes.", last);
+    }
+
+    private FirmwareJob? CompleteFirmwareJob(FirmwareJob? job)
+    {
+        if (job is null) return null;
+        var failed = Progress.Steps.Any(step => step.Step == "Firmware" && step.Status == "error");
+        return job with
+        {
+            Status = failed ? "failed" : "completed",
+            FinishedUtc = DateTimeOffset.UtcNow,
+            Message = failed
+                ? "One or more devices failed their pre-configuration firmware update."
+                : "Selected Kiloview firmware versions were verified before network and KiloLink configuration."
+        };
+    }
+
+    private static bool PackageMatchesInstalledVersion(FirmwarePackage package, ManagedDevice device) =>
+        !string.IsNullOrWhiteSpace(device.FirmwareVersion) &&
+        package.FileName.Contains(device.FirmwareVersion, StringComparison.OrdinalIgnoreCase);
 
     private async Task OnboardTeleToolAsync(ManagedDevice device, DevicePlan item, OnboardingRequest settings)
     {
