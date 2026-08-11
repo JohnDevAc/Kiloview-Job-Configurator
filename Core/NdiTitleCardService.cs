@@ -193,8 +193,11 @@ public sealed class NdiTitleCardService(
                 // normally zero. Advertising it as BGRA makes receivers treat the
                 // entire identity card as fully transparent (black in Studio Monitor).
                 FourCC = 0x58524742, // BGRX
-                FrameRateN = 10_000,
-                FrameRateD = 1_000,
+                // Hardware NDI decoders commonly accept broadcast frame rates
+                // only. Studio Monitor tolerates the former 10 fps card, but an
+                // N6/N60 can tune to it without producing HDMI output.
+                FrameRateN = 60_000,
+                FrameRateD = 1_001,
                 PictureAspectRatio = 16f / 9f,
                 FrameFormatType = 1, // progressive
                 Timecode = long.MaxValue,
