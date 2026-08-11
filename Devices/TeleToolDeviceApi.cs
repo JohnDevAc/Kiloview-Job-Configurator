@@ -27,6 +27,8 @@ internal sealed class TeleToolDeviceApi(ManagedDevice device, TeleToolFleetServi
 
     public Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct) => Task.CompletedTask;
 
+    public Task SetHostnameAsync(string hostname, CancellationToken ct) => Task.CompletedTask;
+
     public Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct) =>
         fleet.SetIdentityAsync(device, hostname, channelName, group, ct);
 

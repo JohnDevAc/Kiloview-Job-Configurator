@@ -30,12 +30,16 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
         var addresses = cidrs.SelectMany(NetworkAddressing.ExpandCidr).Distinct().ToArray();
         if (addresses.Length > 8192) throw new ArgumentException("Discovery is limited to 8192 addresses per scan.");
         var credentials = request.Credentials ?? new DeviceCredentials();
-        var savedCredentialsByAddress = request.CleanOnboarding
-            ? state.Devices
-                .Where(device => !device.IsSimulation())
-                .GroupBy(device => device.IpAddress, StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, DeviceCredentials>(StringComparer.OrdinalIgnoreCase);
+        var savedKiloviews = state.Devices
+            .Where(device => device.IsKiloview() && !device.IsSimulation())
+            .ToArray();
+        var savedCredentialsByAddress = savedKiloviews
+            .GroupBy(device => device.IpAddress, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Credentials, StringComparer.OrdinalIgnoreCase);
+        var savedCredentials = savedKiloviews
+            .Select(device => device.Credentials)
+            .Distinct()
+            .ToArray();
         var found = new ConcurrentDictionary<string, ManagedDevice>();
 
         await Parallel.ForEachAsync(addresses, new ParallelOptions
@@ -50,6 +54,7 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
                 address,
                 credentials,
                 savedCredentialsByAddress.GetValueOrDefault(address),
+                savedCredentials,
                 token);
             var teleToolTask = ProbeTeleToolAsync(ip, address, token);
             await Task.WhenAll(kiloviewTask, teleToolTask);
@@ -69,17 +74,38 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
         string address,
         DeviceCredentials credentials,
         DeviceCredentials? savedAddressCredentials,
+        IReadOnlyList<DeviceCredentials> savedCredentials,
         CancellationToken ct)
     {
         if (!await HasWebPortAsync(ip, 80, ct)) return null;
         var candidates = new[] { credentials }
             .Concat(savedAddressCredentials is null ? [] : [savedAddressCredentials])
+            // A previously onboarded unit may have moved or been factory-reset
+            // onto a different address. Try the small locally stored credential
+            // set across responding Kiloviews instead of binding it to an old IP.
+            .Concat(savedCredentials)
             .Distinct()
             .ToArray();
         foreach (var candidate in candidates)
         {
             var device = await factory.ProbeAsync(address, candidate, ct);
-            if (device is not null) return device;
+            if (device is null) continue;
+            if (device.Role == DeviceRole.Encoder)
+            {
+                try
+                {
+                    var input = await factory.Create(device).ProbeEncoderInputAsync(ct);
+                    if (!input.SignalPresent)
+                        device = device with { Role = DeviceRole.Decoder };
+                }
+                catch (Exception ex) when (ex is DeviceApiException or HttpRequestException or TaskCanceledException)
+                {
+                    if (ct.IsCancellationRequested) throw;
+                    // Retain the reported hardware mode when the live input
+                    // probe itself is unavailable; onboarding will retry it.
+                }
+            }
+            return device;
         }
         return null;
     }
@@ -92,28 +118,43 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
 
     private static async Task<bool> HasWebPortAsync(IPAddress address, int port, CancellationToken ct)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(450));
-        try
+        for (var attempt = 1; attempt <= 3; attempt++)
         {
-            using var client = new TcpClient();
-            await client.ConnectAsync(address, port, timeout.Token);
-            return true;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(700));
+            try
+            {
+                using var client = new TcpClient();
+                await client.ConnectAsync(address, port, timeout.Token);
+                return true;
+            }
+            catch (Exception ex) when (ex is SocketException or OperationCanceledException)
+            {
+                if (ct.IsCancellationRequested) throw;
+                if (attempt < 3) await Task.Delay(TimeSpan.FromMilliseconds(125 * attempt), ct);
+            }
         }
-        catch (Exception ex) when (ex is SocketException or OperationCanceledException) { return false; }
+        return false;
     }
 
     private async Task MergeAsync(IReadOnlyList<ManagedDevice> devices) => await store.UpdateAsync(state =>
     {
         var existing = state.Devices
-            .GroupBy(device => device.Id, StringComparer.Ordinal)
+            .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
                 group => group.OrderByDescending(device => device.LastSeenUtc).First(),
-                StringComparer.Ordinal);
+                StringComparer.OrdinalIgnoreCase);
         foreach (var device in devices)
         {
-            existing[device.Id] = existing.TryGetValue(device.Id, out var old)
+            var macAliases = existing.Values.Where(candidate =>
+                !string.Equals(candidate.Id, device.Id, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(device.MacAddress) &&
+                !string.IsNullOrWhiteSpace(candidate.MacAddress) &&
+                string.Equals(candidate.MacAddress, device.MacAddress, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var old = existing.GetValueOrDefault(device.Id) ?? macAliases.OrderByDescending(candidate => candidate.LastSeenUtc).FirstOrDefault();
+            foreach (var alias in macAliases) existing.Remove(alias.Id);
+            existing[device.Id] = old is not null
                 ? device with
                 {
                     IsOnboarded = old.IsOnboarded,

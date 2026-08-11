@@ -224,8 +224,20 @@ public sealed class TeleToolFleetService(
 
         if (Flag(status, "running"))
         {
-            var start = BuildStartPayload(status, applied, ndiName, ndiGroup);
-            await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(20), ct);
+            if (IsTestCard(status))
+            {
+                var start = BuildStreamSettings(status, applied, ndiName, ndiGroup);
+                await PostAsync(device.IpAddress, device.WebPort, "/api/test-card/stop", new { }, TimeSpan.FromSeconds(10), ct);
+                await PostAsync(device.IpAddress, device.WebPort, "/api/test-card/start", start, TimeSpan.FromSeconds(20), ct);
+            }
+            else if (ChannelUuid(status) is not null)
+            {
+                var start = BuildStartPayload(status, applied, ndiName, ndiGroup);
+                await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(20), ct);
+            }
+            // A stopped/unselected TeleTool is still fully onboarded. Its saved
+            // identity and discovery settings apply when an operator later
+            // chooses a TV channel and starts the stream.
         }
     }
 
@@ -602,19 +614,26 @@ public sealed class TeleToolFleetService(
         string ndiName,
         string ndiGroups)
     {
-        var supervisor = Object(status, "supervisor");
-        var lastStart = Object(supervisor, "last_start_request");
-        var channelUuid = FirstText(
-            Text(status, "channel_uuid"),
-            Text(status, "active_channel_uuid"),
-            Text(supervisor, "desired_channel_uuid"),
-            Text(lastStart, "channel_uuid"));
+        var channelUuid = ChannelUuid(status);
         if (channelUuid is null)
             throw new InvalidOperationException("Open this TeleTool UI and choose a TV channel before starting NDI from the configurator.");
 
+        var result = BuildStreamSettings(status, config, ndiName, ndiGroups);
+        result["channel_uuid"] = channelUuid;
+        return result;
+    }
+
+    private static Dictionary<string, object?> BuildStreamSettings(
+        JsonObject status,
+        JsonObject config,
+        string ndiName,
+        string ndiGroups)
+    {
+        var supervisor = Object(status, "supervisor");
+        var lastStart = Object(supervisor, "last_start_request");
+
         return new()
         {
-            ["channel_uuid"] = channelUuid,
             ["ndi_name"] = ndiName,
             ["ndi_groups"] = ndiGroups,
             ["profile"] = FirstText(Text(supervisor, "desired_profile"), Text(lastStart, "profile"), Text(status, "active_profile"), Text(config, "tvh_stream_profile")) ?? "pass",
@@ -638,6 +657,22 @@ public sealed class TeleToolFleetService(
             ["ndi_multicast_ttl"] = Number(lastStart, "ndi_multicast_ttl", Number(config, "ndi_multicast_ttl", 1))
         };
     }
+
+    private static string? ChannelUuid(JsonObject status)
+    {
+        var supervisor = Object(status, "supervisor");
+        var lastStart = Object(supervisor, "last_start_request");
+        return FirstText(
+            Text(status, "channel_uuid"),
+            Text(status, "active_channel_uuid"),
+            Text(supervisor, "desired_channel_uuid"),
+            Text(lastStart, "channel_uuid"));
+    }
+
+    private static bool IsTestCard(JsonObject status) =>
+        string.Equals(Text(status, "source_mode"), "test_card", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Text(Object(status, "supervisor"), "source_mode"), "test_card", StringComparison.OrdinalIgnoreCase) ||
+        (Text(status, "input_url")?.StartsWith("test-card:", StringComparison.OrdinalIgnoreCase) ?? false);
 
     private async Task ConfirmRunningMulticastAsync(
         ManagedDevice device,

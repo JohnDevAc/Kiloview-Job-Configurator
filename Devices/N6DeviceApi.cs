@@ -251,11 +251,14 @@ internal sealed class N6DeviceApi(
         {
             await SwitchModeAndWaitAsync(target, ct);
         }
-        catch (DeviceApiException first) when (IsModeServiceUnavailable(first))
+        catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
         {
-            await RebootForModeRecoveryAsync(ct);
-            await WaitForModeApiAsync(TimeSpan.FromSeconds(60), ct);
-            await SwitchModeAndWaitAsync(target, ct);
+            // A rejected switch is a codec-proxy fault, not evidence that the
+            // opposite mode is active. Rebooting and retrying here previously
+            // made a sick unit repeatedly restart during onboarding.
+            throw new DeviceApiException(
+                $"The N6 codec proxy service is unavailable (0201001), so the device was not switched to {target} mode. Power-cycle the N6 and retry after its web UI no longer reports a codec proxy error.",
+                ex);
         }
     }
 
@@ -263,7 +266,7 @@ internal sealed class N6DeviceApi(
     {
         using var client = await AuthorizedAsync(ct);
         using var status = await GetAsync(client, "/api/device/status.json?types=ndihx", "read N6 HDMI input", ct);
-        var data = status.RootElement.GetProperty("data");
+        var data = Payload(status.RootElement);
         var signal = FirstString(data, "signal", "video_signal", "input_signal");
         var resolution = FirstString(data, "resolution", "input_resolution", "video_resolution");
         var present = !string.IsNullOrWhiteSpace(signal)
@@ -284,10 +287,18 @@ internal sealed class N6DeviceApi(
     private async Task SwitchModeAndWaitAsync(string target, CancellationToken ct)
     {
         using (var client = await AuthorizedAsync(ct))
-        using (var current = await GetAsync(client, "/api/mode/get.json", "read N6 mode before switch", ct))
         {
-            if (string.Equals(String(current.RootElement.GetProperty("data"), "mode"), target, StringComparison.OrdinalIgnoreCase))
-                return;
+            try
+            {
+                using var current = await GetAsync(client, "/api/mode/get.json", "read N6 mode before switch", ct);
+                if (string.Equals(String(Payload(current.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+            catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
+            {
+                // Do not reboot before trying the switch. Firmware 2.00 can
+                // reject mode/get with 0201001 while mode/switch still works.
+            }
             using var switched = await PostAsync(client, "/api/mode/switch.json", new { mode = target }, "switch N6 mode", ct);
         }
 
@@ -301,7 +312,7 @@ internal sealed class N6DeviceApi(
             {
                 using var client = await AuthorizedAsync(ct);
                 using var mode = await GetAsync(client, "/api/mode/get.json", "verify N6 mode", ct);
-                if (string.Equals(String(mode.RootElement.GetProperty("data"), "mode"), target, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(String(Payload(mode.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase))
                     return;
             }
             catch (DeviceApiException ex) { last = ex; }
@@ -309,41 +320,25 @@ internal sealed class N6DeviceApi(
             {
                 last = new DeviceApiException("N6 was unavailable while changing mode.", ex);
             }
-        }
-        throw new DeviceApiException($"N6 mode service did not become ready in {target} mode.", last);
-    }
 
-    private async Task RebootForModeRecoveryAsync(CancellationToken ct)
-    {
-        using var client = await AuthorizedAsync(ct);
-        try { using var reboot = await GetAsync(client, "/api/sys/reboot.json", "restart N6 mode service", ct); }
-        catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
-        {
-            // The N6 commonly closes the connection as soon as reboot is accepted.
-        }
-    }
-
-    private async Task WaitForModeApiAsync(TimeSpan timeout, CancellationToken ct)
-    {
-        var end = DateTimeOffset.UtcNow + timeout;
-        Exception? last = null;
-        while (DateTimeOffset.UtcNow < end)
-        {
-            ct.ThrowIfCancellationRequested();
-            await Task.Delay(TimeSpan.FromSeconds(3), ct);
+            // Firmware 2.00 can leave mode/get unavailable after a successful
+            // transition. Confirm the target codec service itself rather than
+            // failing a working decoder/encoder solely on that status endpoint.
             try
             {
                 using var client = await AuthorizedAsync(ct);
-                using var mode = await GetAsync(client, "/api/mode/get.json", "verify recovered N6 mode service", ct);
+                using var targetService = target == "decoder"
+                    ? await GetAsync(client, "/api/decoderMode/current/get.json", "verify N6 decoder service", ct)
+                    : await GetAsync(client, "/api/device/status.json?types=ndihx", "verify N6 encoder service", ct);
                 return;
             }
             catch (Exception ex) when (ex is DeviceApiException or HttpRequestException or TaskCanceledException)
             {
                 if (ct.IsCancellationRequested) throw;
-                last = ex;
+                last = ex as DeviceApiException ?? new DeviceApiException($"N6 {target} service is not ready.", ex);
             }
         }
-        throw new DeviceApiException("N6 mode service did not recover after restart.", last);
+        throw new DeviceApiException($"N6 mode service did not become ready in {target} mode.", last);
     }
 
     private static bool IsModeServiceUnavailable(DeviceApiException ex) =>
@@ -431,12 +426,17 @@ internal sealed class N6DeviceApi(
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
         foreach (var type in new[] { "ndihx", "ndifull" })
         {
             try { using var stream = await PostAsync(client, "/api/encoder/ndi/set_config.json", new { types = type, device_group = group, channel_name = channelName }, $"set N6 {type} name", ct); }
             catch (DeviceApiException) when (type == "ndifull") { /* Full NDI can be disabled on some firmware. */ }
         }
+    }
+
+    public async Task SetHostnameAsync(string hostname, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var changed = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
     }
 
     public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct)

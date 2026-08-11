@@ -324,7 +324,16 @@ public sealed class OnboardingService(
                     device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                     CompleteStep(device, "Reconnect", "Device reachable on static IP");
 
-                    if (device.Role != DeviceRole.Encoder)
+                    // N6 firmware can keep the web/network APIs online while its
+                    // codec proxy returns 0201001. In that state ReadAsync cannot
+                    // report a role, but forcing "encoder" is both redundant for
+                    // an encoder and makes the firmware reject the mode change.
+                    // Preserve the physical mode and let the later codec calls
+                    // either succeed after recovery or report the real fault.
+                    var preserveUnavailableN6Mode = device.Family == DeviceFamily.N6 &&
+                        device.Role == DeviceRole.Unknown &&
+                        string.Equals(device.ManagementState, "mode-recovery-required", StringComparison.OrdinalIgnoreCase);
+                    if (device.Role != DeviceRole.Encoder && !preserveUnavailableN6Mode)
                     {
                         Step(device, "Prepare", "running", "Ensuring encoder mode is ready for NDI setup and input detection");
                         await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, CancellationToken.None);
@@ -332,6 +341,8 @@ public sealed class OnboardingService(
                         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                         CompleteStep(device, "Prepare", "Encoder mode ready");
                     }
+                    else if (preserveUnavailableN6Mode)
+                        CompleteStep(device, "Prepare", "N6 codec proxy unavailable; current physical mode preserved without a rejected switch or extra reboot");
                     else CompleteStep(device, "Prepare", "Encoder mode ready");
 
                     Step(device, "KiloLink authorization", "running", "Generating server-side device code");
@@ -640,6 +651,14 @@ public sealed class OnboardingService(
         return device;
     }
 
+    public async Task<HdmiInputProbeResult> ProbeEncoderInputAsync(string id, CancellationToken ct)
+    {
+        var device = await GetDeviceAsync(id);
+        if (!device.IsKiloview())
+            throw new InvalidOperationException("HDMI role detection is available only for Kiloview devices.");
+        return await factory.Create(device).ProbeEncoderInputAsync(ct);
+    }
+
     public async Task<KiloviewRemovalResult> RemoveKiloviewAsync(string id, CancellationToken ct)
     {
         var state = await store.ReadAsync();
@@ -691,31 +710,55 @@ public sealed class OnboardingService(
         if (string.IsNullOrWhiteSpace(update.Hostname) || string.IsNullOrWhiteSpace(update.NdiChannelName))
             throw new ArgumentException("Hostname and NDI channel name are required.");
         var device = await GetDeviceAsync(id);
-        var restoreDecoder = device.Role == DeviceRole.Decoder && !device.IsSimulation();
-        if (restoreDecoder)
+        var requestedHostname = update.Hostname.Trim();
+        var requestedChannel = update.NdiChannelName.Trim();
+        var decoder = device.Role == DeviceRole.Decoder;
+        if (device.IsKiloview() && !device.IsSimulation())
         {
-            await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, ct);
-            device = await WaitForDeviceAsync(device with { Role = DeviceRole.Encoder }, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45), ct);
+            if (!string.Equals(device.Hostname, requestedHostname, StringComparison.Ordinal))
+            {
+                await factory.Create(device).SetHostnameAsync(requestedHostname, ct);
+                device = device with { Hostname = requestedHostname, Health = DeviceHealth.Configuring, LastError = null };
+                await SaveDeviceAsync(device);
+                // N60 hostname changes can restart its web/codec services after
+                // the API call has already returned. Let that restart begin,
+                // then require a stable authenticated read before continuing.
+                await Task.Delay(TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 5 : 2), ct);
+                var refreshed = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 120 : 60), ct);
+                device = refreshed with
+                {
+                    Hostname = requestedHostname,
+                    NdiChannelName = requestedChannel,
+                    NdiGroup = device.NdiGroup,
+                    Role = device.Role,
+                    IsOnboarded = device.IsOnboarded,
+                    Health = DeviceHealth.Online,
+                    LastError = null
+                };
+            }
+            // Decoder channel names are used by the identity card and stored
+            // job metadata. Do not bounce the unit through encoder mode merely
+            // to write inactive sender settings.
+            if (!decoder)
+                await factory.Create(device).SetIdentityAsync(requestedHostname, requestedChannel, device.NdiGroup, ct);
         }
-        await factory.Create(device).SetIdentityAsync(update.Hostname.Trim(), update.NdiChannelName.Trim(), device.NdiGroup, ct);
-        device = device with { Hostname = update.Hostname.Trim(), NdiChannelName = update.NdiChannelName.Trim(), LastError = null };
+        else
+        {
+            await factory.Create(device).SetIdentityAsync(requestedHostname, requestedChannel, device.NdiGroup, ct);
+        }
+        device = device with { Hostname = requestedHostname, NdiChannelName = requestedChannel, LastError = null };
         var state = await store.ReadAsync();
         if (device.IsKiloview() && !device.IsSimulation() && state.LastJob is { } job && !string.IsNullOrWhiteSpace(job.KiloLinkServerIp))
         {
             var credential = credentialStore.ResolveAndStore(job.KiloLinkServerIp, null, null);
             await kiloLink.AuthorizeDeviceAsync(job.KiloLinkServerIp, job.KiloLinkWebPort, credential, device.Id, device.Hostname, ct);
         }
-        if (restoreDecoder)
+        if (decoder)
         {
-            await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, ct);
-            device = await WaitForDeviceAsync(device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring }, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 45), ct);
-            // Some Kiloview firmware reports the previous hostname briefly after
-            // the mode transition. The title-card sender and KiloLink alias must
-            // use the values the operator just applied, not that stale readback.
             device = device with
             {
-                Hostname = update.Hostname.Trim(),
-                NdiChannelName = update.NdiChannelName.Trim(),
+                Hostname = requestedHostname,
+                NdiChannelName = requestedChannel,
                 Role = DeviceRole.Decoder,
                 Health = DeviceHealth.Online,
                 LastError = null

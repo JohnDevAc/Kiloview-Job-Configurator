@@ -86,6 +86,8 @@ internal sealed class SimulatedDeviceApi(AppStateStore store, string id) : IDevi
         return new(device.HdmiDisplayConnected == true, device.HdmiDisplayConnected == true ? device.HdmiOutputResolution ?? "1920x1080p60" : null);
     }
     public Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct) => Task.CompletedTask;
+    public async Task SetHostnameAsync(string hostname, CancellationToken ct) =>
+        await Change(d => d with { Hostname = hostname });
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct) =>
         await Change(d => d with { Hostname = hostname, NdiChannelName = channelName, NdiGroup = group });
     public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct) =>

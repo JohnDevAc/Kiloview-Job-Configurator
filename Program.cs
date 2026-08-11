@@ -580,6 +580,14 @@ app.MapDelete("/api/teletools/{id}", async (
     catch (HttpRequestException ex) { return Results.Problem(ex.Message, statusCode: 502); }
 });
 
+app.MapGet("/api/devices/{id}/hdmi-input", async (string id, OnboardingService onboarding, CancellationToken ct) =>
+{
+    try { return Results.Ok(await onboarding.ProbeEncoderInputAsync(id, ct)); }
+    catch (KeyNotFoundException ex) { return Results.NotFound(new { error = ex.Message }); }
+    catch (InvalidOperationException ex) { return Results.BadRequest(new { error = ex.Message }); }
+    catch (DeviceApiException ex) { return Results.Problem(ex.Message, statusCode: 502); }
+});
+
 app.MapDelete("/api/devices/{id}", async (
     string id,
     OnboardingService onboarding,

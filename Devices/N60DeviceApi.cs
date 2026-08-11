@@ -151,23 +151,87 @@ internal sealed class N60DeviceApi(
 
     private async Task SetIdentityAndDiscoveryAsync(HttpClient client, string hostname, string channel, string group, string? discoveryIp, CancellationToken ct)
     {
-        using var host = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
+        if (!string.IsNullOrWhiteSpace(hostname))
+        {
+            using var host = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
+        }
         if (!string.IsNullOrWhiteSpace(discoveryIp))
         {
-            using var discovery = await PostAsync(client, "/api/codec/discovery/setDiscoveryServer",
-                new { enable = true, servers = new[] { new { ip = discoveryIp, group_name = group } } },
-                "set N60 NDI discovery server",
+            using var discovery = await RetryRateLimitedAsync(
+                () => PostAsync(client, "/api/codec/discovery/setDiscoveryServer",
+                    new { enable = true, servers = new[] { new { ip = discoveryIp, group_name = group } } },
+                    "set N60 NDI discovery server",
+                    ct),
                 ct);
         }
         foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
         {
             try
             {
-                object body = new { group, channel_name = channel };
-                using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", body, $"configure N60 {stream.Item2}", ct);
+                // The N60 rejects otherwise valid back-to-back codec mutations.
+                // Pace each stream write as well as retrying its explicit
+                // "Request too often" response below.
+                await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+                // Current N60 firmware exposes both the NDI sender group and the
+                // Discovery Server registration group. Supplying only `group`
+                // leaves the NDI-FULL sender group blank even though the request
+                // returns success.
+                object body = new { group, group_server = group, channel_name = channel };
+                using var configured = await RetryRateLimitedAsync(
+                    () => PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", body, $"configure N60 {stream.Item2}", ct),
+                    ct);
+                await VerifyNdiGroupAsync(client, stream.Item1, stream.Item2, group, ct);
             }
-            catch (DeviceApiException) when (stream.Item1 == "main_full") { /* Full NDI can be disabled. */ }
+            catch (DeviceApiException) when (stream.Item1 == "main_full")
+            {
+                // Ignore only a genuinely unavailable/disabled NDI-FULL stream.
+                // If the stream is enabled, a rejected or non-persistent group
+                // setting must fail onboarding instead of being silently hidden.
+                bool enabled;
+                try
+                {
+                    using var current = await RetryRateLimitedAsync(
+                        () => GetAsync(client, "/api/codec/streams/main_full/ndi-full/get", "check N60 ndi-full availability", ct),
+                        ct);
+                    var currentData = Payload(current.RootElement);
+                    enabled = currentData.TryGetProperty("enable", out var value) &&
+                              (value.ValueKind == JsonValueKind.True ||
+                               (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out var parsed) && parsed));
+                }
+                catch (DeviceApiException) { continue; }
+                if (enabled) throw;
+            }
         }
+    }
+
+    private async Task VerifyNdiGroupAsync(HttpClient client, string stream, string type, string expectedGroup, CancellationToken ct)
+    {
+        string actualGroup = "";
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350 * attempt), ct);
+            using var verified = await RetryRateLimitedAsync(
+                () => GetAsync(client, $"/api/codec/streams/{stream}/{type}/get", $"verify N60 {type} identity", ct),
+                ct);
+            actualGroup = String(Payload(verified.RootElement), "group");
+            if (string.Equals(actualGroup, expectedGroup, StringComparison.Ordinal)) return;
+        }
+        throw new DeviceApiException($"N60 {type} retained NDI group '{actualGroup}' instead of '{expectedGroup}'.");
+    }
+
+    private static async Task<JsonDocument> RetryRateLimitedAsync(Func<Task<JsonDocument>> request, CancellationToken ct)
+    {
+        DeviceApiException? last = null;
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            try { return await request(); }
+            catch (DeviceApiException ex) when (ex.Message.Contains("Request too often", StringComparison.OrdinalIgnoreCase))
+            {
+                last = ex;
+                await Task.Delay(TimeSpan.FromMilliseconds(750 * attempt), ct);
+            }
+        }
+        throw last ?? new DeviceApiException("N60 request did not complete.");
     }
 
     public async Task SetRoleAsync(DeviceRole role, CancellationToken ct)
@@ -182,7 +246,9 @@ internal sealed class N60DeviceApi(
     {
         using var client = await AuthorizedAsync(ct);
         using var capture = await PostAsync(client, "/api/codec/encoder/main/get_capture", new { }, "read N60 HDMI input", ct);
-        var data = capture.RootElement.GetProperty("data");
+        // N60 2.45 returns capture fields at the JSON root; older builds wrap
+        // the same object in `data`. Accept both shapes.
+        var data = Payload(capture.RootElement);
         var signal = String(data, "signal");
         var present = SignalIsPresent(signal);
         var resolution = String(data, "resolution");
@@ -229,7 +295,11 @@ internal sealed class N60DeviceApi(
                 var data = discovery.RootElement.TryGetProperty("data", out var rows) && rows.ValueKind == JsonValueKind.Array ? rows : default;
                 if (data.ValueKind == JsonValueKind.Array)
                 {
-                    var match = data.EnumerateArray().FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
+                    // N60 groups sources from the same sender machine beneath a
+                    // top-level row. Each identity card uses its own NDI source,
+                    // so later cards can appear only in a row's `children` array.
+                    var match = FlattenDiscoveryRows(data)
+                        .FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
                     if (match.ValueKind == JsonValueKind.Object)
                     {
                         var name = String(match, "name", source.Name);
@@ -245,7 +315,14 @@ internal sealed class N60DeviceApi(
                                 try
                                 {
                                     using var selected = await PostAsync(client, path, selection, "show N60 identity card", ct);
-                                    if (await WaitForIdentitySelectionAsync(client, source, url, ct)) return;
+                                    if (await WaitForIdentitySelectionAsync(client, source, url, ct))
+                                    {
+                                        // Source selection can restore the decoder's
+                                        // stored forced output. Normalize only after
+                                        // the identity source is confirmed active.
+                                        await EnsureIdentityOutputAsync(client, ct);
+                                        return;
+                                    }
                                 }
                                 catch (DeviceApiException ex) { selectionError = ex; }
                             }
@@ -258,6 +335,53 @@ internal sealed class N60DeviceApi(
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
         }
         throw new DeviceApiException($"The N60 did not discover its NDI identity source '{source.Name}'.");
+    }
+
+    private async Task EnsureIdentityOutputAsync(HttpClient client, CancellationToken ct)
+    {
+        using var current = await GetAsync(client, "/api/codec/decode/get", "read N60 identity-card output", ct);
+        var data = Payload(current.RootElement);
+        var outputMode = Number(data, "output_mode", 0);
+        var outputChoice = String(data, "output_resolution_choose");
+        var outputFrameRate = Number(data, "output_framerate", 0);
+        if (outputMode == 0 &&
+            string.Equals(outputChoice, "auto", StringComparison.OrdinalIgnoreCase) &&
+            outputFrameRate == 0)
+            return;
+
+        // Identity cards are broadcast at 1080p59.94. A decoder left on a
+        // forced output such as 2160p25/59.94 can receive the card correctly
+        // while its attached display remains black. Auto makes HDMI follow the
+        // broadcast-standard card format and preserves the device's audio,
+        // HDCP, and colour-space choices.
+        using var configured = await PostAsync(client, "/api/codec/decode/output_set", new
+        {
+            output_resolution = "auto",
+            output_framerate = 0,
+            hdmi_channels = Number(data, "hdmi_channels", 2),
+            line_out_channels = Number(data, "line_out_channels", 2),
+            hdcp = Number(data, "hdcp", 1),
+            out_colorspace = Number(data, "out_colorspace", 0)
+        }, "set N60 identity-card HDMI output to Auto", ct);
+    }
+
+    private static int Number(JsonElement element, string property, int fallback)
+    {
+        if (!element.TryGetProperty(property, out var value)) return fallback;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)) return number;
+        return int.TryParse(value.ToString(), out number) ? number : fallback;
+    }
+
+    private static IEnumerable<JsonElement> FlattenDiscoveryRows(JsonElement rows)
+    {
+        if (rows.ValueKind != JsonValueKind.Array) yield break;
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.ValueKind != JsonValueKind.Object) continue;
+            yield return row;
+            if (!row.TryGetProperty("children", out var children)) continue;
+            foreach (var child in FlattenDiscoveryRows(children)) yield return child;
+        }
     }
 
     private async Task<bool> WaitForIdentitySelectionAsync(HttpClient client, TitleCardSource source, string url, CancellationToken ct)
@@ -286,7 +410,13 @@ internal sealed class N60DeviceApi(
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        await SetIdentityAndDiscoveryAsync(client, hostname, channelName, group, null, ct);
+        await SetIdentityAndDiscoveryAsync(client, "", channelName, group, null, ct);
+    }
+
+    public async Task SetHostnameAsync(string hostname, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var changed = await GetAsync(client, $"/api/systemctrl/system/setHostname?name={Uri.EscapeDataString(hostname)}", "set N60 hostname", ct);
     }
 
     public async Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct)
