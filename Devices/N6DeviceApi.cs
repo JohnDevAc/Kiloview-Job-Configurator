@@ -38,9 +38,9 @@ internal sealed class N6DeviceApi(
         };
     }
 
-    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
+    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct, TimeSpan? timeout = null)
     {
-        var client = NewClient(TimeSpan.FromSeconds(8));
+        var client = NewClient(timeout ?? TimeSpan.FromSeconds(8));
         using var login = await PostAsync(client, "/api/user/authorize.json", new { user = Credentials.Username, password = Credentials.Password }, "N6 login", ct);
         var data = login.RootElement.GetProperty("data");
         var token = String(data, "token");
@@ -139,8 +139,7 @@ internal sealed class N6DeviceApi(
 
     public async Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct)
     {
-        using var client = await AuthorizedAsync(ct);
-        client.Timeout = TimeSpan.FromMinutes(20);
+        using var client = await AuthorizedAsync(ct, TimeSpan.FromMinutes(20));
         await using var file = new FileStream(package.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
         using var form = new MultipartFormDataContent();
         using var content = new StreamContent(file);

@@ -376,7 +376,7 @@ public sealed class OnboardingService(
 
             foreach (var original in ready)
             {
-                var device = (await store.ReadAsync()).Devices.First(d => d.Id == original.Id);
+                var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == original.Id) ?? original;
                 try
                 {
                     device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(30));
@@ -450,7 +450,10 @@ public sealed class OnboardingService(
 
     private async Task PrepareCleanOnboardingAsync(OnboardingPlan plan, CancellationToken ct)
     {
-        var selectedIds = plan.Devices.Select(device => device.DeviceId).ToHashSet(StringComparer.Ordinal);
+        var selectedDevices = plan.Devices.ToDictionary(
+            device => device.DeviceId,
+            device => device.CurrentIp,
+            StringComparer.Ordinal);
         if (plan.Devices.Any(device => device.Family is DeviceFamily.N6 or DeviceFamily.N60))
         {
             var credential = credentialStore.ResolveAndStore(
@@ -466,7 +469,11 @@ public sealed class OnboardingService(
         titleCards.StopAll();
         await store.UpdateAsync(state => state with
         {
-            Devices = state.Devices.Where(device => selectedIds.Contains(device.Id)).ToArray(),
+            Devices = state.Devices
+                .Where(device => selectedDevices.TryGetValue(device.Id, out var address)
+                    && string.Equals(device.IpAddress, address, StringComparison.Ordinal))
+                .DistinctBy(device => device.Id, StringComparer.Ordinal)
+                .ToArray(),
             LastJob = null,
             Multicast = null,
             TeleToolManagerId = null,

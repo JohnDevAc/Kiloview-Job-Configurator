@@ -9,9 +9,9 @@ internal sealed class N60DeviceApi(
     DeviceCredentials credentials,
     IHttpClientFactory clients) : HttpDeviceApi(ipAddress, credentials, clients), IDeviceApi
 {
-    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct)
+    private async Task<HttpClient> AuthorizedAsync(CancellationToken ct, TimeSpan? timeout = null)
     {
-        var client = NewClient(TimeSpan.FromSeconds(8));
+        var client = NewClient(timeout ?? TimeSpan.FromSeconds(8));
         client.DefaultRequestHeaders.TryAddWithoutValidation("App", "{\"language\":\"en\"}");
         using var login = await PostAsync(client, "/api/systemctrl/users/login", new { username = Credentials.Username, password = Credentials.Password }, "N60 login", ct);
         var data = login.RootElement.GetProperty("data");
@@ -89,8 +89,7 @@ internal sealed class N60DeviceApi(
 
     public async Task UpdateFirmwareAsync(FirmwarePackage package, CancellationToken ct)
     {
-        using var client = await AuthorizedAsync(ct);
-        client.Timeout = TimeSpan.FromMinutes(20);
+        using var client = await AuthorizedAsync(ct, TimeSpan.FromMinutes(20));
         await using var file = new FileStream(package.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
         using var form = new MultipartFormDataContent();
         using var content = new StreamContent(file);

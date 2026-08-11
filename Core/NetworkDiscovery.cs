@@ -105,7 +105,12 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
 
     private async Task MergeAsync(IReadOnlyList<ManagedDevice> devices) => await store.UpdateAsync(state =>
     {
-        var existing = state.Devices.ToDictionary(d => d.Id);
+        var existing = state.Devices
+            .GroupBy(device => device.Id, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(device => device.LastSeenUtc).First(),
+                StringComparer.Ordinal);
         foreach (var device in devices)
         {
             existing[device.Id] = existing.TryGetValue(device.Id, out var old)
