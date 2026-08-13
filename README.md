@@ -15,9 +15,9 @@ This repository contains the **job configurator only**. The separate [Kiloview E
 3. Confirm a collision-checked address plan and authorize the application to accept the Kiloview EULA on the selected devices. A clean-onboarding scan automatically retries credentials retained for previously managed Kiloviews, so units whose factory password was replaced by an earlier job remain discoverable without displaying the saved password. New addresses start above the highest occupied/onboarded address in the pool. When the plan starts, the configurator atomically replaces its previously managed local NDI send/receive group with the new Job Name, while preserving unrelated Access Manager groups. It also reapplies the selected interface and Discovery Server and verifies the saved configuration before any device is changed. If NDI Access Manager is open or the configuration cannot be verified, onboarding stops for user intervention. Display-identification cards are published as standard 1080p59.94 NDI sources for hardware-decoder and HDMI-output compatibility. Successfully onboarded Kiloviews continue to the display-naming page even when another selected device fails, and the live monitor provides a **Name displays** recovery action whenever an onboarded decoder exists.
 4. Before the run starts, select the latest N6 and N60 `.bin` firmware packages required by the plan. The application stores local copies with SHA-256 fingerprints. Each selected Kiloview is logged into at its discovered address, its license is accepted, and its login is changed to `admin/<Job Name>`. Devices already on the staged version are skipped; outdated units are updated directly through their model-specific device API and must return reporting the staged version before any network or KiloLink change is allowed. The new local device credentials are stored with the device record for monitoring and future configuration.
 
-Remote Windows NDI endpoints use Kiloview PC Agent `0.2.0-dev.1` or later. The Job Configurator sends the exact `KILOVIEW_PC_AGENT_DISCOVER_V1` datagram by UDP unicast to the bounded selected-adapter scan range on port `8093`, validates the response address, product, schema, endpoint GUID and capabilities, then confirms `GET /api/health` on TCP `8094`. Duplicate replies are reconciled by stable `endpointId`; a discovered agent remains transient until the existing registration API succeeds. The monitor reads `/api/v1/status` every 15 seconds with a three-second timeout. A card remains green while status is available, turns amber after one missed poll, and red after three. ICMP/agentless monitoring is no longer used.
+Remote Windows NDI endpoints use a Kiloview PC Agent that advertises `remote-onboarding-v2` and `network-config-v1`. The Job Configurator sends the exact `KILOVIEW_PC_AGENT_DISCOVER_V1` datagram by UDP unicast to the bounded selected-adapter scan range on port `8093`, validates the response address, product, schema, endpoint GUID and capabilities, then confirms `GET /api/health` on TCP `8094`. Duplicate replies are reconciled by stable `endpointId`; a discovered agent remains transient until the existing registration API succeeds. The monitor reads `/api/v1/status` every 15 seconds with a three-second timeout. A card remains green while status is available, turns amber after one missed poll, and red after three. ICMP/agentless monitoring is no longer used.
 
-Windows endpoint card headers use `Windows · <OS version>`. Agent-backed cards show the live NDI Tools and agent versions, agent and machine uptime, available/total physical memory, available/total system-disk space, adapter and job membership information. Only `schemaVersion: 1` payloads and individually advertised `status-v1`, `memberships-v1`, and `open-onboarding-v1` capabilities are used; unknown fields are ignored for forward compatibility.
+Windows endpoint card headers use `Windows · <OS version>`. Agent-backed cards show the live NDI Tools and agent versions, agent and machine uptime, available/total physical memory, available/total system-disk space, adapter, current IPv4/gateway/DNS state, and job membership information. Only `schemaVersion: 1` payloads and individually advertised capabilities are used; unknown fields are ignored for forward compatibility.
 
 Local and remote Windows endpoint cards use the same pill sequence where the data applies: availability, preferred-interface state, adapter, NDI runtime version, job group, multicast allocation, and TTL. The local NDI runtime version is read from the installed NDI Tools runtime; remote values continue to come from companion registration.
 5. For each serial number, the service creates or reuses a KiloLink device record, generates any required authorization code on KiloLink Server, and keeps the KiloLink Alias equal to the assigned hostname.
@@ -82,16 +82,29 @@ send/receive group, and NDI Discovery Server, verifies the result, and
 registers the PC in the main device monitor. Remote Windows endpoint cards can
 be removed from the job without changing that PC's NDI configuration. The Job
 Configurator's own local endpoint remains protected and has no removal action.
-An unregistered agent card offers **Onboard this PC** only when the agent
-advertises `open-onboarding-v1`. The request goes to TCP `8094`, can remain open
-for up to 60 seconds, and always requires a visible Yes/No confirmation on the
-remote PC before its elevated onboarding utility launches. Denials are shown
-and never retried automatically.
+Compatible agent cards offer a minimized remote-onboarding editor only when the
+agent advertises both `remote-onboarding-v2` and `network-config-v1`; older
+agents show **PC Agent update required** and the legacy local UI is never opened.
+The operator can retain the current network configuration, switch to DHCP, or
+stage a validated static address, gateway, and DNS plan against the read-only
+agent adapter ID. The plan is bound to the stable endpoint ID and discovered
+source address for ten minutes. After the endpoint user approves the visible
+Yes/No prompt, the elevated utility fetches the declarative schema from
+`/api/pc-onboarding/configuration/{endpointId}`, applies Windows and NDI
+settings, and registers through the existing API. HTTP `202` means approval and
+launch only: the server and UI require a stable-ID registration update within
+90 seconds before reporting success. Denials are shown, leave the staged plan
+available until expiry, and are never retried automatically. Unknown `/api/*`
+paths return JSON `404` responses rather than the single-page application shell.
+The approval request finishes as soon as the agent's HTTP response headers arrive,
+so the configuration endpoint remains independently available to the elevated
+client. Operation status and diagnostics distinguish a configuration that was
+never fetched from one that was fetched but did not subsequently register.
 Multicast planning reserves a unique `/28` sender range for every onboarded
-remote Windows endpoint. Because the Job Configurator cannot change NDI Access
-Manager on another PC, the endpoint card shows the prefix, netmask, and TTL for
-the user to apply manually; the reservation is not reported as remotely applied
-or verified.
+remote Windows endpoint. Agents advertising `multicast-config-v1` receive an
+idempotent, membership-authorized NDI Access Manager apply or unicast-revert
+request, and their live status is monitored for drift. Older agents retain a
+clearly marked manual setup card showing the reserved prefix, netmask, and TTL.
 
 ## Create the Windows package
 

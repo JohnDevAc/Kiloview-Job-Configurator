@@ -579,7 +579,9 @@ internal sealed class N60DeviceApi(
                         connection = "multicast",
                         netprefix = settings.NetPrefix,
                         netmask = settings.Netmask,
-                        ttl = settings.Ttl,
+                        // N60 firmware silently replaces a JSON number with its
+                        // default TTL (127); its own UI submits this as a string.
+                        ttl = settings.Ttl.ToString(),
                         types = stream.Item2
                     }, $"configure N60 {stream.Item2} multicast sender", ct);
                     using var verified = await GetAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/get", $"verify N60 {stream.Item2} multicast sender", ct);
@@ -588,7 +590,8 @@ internal sealed class N60DeviceApi(
                         : verified.RootElement;
                     if (!string.Equals(String(data, "connection"), "multicast", StringComparison.OrdinalIgnoreCase)
                         || !string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
-                        || !string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal))
+                        || !string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal)
+                        || Number(data, "ttl", -1) != settings.Ttl)
                         throw new DeviceApiException($"N60 {stream.Item2} did not retain its multicast allocation.");
                 }
                 catch (DeviceApiException) when (stream.Item1 == "main_full")
@@ -603,6 +606,14 @@ internal sealed class N60DeviceApi(
             new { ndi_connection = "multicast" },
             "set N60 decoder multicast receive mode",
             ct);
+        using var verifiedConnection = await GetAsync(client, "/api/codec/decode/get",
+            "verify N60 decoder multicast receive mode",
+            ct);
+        var connectionData = verifiedConnection.RootElement.TryGetProperty("data", out var wrappedConnection)
+            ? wrappedConnection
+            : verifiedConnection.RootElement;
+        if (!string.Equals(String(connectionData, "ndi_connection"), "multicast", StringComparison.OrdinalIgnoreCase))
+            throw new DeviceApiException("The N60 decoder did not retain multicast receive mode.");
         using var targets = await PostAsync(client, "/api/codec/discovery/addManualIpsGroups", new
         {
             groups = new[] { settings.Group },
@@ -620,6 +631,14 @@ internal sealed class N60DeviceApi(
                 new { ndi_connection = "unicast" },
                 "set N60 decoder unicast receive mode",
                 ct);
+            using var verifiedConnection = await GetAsync(client, "/api/codec/decode/get",
+                "verify N60 decoder unicast receive mode",
+                ct);
+            var connectionData = verifiedConnection.RootElement.TryGetProperty("data", out var wrappedConnection)
+                ? wrappedConnection
+                : verifiedConnection.RootElement;
+            if (!string.Equals(String(connectionData, "ndi_connection"), "unicast", StringComparison.OrdinalIgnoreCase))
+                throw new DeviceApiException("The N60 decoder did not retain unicast receive mode.");
             return;
         }
 

@@ -10,6 +10,7 @@ public sealed class MulticastService(
     AppStateStore store,
     DeviceClientFactory factory,
     NdiAccessManagerService accessManager,
+    WindowsPcAgentService pcAgents,
     EncoderThumbnailService thumbnails,
     ILogger<MulticastService> logger)
 {
@@ -200,27 +201,28 @@ public sealed class MulticastService(
             .ToArray();
         var results = new ConcurrentDictionary<string, MulticastAssignment>(StringComparer.Ordinal);
 
-        await Parallel.ForEachAsync(
-            plan.Assignments,
-            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
-            async (assignment, token) =>
+        async Task ApplyAssignmentAsync(MulticastAssignment assignment, CancellationToken token)
+        {
+            try
             {
-                try
+                bool inUse;
+                if (assignment.EndpointId == "local-pc")
                 {
-                    bool inUse;
-                    if (assignment.EndpointId == "local-pc")
-                    {
-                        var local = await accessManager.ApplyAsync(
-                            assignment.NetPrefix ?? throw new InvalidOperationException("The local PC multicast allocation is missing."),
-                            assignment.Netmask ?? throw new InvalidOperationException("The local PC multicast subnet mask is missing."),
-                            assignment.Ttl,
-                            plan.JobName,
-                            job.NdiDiscoveryServerIp,
-                            assignment.Address,
-                            token);
-                        inUse = local.InUse;
-                    }
-                    else if (remoteEndpointIds.Contains(assignment.EndpointId))
+                    var local = await accessManager.ApplyAsync(
+                        assignment.NetPrefix ?? throw new InvalidOperationException("The local PC multicast allocation is missing."),
+                        assignment.Netmask ?? throw new InvalidOperationException("The local PC multicast subnet mask is missing."),
+                        assignment.Ttl,
+                        plan.JobName,
+                        job.NdiDiscoveryServerIp,
+                        assignment.Address,
+                        token);
+                    inUse = local.InUse;
+                }
+                else if (remoteEndpointIds.Contains(assignment.EndpointId))
+                {
+                    var agent = pcAgents.Snapshot().FirstOrDefault(candidate =>
+                        string.Equals(candidate.EndpointId, assignment.EndpointId, StringComparison.OrdinalIgnoreCase));
+                    if (agent is null || !agent.Capabilities.Contains("multicast-config-v1", StringComparer.Ordinal))
                     {
                         results[assignment.EndpointId] = assignment with
                         {
@@ -230,26 +232,107 @@ public sealed class MulticastService(
                         };
                         return;
                     }
-                    else
-                    {
-                        var device = devices[assignment.EndpointId];
-                        await factory.Create(device).ConfigureMulticastAsync(
-                            new(plan.JobName, assignment.NetPrefix, assignment.Netmask, assignment.Ttl, senderAddresses),
-                            token);
-                        inUse = assignment.Receiver
-                            || !device.IsTeleTool()
-                            || device.StreamRunning == true;
-                    }
-                    results[assignment.EndpointId] = assignment with { Status = "applied", InUse = inUse, Error = null };
+                    var applied = await pcAgents.ConfigureMulticastAsync(
+                        assignment.EndpointId,
+                        "multicast",
+                        plan.JobName,
+                        assignment.NetPrefix,
+                        assignment.Netmask,
+                        assignment.Ttl,
+                        token);
+                    inUse = applied.InUse;
+                }
+                else
+                {
+                    var device = devices[assignment.EndpointId];
+                    await factory.Create(device).ConfigureMulticastAsync(
+                        new(plan.JobName, assignment.NetPrefix, assignment.Netmask, assignment.Ttl, senderAddresses),
+                        token);
+                    inUse = assignment.Receiver
+                        || !device.IsTeleTool()
+                        || device.StreamRunning == true;
+                }
+                results[assignment.EndpointId] = assignment with { Status = "applied", InUse = inUse, Error = null };
+            }
+            catch (Exception ex) when (ex is HttpRequestException
+                or TaskCanceledException
+                or DeviceApiException
+                or InvalidOperationException
+                or IOException
+                or KeyNotFoundException
+                or System.Text.Json.JsonException
+                or UnauthorizedAccessException)
+            {
+                logger.LogWarning(ex, "Multicast configuration failed for {EndpointId}", assignment.EndpointId);
+                results[assignment.EndpointId] = assignment with { Status = "error", InUse = false, Error = ex.Message };
+            }
+        }
+
+        // Senders must advertise their multicast transport before a decoder is
+        // configured or it can cache the same source as unicast and retain that
+        // transport in its preset bank.
+        await Parallel.ForEachAsync(
+            plan.Assignments.Where(assignment => assignment.Sender),
+            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+            async (assignment, token) => await ApplyAssignmentAsync(assignment, token));
+        await Parallel.ForEachAsync(
+            plan.Assignments.Where(assignment => !assignment.Sender),
+            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+            async (assignment, token) => await ApplyAssignmentAsync(assignment, token));
+
+        var encoderDevices = devices.Values
+            .Where(device => device.Role == DeviceRole.Encoder)
+            .OrderBy(device => device.Hostname, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var failedEncoderNames = encoderDevices
+            .Where(device => !results.TryGetValue(device.Id, out var assignment) || assignment.Status != "applied")
+            .Select(device => device.Hostname)
+            .ToArray();
+        var configuredEncoders = failedEncoderNames.Length == 0
+            ? encoderDevices.Select(device =>
+            {
+                var assignment = results[device.Id];
+                return device with
+                {
+                    MulticastConfigured = true,
+                    MulticastInUse = assignment.InUse,
+                    MulticastNetPrefix = assignment.NetPrefix,
+                    MulticastNetmask = assignment.Netmask,
+                    MulticastTtl = assignment.Ttl,
+                    MulticastLastError = null
+                };
+            }).ToArray()
+            : [];
+        await Parallel.ForEachAsync(
+            plan.Assignments.Where(assignment => assignment.Receiver && !assignment.Sender),
+            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct },
+            async (assignment, token) =>
+            {
+                if (!results.TryGetValue(assignment.EndpointId, out var decoderResult)
+                    || decoderResult.Status != "applied") return;
+                try
+                {
+                    if (failedEncoderNames.Length > 0)
+                        throw new InvalidOperationException(
+                            $"Decoder presets were not refreshed because multicast failed on: {string.Join(", ", failedEncoderNames)}.");
+                    var decoder = devices[assignment.EndpointId];
+                    await factory.Create(decoder).ConfigureDecoderFeedsAsync(configuredEncoders, token);
                 }
                 catch (Exception ex) when (ex is HttpRequestException
                     or TaskCanceledException
                     or DeviceApiException
                     or InvalidOperationException
-                    or IOException)
+                    or IOException
+                    or KeyNotFoundException
+                    or UnauthorizedAccessException)
                 {
-                    logger.LogWarning(ex, "Multicast configuration failed for {EndpointId}", assignment.EndpointId);
-                    results[assignment.EndpointId] = assignment with { Status = "error", InUse = false, Error = ex.Message };
+                    logger.LogWarning(ex, "Refreshing multicast decoder presets failed for {EndpointId}", assignment.EndpointId);
+                    results[assignment.EndpointId] = decoderResult with
+                    {
+                        Status = "error",
+                        InUse = false,
+                        Error = $"Multicast receive mode was applied, but decoder presets could not be refreshed: {ex.Message}"
+                    };
                 }
             });
 
@@ -315,9 +398,9 @@ public sealed class MulticastService(
             .ToDictionary(device => device.Id, StringComparer.Ordinal);
         var includeLocalPc = current.IncludeLocalPc
             || current.Assignments.Any(assignment => assignment.EndpointId == "local-pc");
-        var remoteEndpointIds = (state.RemoteWindowsPcs ?? [])
-            .Select(endpoint => endpoint.EndpointId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remoteWindowsPcs = (state.RemoteWindowsPcs ?? [])
+            .ToDictionary(endpoint => endpoint.EndpointId, StringComparer.OrdinalIgnoreCase);
+        var remoteEndpointIds = remoteWindowsPcs.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var remoteAssignments = current.Assignments
             .Where(assignment => remoteEndpointIds.Contains(assignment.EndpointId))
             .ToArray();
@@ -330,8 +413,41 @@ public sealed class MulticastService(
         });
 
         var results = new ConcurrentDictionary<string, string?>(StringComparer.Ordinal);
-        foreach (var assignment in remoteAssignments)
-            results[assignment.EndpointId] = null;
+        await Parallel.ForEachAsync(
+            remoteAssignments,
+            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+            async (assignment, token) =>
+            {
+                try
+                {
+                    var agent = pcAgents.Snapshot().FirstOrDefault(candidate =>
+                        string.Equals(candidate.EndpointId, assignment.EndpointId, StringComparison.OrdinalIgnoreCase));
+                    if (agent is null || !agent.Capabilities.Contains("multicast-config-v1", StringComparer.Ordinal))
+                        throw new NotSupportedException(
+                            "This PC Agent cannot revert NDI Access Manager remotely. Disable multicast manually or update the agent.");
+                    await pcAgents.ConfigureMulticastAsync(
+                        assignment.EndpointId,
+                        "unicast",
+                        current.JobName,
+                        null,
+                        null,
+                        null,
+                        token);
+                    results[assignment.EndpointId] = null;
+                }
+                catch (Exception ex) when (ex is HttpRequestException
+                    or TaskCanceledException
+                    or InvalidOperationException
+                    or IOException
+                    or KeyNotFoundException
+                    or NotSupportedException
+                    or System.Text.Json.JsonException
+                    or UnauthorizedAccessException)
+                {
+                    logger.LogWarning(ex, "Reverting remote Windows multicast failed for {EndpointId}", assignment.EndpointId);
+                    results[assignment.EndpointId] = ex.Message;
+                }
+            });
         await Parallel.ForEachAsync(
             devices.Values,
             new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },

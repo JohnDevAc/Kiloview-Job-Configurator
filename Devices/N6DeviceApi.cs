@@ -511,6 +511,15 @@ internal sealed class N6DeviceApi(
             {
                 using var targets = await PostAsync(client, "/api/decoder/discovery/set_manual_targets.json",
                     new { ip = new[] { source.LocalAddress }, group_name = new[] { source.Group } }, "configure N6 identity-card discovery", ct);
+                try
+                {
+                    if (await TryShowIdentityWithLayoutAsync(client, source, ct)) return;
+                }
+                catch (DeviceApiException)
+                {
+                    // Older N6 firmware uses the legacy single-output endpoint below.
+                }
+
                 using var discovery = await GetAsync(client, "/api/decoder/discovery/get.json", "find N6 identity card", ct);
                 var data = discovery.RootElement.TryGetProperty("data", out var rows) && rows.ValueKind == JsonValueKind.Array ? rows : default;
                 if (data.ValueKind == JsonValueKind.Array)
@@ -532,6 +541,73 @@ internal sealed class N6DeviceApi(
             await Task.Delay(TimeSpan.FromSeconds(1), ct);
         }
         throw new DeviceApiException($"The N6 did not discover its NDI identity source '{source.Name}'.");
+    }
+
+    private async Task<bool> TryShowIdentityWithLayoutAsync(
+        HttpClient client,
+        TitleCardSource source,
+        CancellationToken ct)
+    {
+        using var sources = await PostAsync(client, "/api/source/groups/list",
+            new { is_need_stream = true, show_template = false },
+            "find N6 identity card in layout sources",
+            ct);
+        var match = DecoderGroupStreams(sources.RootElement)
+            .FirstOrDefault(row => String(row, "name").Contains(source.Name, StringComparison.OrdinalIgnoreCase));
+        if (match.ValueKind != JsonValueKind.Object) return false;
+
+        var streamId = String(match, "id");
+        var streamName = String(match, "name", source.Name);
+        var streamUrl = String(match, "url");
+        if (string.IsNullOrWhiteSpace(streamId) || string.IsNullOrWhiteSpace(streamUrl)) return false;
+
+        using var outputs = await GetAsync(client, "/api/output/list", "read N6 identity-card outputs", ct);
+        var output = outputs.RootElement.TryGetProperty("data", out var outputRows)
+            && outputRows.ValueKind == JsonValueKind.Array
+            ? outputRows.EnumerateArray().FirstOrDefault(row => row.ValueKind == JsonValueKind.Object)
+            : default;
+        var outputId = String(output, "id");
+        if (string.IsNullOrWhiteSpace(outputId)) return false;
+
+        var outputPath = $"/api/output/get?output_id={Uri.EscapeDataString(outputId)}";
+        using var current = await GetAsync(client, outputPath, "read N6 identity-card output layout", ct);
+        var position = OutputPositions(current.RootElement).FirstOrDefault();
+        var positionId = Integer(position, "id");
+        if (positionId <= 0) return false;
+
+        using var selected = await PostAsync(client, "/api/output/source/set", new
+        {
+            from = new { type = "source", output_id = outputId },
+            to = new
+            {
+                type = "output",
+                stream_id = streamId,
+                stream_name = streamName,
+                stream_url = streamUrl,
+                output_id = outputId,
+                pos_id = positionId
+            }
+        }, "show N6 identity card in output layout", ct);
+
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+            using var verified = await GetAsync(client, outputPath, "verify N6 identity-card output layout", ct);
+            if (OutputPositions(verified.RootElement).Any(row =>
+                    string.Equals(String(row, "stream_id"), streamId, StringComparison.OrdinalIgnoreCase)
+                    || String(row, "stream_name").Contains(source.Name, StringComparison.OrdinalIgnoreCase)))
+                return true;
+        }
+        return false;
+    }
+
+    private static IEnumerable<JsonElement> OutputPositions(JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object
+            || !data.TryGetProperty("position", out var positions) || positions.ValueKind != JsonValueKind.Array)
+            yield break;
+        foreach (var position in positions.EnumerateArray())
+            if (position.ValueKind == JsonValueKind.Object) yield return position;
     }
 
     private async Task<bool> WaitForIdentitySelectionAsync(HttpClient client, TitleCardSource source, string url, CancellationToken ct)
@@ -582,7 +658,7 @@ internal sealed class N6DeviceApi(
         }
         if (ordered.Length == 0) return;
 
-        var sources = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        var sources = new Dictionary<string, (string GroupId, JsonElement Stream)>(StringComparer.OrdinalIgnoreCase);
         for (var attempt = 0; attempt < 30 && sources.Count < ordered.Length; attempt++)
         {
             if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(1), ct);
@@ -590,14 +666,15 @@ internal sealed class N6DeviceApi(
                 new { is_need_stream = true, show_template = false },
                 "discover encoder feeds for N6 presets",
                 ct);
-            var rows = DecoderGroupStreams(discovery.RootElement).ToArray();
+            var rows = DecoderGroupStreamsWithGroup(discovery.RootElement).ToArray();
             foreach (var encoder in ordered.Where(encoder => !sources.ContainsKey(encoder.Id)))
             {
                 var match = rows
-                    .Where(row => N6DecoderSourceScore(row, encoder) > 0)
-                    .OrderByDescending(row => N6DecoderSourceScore(row, encoder))
+                    .Where(row => N6DecoderSourceScore(row.Stream, encoder) > 0)
+                    .OrderByDescending(row => N6DecoderSourceScore(row.Stream, encoder))
                     .FirstOrDefault();
-                if (match.ValueKind == JsonValueKind.Object) sources[encoder.Id] = match.Clone();
+                if (match.Stream.ValueKind == JsonValueKind.Object)
+                    sources[encoder.Id] = (match.GroupId, match.Stream.Clone());
             }
         }
         if (sources.Count != ordered.Length)
@@ -608,7 +685,10 @@ internal sealed class N6DeviceApi(
 
         foreach (var encoder in ordered)
         {
-            var source = sources[encoder.Id];
+            var sourceRecord = sources[encoder.Id];
+            var source = sourceRecord.Stream;
+            if (encoder.MulticastConfigured)
+                await SetDecoderSourceTransportAsync(client, sourceRecord.GroupId, source, "multicast", ct);
             var streamId = String(source, "id");
             var streamName = String(source, "name", $"{encoder.Hostname} ({encoder.NdiChannelName})");
             var streamUrl = String(source, "url");
@@ -647,15 +727,54 @@ internal sealed class N6DeviceApi(
     }
 
     private static IEnumerable<JsonElement> DecoderGroupStreams(JsonElement root)
+        => DecoderGroupStreamsWithGroup(root).Select(row => row.Stream);
+
+    private static IEnumerable<(string GroupId, JsonElement Stream)> DecoderGroupStreamsWithGroup(JsonElement root)
     {
         if (!root.TryGetProperty("data", out var groups) || groups.ValueKind != JsonValueKind.Array) yield break;
         foreach (var group in groups.EnumerateArray())
         {
             if (group.ValueKind != JsonValueKind.Object ||
                 !group.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array) continue;
+            var groupId = String(group, "id");
             foreach (var stream in streams.EnumerateArray())
-                if (stream.ValueKind == JsonValueKind.Object) yield return stream;
+                if (stream.ValueKind == JsonValueKind.Object) yield return (groupId, stream);
         }
+    }
+
+    private async Task SetDecoderSourceTransportAsync(
+        HttpClient client,
+        string groupId,
+        JsonElement source,
+        string transport,
+        CancellationToken ct)
+    {
+        var streamId = String(source, "id");
+        if (string.IsNullOrWhiteSpace(groupId) || string.IsNullOrWhiteSpace(streamId))
+            throw new DeviceApiException("The N6 decoder source is missing its group or stream identifier.");
+        var payload = JsonSerializer.Deserialize<Dictionary<string, object?>>(source.GetRawText())
+            ?? throw new DeviceApiException("The N6 decoder source could not be prepared for multicast configuration.");
+        payload["group_id"] = groupId;
+        payload["stream_id"] = streamId;
+        payload["ndi_name"] = String(source, "name");
+        payload["trans_mode"] = transport;
+        using var changed = await PostAsync(
+            client,
+            "/api/source/groups/streams/modify",
+            payload,
+            $"set N6 decoder source {streamId} to {transport}",
+            ct);
+
+        using var verified = await PostAsync(client, "/api/source/groups/list",
+            new { is_need_stream = true, show_template = false },
+            "verify N6 decoder source transport",
+            ct);
+        var retained = DecoderGroupStreamsWithGroup(verified.RootElement).FirstOrDefault(row =>
+            string.Equals(row.GroupId, groupId, StringComparison.Ordinal)
+            && string.Equals(String(row.Stream, "id"), streamId, StringComparison.Ordinal));
+        if (retained.Stream.ValueKind != JsonValueKind.Object
+            || !string.Equals(String(retained.Stream, "trans_mode"), transport, StringComparison.OrdinalIgnoreCase))
+            throw new DeviceApiException($"The N6 decoder source {String(source, "name")} did not retain {transport} receive mode.");
     }
 
     private static int N6DecoderSourceScore(JsonElement source, ManagedDevice encoder)
@@ -740,9 +859,7 @@ internal sealed class N6DeviceApi(
             ip = settings.SenderAddresses,
             group_name = new[] { settings.Group }
         }, "configure N6 multicast source discovery", ct);
-        // N6 exposes no separate receiver-transport endpoint. Its receiver
-        // negotiates the sender-advertised multicast transport for every source
-        // listed above.
+        await SetKnownDecoderSourceTransportsAsync(client, settings.SenderAddresses, "multicast", ct);
     }
 
     public async Task DisableMulticastAsync(CancellationToken ct)
@@ -752,8 +869,7 @@ internal sealed class N6DeviceApi(
         var role = String(mode.RootElement.GetProperty("data"), "mode");
         if (!string.Equals(role, "encoder", StringComparison.OrdinalIgnoreCase))
         {
-            // N6 decoders negotiate the transport advertised by each sender and
-            // do not expose a separate receiver transport switch.
+            await SetKnownDecoderSourceTransportsAsync(client, null, "unicast", ct, multicastOnly: true);
             return;
         }
 
@@ -776,6 +892,29 @@ internal sealed class N6DeviceApi(
                 // Full NDI is optional on some N6 firmware/licence combinations.
             }
         }
+    }
+
+    private async Task SetKnownDecoderSourceTransportsAsync(
+        HttpClient client,
+        IReadOnlyList<string>? senderAddresses,
+        string transport,
+        CancellationToken ct,
+        bool multicastOnly = false)
+    {
+        using var discovered = await PostAsync(client, "/api/source/groups/list",
+            new { is_need_stream = true, show_template = false },
+            $"discover N6 sources for {transport} receive mode",
+            ct);
+        var addresses = senderAddresses?.ToHashSet(StringComparer.Ordinal) ?? [];
+        var sources = DecoderGroupStreamsWithGroup(discovered.RootElement)
+            .Where(row => string.Equals(String(row.Stream, "type"), "ndi", StringComparison.OrdinalIgnoreCase))
+            .Where(row => senderAddresses is null || addresses.Contains(String(row.Stream, "address")))
+            .Where(row => !multicastOnly
+                || string.Equals(String(row.Stream, "trans_mode"), "multicast", StringComparison.OrdinalIgnoreCase))
+            .Select(row => (row.GroupId, Stream: row.Stream.Clone()))
+            .ToArray();
+        foreach (var source in sources)
+            await SetDecoderSourceTransportAsync(client, source.GroupId, source.Stream, transport, ct);
     }
 
     public async Task BlankAsync(CancellationToken ct)

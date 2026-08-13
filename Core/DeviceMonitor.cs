@@ -206,6 +206,44 @@ public sealed class DeviceMonitor(
                     result.Original.EndpointId,
                     StringComparison.OrdinalIgnoreCase));
             if (index < 0 || remoteWindowsPcs[index] != result.Original) continue;
+            if (multicast is not null && assignments is not null
+                && result.Updated.AgentCapabilities?.Contains("multicast-config-v1", StringComparer.Ordinal) == true)
+            {
+                var assignmentIndex = Array.FindIndex(assignments, assignment =>
+                    string.Equals(assignment.EndpointId, result.Original.EndpointId, StringComparison.OrdinalIgnoreCase));
+                if (assignmentIndex >= 0)
+                {
+                    var assignment = assignments[assignmentIndex];
+                    var reported = result.LiveStatus?.MulticastConfiguration;
+                    var matches = reported is not null
+                        && string.Equals(reported.Mode, "multicast", StringComparison.Ordinal)
+                        && reported.SendEnabled
+                        && reported.ReceiveEnabled
+                        && string.Equals(reported.AdapterId, result.LiveStatus?.AdapterId, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(reported.NetPrefix, assignment.NetPrefix, StringComparison.Ordinal)
+                        && string.Equals(reported.Netmask, assignment.Netmask, StringComparison.Ordinal)
+                        && reported.Ttl == assignment.Ttl
+                        && string.Equals(reported.JobName, multicast.JobName, StringComparison.Ordinal);
+                    var error = matches
+                        ? null
+                        : result.Updated.ConnectivityStatus == "offline"
+                            ? "PC Agent multicast status is unavailable because the endpoint is offline."
+                            : reported is null
+                                ? "PC Agent did not report NDI Access Manager multicast status. Reapply multicast setup."
+                                : $"Remote NDI Access Manager settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}.";
+                    var refreshed = assignment with
+                    {
+                        Status = matches ? "applied" : "drifted",
+                        InUse = matches && reported!.InUse,
+                        Error = error
+                    };
+                    if (refreshed != assignment)
+                    {
+                        assignments[assignmentIndex] = refreshed;
+                        assignmentsChanged = true;
+                    }
+                }
+            }
             if (remoteWindowsPcs[index] == result.Updated) continue;
             remoteWindowsPcs[index] = result.Updated;
             remoteWindowsChanged = true;
@@ -332,7 +370,7 @@ public sealed class DeviceMonitor(
                     SystemDriveFreeBytes = live?.SystemDriveFreeBytes ?? endpoint.SystemDriveFreeBytes,
                     AgentObservedUtc = live?.ObservedUtc ?? endpoint.AgentObservedUtc
                 };
-                results.Add(new(endpoint, updated));
+                results.Add(new(endpoint, updated, live));
             });
         return results.ToArray();
     }
@@ -414,7 +452,8 @@ public sealed class DeviceMonitor(
     private sealed record DevicePollResult(ManagedDevice Original, ManagedDevice Updated);
     private sealed record RemoteWindowsPollResult(
         RemoteWindowsPcEndpoint Original,
-        RemoteWindowsPcEndpoint Updated);
+        RemoteWindowsPcEndpoint Updated,
+        WindowsPcAgentStatus? LiveStatus);
     private sealed record AccessManagerPollResult(
         MulticastAssignment Original,
         MulticastAssignment Updated,
