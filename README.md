@@ -15,9 +15,9 @@ This repository contains the **job configurator only**. The separate [Kiloview E
 3. Confirm a collision-checked address plan and authorize the application to accept the Kiloview EULA on the selected devices. A clean-onboarding scan automatically retries credentials retained for previously managed Kiloviews, so units whose factory password was replaced by an earlier job remain discoverable without displaying the saved password. New addresses start above the highest occupied/onboarded address in the pool. When the plan starts, the configurator atomically replaces its previously managed local NDI send/receive group with the new Job Name, while preserving unrelated Access Manager groups. It also reapplies the selected interface and Discovery Server and verifies the saved configuration before any device is changed. If NDI Access Manager is open or the configuration cannot be verified, onboarding stops for user intervention. Display-identification cards are published as standard 1080p59.94 NDI sources for hardware-decoder and HDMI-output compatibility. Successfully onboarded Kiloviews continue to the display-naming page even when another selected device fails, and the live monitor provides a **Name displays** recovery action whenever an onboarded decoder exists.
 4. Before the run starts, select the latest N6 and N60 `.bin` firmware packages required by the plan. The application stores local copies with SHA-256 fingerprints. Each selected Kiloview is logged into at its discovered address, its license is accepted, and its login is changed to `admin/<Job Name>`. Devices already on the staged version are skipped; outdated units are updated directly through their model-specific device API and must return reporting the staged version before any network or KiloLink change is allowed. The new local device credentials are stored with the device record for monitoring and future configuration.
 
-Remote Windows NDI endpoints do not require a resident companion service. The Job Configurator sends a lightweight ICMP availability check during its existing 15-second monitor pass. A card remains green while replies are received, turns amber after one or two missed checks, and turns red only after three consecutive failures to avoid flicker during brief network interruptions. Successful checks refresh the endpoint's last-seen time. The separate PC Onboarding utility installs the narrowly scoped inbound ICMP rule needed for this check when the PC joins a job.
+Remote Windows NDI endpoints use Kiloview PC Agent `0.2.0-dev.1` or later. The Job Configurator sends the exact `KILOVIEW_PC_AGENT_DISCOVER_V1` datagram by UDP unicast to the bounded selected-adapter scan range on port `8093`, validates the response address, product, schema, endpoint GUID and capabilities, then confirms `GET /api/health` on TCP `8094`. Duplicate replies are reconciled by stable `endpointId`; a discovered agent remains transient until the existing registration API succeeds. The monitor reads `/api/v1/status` every 15 seconds with a three-second timeout. A card remains green while status is available, turns amber after one missed poll, and red after three. ICMP/agentless monitoring is no longer used.
 
-Windows endpoint card headers use `Windows · <OS version>`. The local version is read directly from Windows; the companion registration API accepts an optional `operatingSystemVersion` value for remote PCs. Existing remote registrations remain compatible and show `VERSION UNKNOWN` until a companion version that supplies the field registers them again.
+Windows endpoint card headers use `Windows · <OS version>`. Agent-backed cards show the live NDI Tools and agent versions, agent and machine uptime, available/total physical memory, available/total system-disk space, adapter and job membership information. Only `schemaVersion: 1` payloads and individually advertised `status-v1`, `memberships-v1`, and `open-onboarding-v1` capabilities are used; unknown fields are ignored for forward compatibility.
 
 Local and remote Windows endpoint cards use the same pill sequence where the data applies: availability, preferred-interface state, adapter, NDI runtime version, job group, multicast allocation, and TTL. The local NDI runtime version is read from the installed NDI Tools runtime; remote values continue to come from companion registration.
 5. For each serial number, the service creates or reuses a KiloLink device record, generates any required authorization code on KiloLink Server, and keeps the KiloLink Alias equal to the assigned hostname.
@@ -69,9 +69,12 @@ Open `http://localhost:8091`. Use **Simulation mode** for the first acceptance r
 
 ## Windows PC onboarding companion
 
-The Windows PC Onboarding Utility is maintained as a separate project. This
-repository retains only the compatible registration API, remote Windows-PC
-state, and device-monitor cards required by that companion.
+The Windows PC Onboarding Utility and per-user Kiloview PC Agent are maintained
+as a separate project. This repository implements the opposing discovery,
+monitoring, locally approved onboarding-open, registration, removal, and device
+card integration. Registration and deletion remain authoritative and
+idempotently reconcile by `endpointId`; discovery alone never adds a PC to a
+job.
 
 After it finds an active Job Configurator on TCP `8091`, the utility backs up
 the local NDI configuration, applies the selected preferred interface, Job Name
@@ -79,6 +82,11 @@ send/receive group, and NDI Discovery Server, verifies the result, and
 registers the PC in the main device monitor. Remote Windows endpoint cards can
 be removed from the job without changing that PC's NDI configuration. The Job
 Configurator's own local endpoint remains protected and has no removal action.
+An unregistered agent card offers **Onboard this PC** only when the agent
+advertises `open-onboarding-v1`. The request goes to TCP `8094`, can remain open
+for up to 60 seconds, and always requires a visible Yes/No confirmation on the
+remote PC before its elevated onboarding utility launches. Denials are shown
+and never retried automatically.
 Multicast planning reserves a unique `/28` sender range for every onboarded
 remote Windows endpoint. Because the Job Configurator cannot change NDI Access
 Manager on another PC, the endpoint card shows the prefix, netmask, and TTL for
@@ -135,6 +143,7 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 ## Operational safeguards
 
 - The installed UI listens on TCP `8091` for LAN management. Windows Firewall limits inbound access to `LocalSubnet` on Domain/Private profiles and blocks Public profiles. The UI has no separate application login, so expose it only on a trusted management LAN.
+- PC Agent discovery and monitoring are read-only, bound to the selected adapter/subnet, and fixed to UDP `8093` and TCP `8094`. The Job Configurator does not scan outside its existing bounded IPv4 range, trust an advertised address different from the datagram source, or expose remote NDI editing, software installation, membership removal, agent control, UAC bypass, or command execution. Privileged onboarding remains local and confirmation-gated by the endpoint user.
 - Stored device credentials remain in local `state.json` for device management but are excluded from every HTTP API response.
 - KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
 - KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. A newly discovered factory server is authenticated with the official `admin/Kiloview001` login, changed to `admin/<Job Name>`, re-authenticated, and only then stored. When a stored login is available, onboarding displays its username and a masked password indicator and allows the blank password field to reuse it. An explicit View/Hide control can retrieve the password only through a no-cache, loopback-only endpoint opened from `localhost` on the setup PC; LAN clients cannot retrieve it. Passwords are never written to `state.json`.

@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.NetworkInformation;
 using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
@@ -8,6 +7,7 @@ public sealed class DeviceMonitor(
     AppStateStore store,
     DeviceClientFactory factory,
     NdiAccessManagerService accessManager,
+    WindowsPcAgentService pcAgents,
     ILogger<DeviceMonitor> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -251,13 +251,18 @@ public sealed class DeviceMonitor(
         };
     }
 
-    private static async Task<IReadOnlyList<RemoteWindowsPollResult>> PollRemoteWindowsPcsAsync(
+    private async Task<IReadOnlyList<RemoteWindowsPollResult>> PollRemoteWindowsPcsAsync(
         AppState state,
         CancellationToken ct)
     {
         var endpoints = state.RemoteWindowsPcs ?? [];
         if (endpoints.Count == 0) return [];
 
+        var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress);
+        var discovered = pcAgents.Snapshot()
+            .ToDictionary(agent => agent.EndpointId, StringComparer.OrdinalIgnoreCase);
         var results = new ConcurrentBag<RemoteWindowsPollResult>();
         await Parallel.ForEachAsync(
             endpoints,
@@ -265,27 +270,37 @@ public sealed class DeviceMonitor(
             async (endpoint, token) =>
             {
                 var checkedUtc = DateTimeOffset.UtcNow;
-                var reachable = false;
+                WindowsPcAgentStatus? live = null;
                 try
                 {
-                    using var ping = new Ping();
-                    var reply = await ping.SendPingAsync(
-                        endpoint.Address,
-                        TimeSpan.FromMilliseconds(900),
-                        cancellationToken: token);
-                    reachable = reply.Status == IPStatus.Success;
+                    if (selectedNetwork is not null &&
+                        discovered.TryGetValue(endpoint.EndpointId, out var agent) &&
+                        agent.Capabilities.Contains("status-v1", StringComparer.Ordinal))
+                    {
+                        live = await pcAgents.TryReadStatusAsync(
+                            agent.Address,
+                            agent.ApiPort,
+                            endpoint.EndpointId,
+                            selectedNetwork,
+                            token);
+                    }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
                     throw;
                 }
-                catch (Exception ex) when (ex is PingException
-                    or InvalidOperationException
-                    or System.Net.Sockets.SocketException)
+                catch (OperationCanceledException)
                 {
-                    reachable = false;
+                    logger.LogDebug("PC Agent status poll timed out for {EndpointId}", endpoint.EndpointId);
+                }
+                catch (Exception ex) when (ex is HttpRequestException
+                    or InvalidOperationException
+                    or System.Text.Json.JsonException)
+                {
+                    logger.LogDebug(ex, "PC Agent status poll failed for {EndpointId}", endpoint.EndpointId);
                 }
 
+                var reachable = live is not null;
                 var failures = reachable
                     ? 0
                     : Math.Min(endpoint.ConsecutiveConnectivityFailures + 1, 3);
@@ -296,10 +311,26 @@ public sealed class DeviceMonitor(
                         : "stale";
                 var updated = endpoint with
                 {
+                    Hostname = live?.Hostname ?? endpoint.Hostname,
+                    Address = live?.Address ?? endpoint.Address,
+                    AdapterName = live?.AdapterName ?? endpoint.AdapterName,
+                    PrefixLength = live?.PrefixLength ?? endpoint.PrefixLength,
+                    NdiToolsVersion = live?.NdiToolsVersion ?? endpoint.NdiToolsVersion,
+                    OperatingSystemVersion = live?.OperatingSystemVersion ?? endpoint.OperatingSystemVersion,
                     LastConnectivityCheckUtc = checkedUtc,
                     LastSeenUtc = reachable ? checkedUtc : endpoint.LastSeenUtc,
                     ConsecutiveConnectivityFailures = failures,
-                    ConnectivityStatus = connectivityStatus
+                    ConnectivityStatus = connectivityStatus,
+                    AgentSchemaVersion = live?.SchemaVersion ?? endpoint.AgentSchemaVersion,
+                    AgentVersion = live?.AgentVersion ?? endpoint.AgentVersion,
+                    AgentCapabilities = discovered.GetValueOrDefault(endpoint.EndpointId)?.Capabilities ?? endpoint.AgentCapabilities,
+                    AgentUptimeSeconds = live?.AgentUptimeSeconds ?? endpoint.AgentUptimeSeconds,
+                    MachineUptimeSeconds = live?.MachineUptimeSeconds ?? endpoint.MachineUptimeSeconds,
+                    PhysicalMemoryTotalBytes = live?.PhysicalMemoryTotalBytes ?? endpoint.PhysicalMemoryTotalBytes,
+                    PhysicalMemoryAvailableBytes = live?.PhysicalMemoryAvailableBytes ?? endpoint.PhysicalMemoryAvailableBytes,
+                    SystemDriveTotalBytes = live?.SystemDriveTotalBytes ?? endpoint.SystemDriveTotalBytes,
+                    SystemDriveFreeBytes = live?.SystemDriveFreeBytes ?? endpoint.SystemDriveFreeBytes,
+                    AgentObservedUtc = live?.ObservedUtc ?? endpoint.AgentObservedUtc
                 };
                 results.Add(new(endpoint, updated));
             });
