@@ -60,6 +60,7 @@ internal sealed class N6DeviceApi(
         using var hostname = await GetAsync(client, "/api/device/get_hostname.json", "read N6 hostname", ct);
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
         JsonDocument? mode = null;
+        JsonDocument? codecStatus = null;
         string? modeWarning = null;
         try { mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode", ct); }
         catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
@@ -69,13 +70,29 @@ internal sealed class N6DeviceApi(
             // can run the guarded mode recovery path instead of losing it.
             modeWarning = "N6 mode service is not ready; role will be recovered during onboarding.";
         }
+        try
+        {
+            codecStatus = await GetAsync(client, "/api/device/status.json?types=ndihx", "read N6 hardware identity", ct);
+        }
+        catch (DeviceApiException)
+        {
+            // Decoder mode and a restarting codec proxy can make the encoder
+            // status endpoint unavailable. The existing hostname/MAC fallbacks
+            // keep discovery working until a healthy status read supplies the
+            // immutable hardware serial.
+        }
         var net = network.RootElement.GetProperty("data")[0];
         var ver = version.RootElement.GetProperty("data");
         var hostnameText = String(hostname.RootElement.GetProperty("data"), "hostname", "N6");
         var serialFromHostname = hostnameText.StartsWith("N6-", StringComparison.OrdinalIgnoreCase)
             ? hostnameText[3..]
             : "";
-        var serial = String(ver, "serialNumber", String(ver, "serial_number", serialFromHostname));
+        var serialFromCodec = codecStatus is null
+            ? ""
+            : String(Payload(codecStatus.RootElement), "serial_number");
+        var serial = String(ver, "serialNumber", String(ver, "serial_number", string.IsNullOrWhiteSpace(serialFromCodec)
+            ? serialFromHostname
+            : serialFromCodec));
         var mac = String(net, "mac", serial);
         if (string.IsNullOrWhiteSpace(serial)) serial = mac;
         var modeName = mode is null ? "" : String(mode.RootElement.GetProperty("data"), "mode");
@@ -96,6 +113,7 @@ internal sealed class N6DeviceApi(
             ManagementState = modeWarning is null ? null : "mode-recovery-required",
             ManagementMessage = modeWarning
         };
+        codecStatus?.Dispose();
         mode?.Dispose();
         return result;
     }

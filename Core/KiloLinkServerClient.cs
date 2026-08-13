@@ -111,14 +111,36 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
         {
             using var session = await LoginAsync(serverIp, webPort, credential, ct);
             using var devicesResponse = await PostAsync(session.Client, "api/tools/getDeviceList.json", new { dn = "", @virtual = false }, ct);
-            var existing = Flatten(Data(devicesResponse), "list").FirstOrDefault(row => ContainsNormalizedValue(row, serialNumber));
+            var devices = Flatten(Data(devicesResponse), "list").ToArray();
+            var existing = devices.FirstOrDefault(row => ContainsNormalizedValue(row, serialNumber));
+            if (existing.ValueKind != JsonValueKind.Object)
+            {
+                // Factory-reset N6 units can first be discovered by MAC address
+                // and later expose their hardware serial. Reuse the unique alias
+                // assigned by the plan. KiloLink does not permit replacing the
+                // serial in place, so remove only that stale device record before
+                // creating its serial-backed replacement in the same job group.
+                var staleAlias = devices.FirstOrDefault(row => string.Equals(
+                    GetStringDeep(row, "cn"),
+                    hostname,
+                    StringComparison.OrdinalIgnoreCase));
+                if (staleAlias.ValueKind == JsonValueKind.Object)
+                {
+                    var staleDn = GetStringDeep(staleAlias, "dn")
+                        ?? throw new InvalidOperationException("The stale KiloLink device alias has no DN.");
+                    using var deleted = await PostAsync(session.Client, "api/tools/deleteMany.json",
+                        new { list = new[] { Uri.EscapeDataString(staleDn) } }, ct);
+                }
+            }
             if (existing.ValueKind == JsonValueKind.Object)
             {
                 var code = GetStringDeep(existing, "description");
                 var currentName = GetStringDeep(existing, "cn") ?? "";
-                if (string.IsNullOrWhiteSpace(code))
+                var currentSerial = GetStringDeep(existing, "serialNumber") ?? "";
+                if (string.IsNullOrWhiteSpace(code) || Normalize(currentSerial) != Normalize(serialNumber))
                 {
-                    code = await CreateAuthorizationCodeAsync(session.Client, ct);
+                    if (string.IsNullOrWhiteSpace(code))
+                        code = await CreateAuthorizationCodeAsync(session.Client, ct);
                     await ModifyDeviceAsync(session.Client, existing, hostname, serialNumber, code, ct);
                 }
                 else if (!string.Equals(currentName, hostname, StringComparison.Ordinal))

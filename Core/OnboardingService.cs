@@ -324,26 +324,42 @@ public sealed class OnboardingService(
                     device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                     CompleteStep(device, "Reconnect", "Device reachable on static IP");
 
-                    // N6 firmware can keep the web/network APIs online while its
-                    // codec proxy returns 0201001. In that state ReadAsync cannot
-                    // report a role, but forcing "encoder" is both redundant for
-                    // an encoder and makes the firmware reject the mode change.
-                    // Preserve the physical mode and let the later codec calls
-                    // either succeed after recovery or report the real fault.
+                    var requestedRole = item.Role;
+                    var hasRoleOverride = requestedRole != DeviceRole.Unknown;
+
+                    // N6 firmware 2.00 can leave its codec proxy permanently
+                    // unavailable after an otherwise accepted mode switch. Keep
+                    // the reported physical mode unless the operator explicitly
+                    // selected a role. N60 retains automatic HDMI role detection.
                     var preserveUnavailableN6Mode = device.Family == DeviceFamily.N6 &&
                         device.Role == DeviceRole.Unknown &&
                         string.Equals(device.ManagementState, "mode-recovery-required", StringComparison.OrdinalIgnoreCase);
-                    if (device.Role != DeviceRole.Encoder && !preserveUnavailableN6Mode)
+                    var preserveReportedN6Mode = device.Family == DeviceFamily.N6 &&
+                        !hasRoleOverride &&
+                        device.Role is DeviceRole.Encoder or DeviceRole.Decoder;
+                    var preparationRole = hasRoleOverride ? requestedRole : DeviceRole.Encoder;
+                    if (!preserveReportedN6Mode && !preserveUnavailableN6Mode && device.Role != preparationRole)
                     {
-                        Step(device, "Prepare", "running", "Ensuring encoder mode is ready for NDI setup and input detection");
-                        await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, CancellationToken.None);
-                        device = device with { Role = DeviceRole.Encoder };
+                        Step(device, "Prepare", "running", hasRoleOverride
+                            ? $"Applying explicit {preparationRole} role before NDI setup"
+                            : "Ensuring encoder mode is ready for NDI setup and input detection");
+                        logger.LogInformation(
+                            "Changing {Model} {DeviceId} at {Address} from {CurrentRole} to {TargetRole} during onboarding preparation",
+                            device.Model,
+                            device.Id,
+                            device.IpAddress,
+                            device.Role,
+                            preparationRole);
+                        await factory.Create(device).SetRoleAsync(preparationRole, CancellationToken.None);
+                        device = device with { Role = preparationRole };
                         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
-                        CompleteStep(device, "Prepare", "Encoder mode ready");
+                        CompleteStep(device, "Prepare", $"{preparationRole} mode ready");
                     }
                     else if (preserveUnavailableN6Mode)
                         CompleteStep(device, "Prepare", "N6 codec proxy unavailable; current physical mode preserved without a rejected switch or extra reboot");
-                    else CompleteStep(device, "Prepare", "Encoder mode ready");
+                    else if (preserveReportedN6Mode)
+                        CompleteStep(device, "Prepare", $"N6 {device.Role} mode preserved; no automatic mode switch performed");
+                    else CompleteStep(device, "Prepare", $"{device.Role} mode ready");
 
                     Step(device, "KiloLink authorization", "running", "Generating server-side device code");
                     var authorizationCode = device.IsSimulation()
@@ -388,17 +404,30 @@ public sealed class OnboardingService(
                 {
                     var overrideRole = DeviceRole.Unknown;
                     var forced = plan.Settings.RoleOverrides is not null && plan.Settings.RoleOverrides.TryGetValue(device.Id, out overrideRole) && overrideRole != DeviceRole.Unknown;
+                    var preserveN6Role = device.Family == DeviceFamily.N6 && !forced && device.Role != DeviceRole.Unknown;
                     Step(device, "HDMI role detection", "running", forced
                         ? $"Applying explicit {overrideRole} role"
+                        : preserveN6Role
+                            ? $"Preserving reported N6 {device.Role} mode"
                         : "Checking for a live HDMI input in encoder mode");
 
-                    var input = forced
+                    var input = forced || preserveN6Role
                         ? new HdmiInputProbeResult(false, null)
                         : await factory.Create(device).ProbeEncoderInputAsync(CancellationToken.None);
-                    var role = forced ? overrideRole : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
+                    var role = forced
+                        ? overrideRole
+                        : preserveN6Role
+                            ? device.Role
+                            : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
 
-                    if (role == DeviceRole.Decoder)
+                    if (role == DeviceRole.Decoder && device.Role != DeviceRole.Decoder)
                     {
+                        logger.LogInformation(
+                            "Changing {Model} {DeviceId} at {Address} from {CurrentRole} to Decoder after HDMI role detection",
+                            device.Model,
+                            device.Id,
+                            device.IpAddress,
+                            device.Role);
                         await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, CancellationToken.None);
                         device = device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring };
                         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 60));
@@ -416,6 +445,8 @@ public sealed class OnboardingService(
                     await SaveDeviceAsync(device);
                     CompleteStep(device, "HDMI role detection", forced
                         ? $"Role set explicitly to {role}"
+                        : preserveN6Role
+                            ? $"N6 reported {role} mode preserved; automatic mode switching disabled for firmware safety"
                         : input.SignalPresent
                             ? $"Encoder — live HDMI input{(string.IsNullOrWhiteSpace(input.Resolution) ? "" : $" at {input.Resolution}")}"
                             : "Decoder — no live encoder input; ready for display identification");
