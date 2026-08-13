@@ -17,6 +17,13 @@ public sealed class OnboardingService(
     ILogger<OnboardingService> logger)
 {
     private static readonly TimeSpan PlanLifetime = TimeSpan.FromMinutes(15);
+    // Size the pipeline for the supported 1 Gb/s network floor. Firmware files
+    // are hundreds of megabytes, so keep two uploads in flight and leave
+    // capacity for device control, Discovery Server, KiloLink, and live NDI.
+    private const int DevicePipelineConcurrency = 8;
+    private const int DisruptiveOperationConcurrency = 4;
+    private const int FirmwareUploadConcurrency = 2;
+    private const int DecoderPresetConcurrency = 6;
     private readonly object _progressGate = new();
     private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly Dictionary<Guid, OnboardingPlan> _plans = [];
@@ -148,7 +155,7 @@ public sealed class OnboardingService(
             {
                 if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
                 titleCards.StopAll();
-                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 9));
+                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 10));
                 _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
                 _run = Task.Run(() => ExecuteAsync(plan));
                 return new { _progress.RunId, _progress.Status };
@@ -251,6 +258,8 @@ public sealed class OnboardingService(
     private async Task ExecuteAsync(OnboardingPlan plan)
     {
         var ready = new ConcurrentBag<ManagedDevice>();
+        using var disruptiveOperations = new SemaphoreSlim(DisruptiveOperationConcurrency, DisruptiveOperationConcurrency);
+        using var firmwareUploads = new SemaphoreSlim(FirmwareUploadConcurrency, FirmwareUploadConcurrency);
         KiloLinkCredential? serverCredential = null;
         try
         {
@@ -261,39 +270,87 @@ public sealed class OnboardingService(
                     plan.Settings.KiloLinkUsername,
                     plan.Settings.KiloLinkPassword);
             }
-            var parallelOptions = new ParallelOptions
+            var pipelineOptions = new ParallelOptions
             {
-                MaxDegreeOfParallelism = Math.Min(4, Math.Max(1, plan.Devices.Count))
+                MaxDegreeOfParallelism = Math.Min(DevicePipelineConcurrency, Math.Max(1, plan.Devices.Count))
             };
-            await Parallel.ForEachAsync(plan.Devices, parallelOptions, async (item, _) =>
+            var roleOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Min(DevicePipelineConcurrency, Math.Max(1, plan.Devices.Count))
+            };
+            var presetOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Min(DecoderPresetConcurrency, Math.Max(1, plan.Devices.Count))
+            };
+            logger.LogInformation(
+                "Starting onboarding for {DeviceCount} devices with pipeline concurrency {PipelineConcurrency}, disruptive-operation concurrency {DisruptiveConcurrency}, firmware concurrency {FirmwareConcurrency}, and decoder-preset concurrency {PresetConcurrency}",
+                plan.Devices.Count,
+                pipelineOptions.MaxDegreeOfParallelism,
+                DisruptiveOperationConcurrency,
+                FirmwareUploadConcurrency,
+                presetOptions.MaxDegreeOfParallelism);
+
+            await Parallel.ForEachAsync(plan.Devices, pipelineOptions, async (item, _) =>
             {
                 var device = (await store.ReadAsync()).Devices.First(d => d.Id == item.DeviceId);
                 try
                 {
                     if (device.IsTeleTool())
                     {
-                        await OnboardTeleToolAsync(device, item, plan.Settings);
+                        await disruptiveOperations.WaitAsync(CancellationToken.None);
+                        try
+                        {
+                            await OnboardTeleToolAsync(device, item, plan.Settings);
+                        }
+                        finally
+                        {
+                            disruptiveOperations.Release();
+                        }
                         return;
                     }
 
                     var targetCredentials = new DeviceCredentials("admin", plan.Settings.JobName);
                     Step(device, "Access & license", "running", "Accepting EULA and applying job credentials");
                     var discoveredDeviceId = device.Id;
-                    await factory.Create(device).ProvisionAccessAsync(targetCredentials, CancellationToken.None);
-                    CompleteStep(device, "Access & license", "EULA accepted; admin password set to Job Name");
-                    var verified = await factory.Create(device with { Credentials = targetCredentials }).ReadAsync(CancellationToken.None);
-                    device = verified with
+                    await disruptiveOperations.WaitAsync(CancellationToken.None);
+                    try
                     {
-                        Credentials = targetCredentials,
-                        LicenseAccepted = true,
-                        Health = DeviceHealth.Configuring
-                    };
+                        await factory.Create(device).ProvisionAccessAsync(targetCredentials, CancellationToken.None);
+                        var verified = await factory.Create(device with { Credentials = targetCredentials }).ReadAsync(CancellationToken.None);
+                        device = verified with
+                        {
+                            Credentials = targetCredentials,
+                            LicenseAccepted = true,
+                            Health = DeviceHealth.Configuring
+                        };
+                    }
+                    finally
+                    {
+                        disruptiveOperations.Release();
+                    }
+                    CompleteStep(device, "Access & license", "EULA accepted; admin password set to Job Name");
                     await ReplaceDeviceAsync(discoveredDeviceId, device);
 
                     Step(device, "Firmware", "running", "Checking staged model firmware before network changes");
                     try
                     {
-                        device = await ApplyFirmwareBeforeConfigurationAsync(device);
+                        await firmwareUploads.WaitAsync(CancellationToken.None);
+                        try
+                        {
+                            await disruptiveOperations.WaitAsync(CancellationToken.None);
+                            try
+                            {
+                                device = await ApplyFirmwareBeforeConfigurationAsync(device);
+                            }
+                            finally
+                            {
+                                disruptiveOperations.Release();
+                            }
+                        }
+                        finally
+                        {
+                            firmwareUploads.Release();
+                        }
                         CompleteStep(device, "Firmware", $"Verified {device.FirmwareVersion}");
                     }
                     catch (Exception ex)
@@ -307,43 +364,71 @@ public sealed class OnboardingService(
                         : $"Assigning {item.TargetIp}; DNS {plan.Settings.Dns}");
                     if (!item.ExistingStaticDevice)
                     {
-                        await factory.Create(device).SetNetworkAsync(
-                            item.TargetIp,
-                            plan.Settings.SubnetMask,
-                            plan.Settings.Gateway,
-                            plan.Settings.Dns,
-                            CancellationToken.None);
-                    }
-                    device = device with { IpAddress = item.TargetIp, IsStatic = true, Health = DeviceHealth.Configuring };
-                    await SaveDeviceAsync(device);
-                    CompleteStep(device, "Static IP & DNS", item.ExistingStaticDevice
-                        ? "Already in static range; network settings unchanged"
-                        : $"Address assigned; DNS {plan.Settings.Dns} applied");
+                        await disruptiveOperations.WaitAsync(CancellationToken.None);
+                        try
+                        {
+                            await factory.Create(device).SetNetworkAsync(
+                                item.TargetIp,
+                                plan.Settings.SubnetMask,
+                                plan.Settings.Gateway,
+                                plan.Settings.Dns,
+                                CancellationToken.None);
+                            device = device with { IpAddress = item.TargetIp, IsStatic = true, Health = DeviceHealth.Configuring };
+                            await SaveDeviceAsync(device);
+                            CompleteStep(device, "Static IP & DNS", $"Address assigned; DNS {plan.Settings.Dns} applied");
 
-                    Step(device, "Reconnect", "running");
-                    device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
+                            Step(device, "Reconnect", "running");
+                            device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
+                        }
+                        finally
+                        {
+                            disruptiveOperations.Release();
+                        }
+                    }
+                    else
+                    {
+                        device = device with { IpAddress = item.TargetIp, IsStatic = true, Health = DeviceHealth.Configuring };
+                        await SaveDeviceAsync(device);
+                        CompleteStep(device, "Static IP & DNS", "Already in static range; network settings unchanged");
+
+                        Step(device, "Reconnect", "running");
+                        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
+                    }
                     CompleteStep(device, "Reconnect", "Device reachable on static IP");
 
-                    // N6 firmware can keep the web/network APIs online while its
-                    // codec proxy returns 0201001. In that state ReadAsync cannot
-                    // report a role, but forcing "encoder" is both redundant for
-                    // an encoder and makes the firmware reject the mode change.
-                    // Preserve the physical mode and let the later codec calls
-                    // either succeed after recovery or report the real fault.
-                    var preserveUnavailableN6Mode = device.Family == DeviceFamily.N6 &&
-                        device.Role == DeviceRole.Unknown &&
-                        string.Equals(device.ManagementState, "mode-recovery-required", StringComparison.OrdinalIgnoreCase);
-                    if (device.Role != DeviceRole.Encoder && !preserveUnavailableN6Mode)
+                    var requestedRole = item.Role;
+                    var hasRoleOverride = requestedRole != DeviceRole.Unknown;
+
+                    // Kiloview identity and HDMI-input APIs are encoder services.
+                    // Even an explicitly selected decoder must pass through a
+                    // healthy encoder phase before its final role is applied.
+                    var preparationRole = DeviceRole.Encoder;
+                    if (device.Role != preparationRole)
                     {
-                        Step(device, "Prepare", "running", "Ensuring encoder mode is ready for NDI setup and input detection");
-                        await factory.Create(device).SetRoleAsync(DeviceRole.Encoder, CancellationToken.None);
-                        device = device with { Role = DeviceRole.Encoder };
-                        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
-                        CompleteStep(device, "Prepare", "Encoder mode ready");
+                        Step(device, "Prepare", "running", hasRoleOverride
+                            ? $"Preparing encoder services before applying explicit {requestedRole} role"
+                            : "Ensuring encoder mode is ready for NDI setup and input detection");
+                        logger.LogInformation(
+                            "Changing {Model} {DeviceId} at {Address} from {CurrentRole} to {TargetRole} during onboarding preparation",
+                            device.Model,
+                            device.Id,
+                            device.IpAddress,
+                            device.Role,
+                            preparationRole);
+                        await disruptiveOperations.WaitAsync(CancellationToken.None);
+                        try
+                        {
+                            await factory.Create(device).SetRoleAsync(preparationRole, CancellationToken.None);
+                            device = device with { Role = preparationRole };
+                            device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
+                        }
+                        finally
+                        {
+                            disruptiveOperations.Release();
+                        }
+                        CompleteStep(device, "Prepare", $"{preparationRole} mode ready");
                     }
-                    else if (preserveUnavailableN6Mode)
-                        CompleteStep(device, "Prepare", "N6 codec proxy unavailable; current physical mode preserved without a rejected switch or extra reboot");
-                    else CompleteStep(device, "Prepare", "Encoder mode ready");
+                    else CompleteStep(device, "Prepare", $"{device.Role} mode ready");
 
                     Step(device, "KiloLink authorization", "running", "Generating server-side device code");
                     var authorizationCode = device.IsSimulation()
@@ -370,7 +455,9 @@ public sealed class OnboardingService(
                         LastError = null
                     };
                     await SaveDeviceAsync(device);
-                    CompleteStep(device, "KiloLink / NDI", $"NDI group '{plan.Settings.JobName}' applied from Job Name");
+                    CompleteStep(device, "KiloLink / NDI", device.Family == DeviceFamily.N60
+                        ? $"NDI-HB (no record) selected; NDI-HX disabled; group '{plan.Settings.JobName}' applied from Job Name"
+                        : $"NDI group '{plan.Settings.JobName}' applied from Job Name");
                     ready.Add(device);
                 }
                 catch (Exception ex)
@@ -381,9 +468,10 @@ public sealed class OnboardingService(
                 }
             });
 
-            await Parallel.ForEachAsync(ready, parallelOptions, async (original, _) =>
+            await Parallel.ForEachAsync(ready, roleOptions, async (original, _) =>
             {
                 var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == original.Id) ?? original;
+                var finalizationStep = "HDMI role detection";
                 try
                 {
                     var overrideRole = DeviceRole.Unknown;
@@ -395,13 +483,29 @@ public sealed class OnboardingService(
                     var input = forced
                         ? new HdmiInputProbeResult(false, null)
                         : await factory.Create(device).ProbeEncoderInputAsync(CancellationToken.None);
-                    var role = forced ? overrideRole : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
+                    var role = forced
+                        ? overrideRole
+                        : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
 
-                    if (role == DeviceRole.Decoder)
+                    if (role == DeviceRole.Decoder && device.Role != DeviceRole.Decoder)
                     {
-                        await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, CancellationToken.None);
-                        device = device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring };
-                        device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 60));
+                        logger.LogInformation(
+                            "Changing {Model} {DeviceId} at {Address} from {CurrentRole} to Decoder after HDMI role detection",
+                            device.Model,
+                            device.Id,
+                            device.IpAddress,
+                            device.Role);
+                        await disruptiveOperations.WaitAsync(CancellationToken.None);
+                        try
+                        {
+                            await factory.Create(device).SetRoleAsync(DeviceRole.Decoder, CancellationToken.None);
+                            device = device with { Role = DeviceRole.Decoder, Health = DeviceHealth.Configuring };
+                            device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 60));
+                        }
+                        finally
+                        {
+                            disruptiveOperations.Release();
+                        }
                     }
                     device = device with
                     {
@@ -420,13 +524,59 @@ public sealed class OnboardingService(
                             ? $"Encoder — live HDMI input{(string.IsNullOrWhiteSpace(input.Resolution) ? "" : $" at {input.Resolution}")}"
                             : "Decoder — no live encoder input; ready for display identification");
 
+                    finalizationStep = "NDI Discovery Server";
+                    Step(device, finalizationStep, "running", $"Applying {plan.Settings.NdiDiscoveryServerIp} after final role selection");
+                    await factory.Create(device).ConfigureDiscoveryServerAsync(
+                        plan.Settings.NdiDiscoveryServerIp,
+                        plan.Settings.JobName,
+                        CancellationToken.None);
+                    CompleteStep(device, "NDI Discovery Server", $"Connected to {plan.Settings.NdiDiscoveryServerIp} for group '{plan.Settings.JobName}'");
+
                     // Identity is persisted now; decoder cards can fine-tune both names on the next UI page.
                     CompleteStep(device, "Identity", device.Hostname);
                 }
                 catch (Exception ex)
                 {
                     await SaveDeviceAsync(device with { Health = DeviceHealth.Error, LastError = ex.Message });
-                    FailStep(device, "HDMI role detection", ex.Message);
+                    FailStep(device, finalizationStep, ex.Message);
+                }
+            });
+
+            var onboardedFleet = (await store.ReadAsync()).Devices
+                .Where(device => device.IsOnboarded &&
+                                 device.Health != DeviceHealth.Error &&
+                                 string.Equals(device.NdiGroup, plan.Settings.JobName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var stoppedTeleTools = onboardedFleet.Count(device =>
+                device.Role == DeviceRole.Encoder && device.IsTeleTool() && device.StreamRunning == false);
+            var encoders = onboardedFleet
+                .Where(device => device.Role == DeviceRole.Encoder &&
+                                 (!device.IsTeleTool() || device.StreamRunning != false))
+                .OrderBy(device => device.Hostname, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(device => device.IpAddress, StringComparer.Ordinal)
+                .ToArray();
+            var decoders = onboardedFleet
+                .Where(device => device.Role == DeviceRole.Decoder && device.IsKiloview())
+                .ToArray();
+            AddProgressWork(decoders.Length);
+            await Parallel.ForEachAsync(decoders, presetOptions, async (decoder, _) =>
+            {
+                try
+                {
+                    Step(decoder, "Decoder feed presets", "running", encoders.Length == 0
+                        ? "Clearing stale feed presets; this job has no encoders"
+                        : $"Adding {encoders.Length} advertising job encoder feed{(encoders.Length == 1 ? "" : "s")}");
+                    await factory.Create(decoder).ConfigureDecoderFeedsAsync(encoders, CancellationToken.None);
+                    CompleteStep(decoder, "Decoder feed presets", encoders.Length == 0
+                        ? "Preset bank cleared; no encoder feeds available"
+                        : $"All {encoders.Length} advertising encoder feed{(encoders.Length == 1 ? "" : "s")} stored" +
+                          (stoppedTeleTools == 0 ? "" : $"; {stoppedTeleTools} stopped TeleTool omitted until it has an active NDI source"));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Could not populate decoder feed presets on {Device}", decoder.Id);
+                    await SaveDeviceAsync(decoder with { Health = DeviceHealth.Error, LastError = ex.Message });
+                    FailStep(decoder, "Decoder feed presets", ex.Message);
                 }
             });
 
@@ -905,14 +1055,38 @@ public sealed class OnboardingService(
     {
         lock (_progressGate)
         {
-            var steps = _progress.Steps.Append(new OnboardingStep(device.Id, device.IpAddress, name, "error", message)).ToArray();
+            var steps = _progress.Steps.ToList();
+            var index = steps.FindLastIndex(step => step.DeviceId == device.Id && step.Step == name && step.Status == "running");
+            if (index < 0) index = steps.FindLastIndex(step => step.DeviceId == device.Id && step.Status == "running");
+            if (index >= 0)
+                steps[index] = steps[index] with { Status = "error", Message = message, IpAddress = device.IpAddress };
+            else
+                steps.Add(new(device.Id, device.IpAddress, name, "error", message));
             _progress = _progress with { Steps = steps, Completed = Math.Min(_progress.Total, _progress.Completed + 1) };
         }
     }
 
+    private void AddProgressWork(int count)
+    {
+        if (count <= 0) return;
+        lock (_progressGate) _progress = _progress with { Total = _progress.Total + count };
+    }
+
     private void Finish(string status)
     {
-        lock (_progressGate) _progress = _progress with { Status = status, FinishedUtc = DateTimeOffset.UtcNow, Completed = _progress.Total };
+        lock (_progressGate)
+        {
+            var steps = _progress.Steps.Select(step => step.Status == "running"
+                ? step with { Status = "error", Message = step.Message ?? "The run finished before this step completed." }
+                : step).ToArray();
+            _progress = _progress with
+            {
+                Status = status,
+                FinishedUtc = DateTimeOffset.UtcNow,
+                Completed = _progress.Total,
+                Steps = steps
+            };
+        }
     }
 
     private static string SanitizeName(string name)

@@ -269,6 +269,7 @@ public sealed class NdiAccessManagerService
         string group,
         string discoveryServer,
         string preferredAddress,
+        IReadOnlyList<string> receiveSubnets,
         CancellationToken ct)
     {
         var selectedAddress = InputValidation.Ip(preferredAddress, "Preferred NDI interface").ToString();
@@ -298,7 +299,16 @@ public sealed class NdiAccessManagerService
         send["ttl"] = ttl;
         var receive = Object(multicast, "recv");
         receive["enable"] = true;
-        receive["subnets"] ??= new JsonArray();
+        var subnets = receive["subnets"] as JsonArray ?? new JsonArray();
+        foreach (var subnet in receiveSubnets
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Select(value => value.Trim())
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!subnets.Any(value => string.Equals(value?.ToString(), subnet, StringComparison.OrdinalIgnoreCase)))
+                subnets.Add(subnet);
+        }
+        receive["subnets"] = subnets;
 
         await WriteConfigurationAsync(root, ct);
 
@@ -309,7 +319,8 @@ public sealed class NdiAccessManagerService
             ct,
             group,
             discoveryServer,
-            selectedAddress);
+            selectedAddress,
+            receiveSubnets);
     }
 
     public async Task<NdiAccessManagerStatus> DisableMulticastAsync(CancellationToken ct)
@@ -339,7 +350,8 @@ public sealed class NdiAccessManagerService
         CancellationToken ct = default,
         string? expectedGroup = null,
         string? expectedDiscoveryServer = null,
-        string? expectedPreferredAddress = null)
+        string? expectedPreferredAddress = null,
+        IReadOnlyList<string>? expectedReceiveSubnets = null)
     {
         var running = IsRunning;
         if (!File.Exists(_configPath))
@@ -355,11 +367,16 @@ public sealed class NdiAccessManagerService
             var networks = root?["ndi"]?["networks"] as JsonObject;
             var allowed = AllowedAddresses(root?["ndi"]?["adapters"] as JsonObject);
             var enabled = Bool(send, "enable");
+            var configuredReceiveSubnets = receive?["subnets"] as JsonArray;
+            var receiveSubnetsMatch = expectedReceiveSubnets is null
+                || expectedReceiveSubnets.All(expected => configuredReceiveSubnets?.Any(value =>
+                    string.Equals(value?.ToString(), expected, StringComparison.OrdinalIgnoreCase)) == true);
             var prefix = Text(send, "netprefix");
             var mask = Text(send, "netmask");
             var ttl = Int(send, "ttl");
             var matches = enabled
                 && Bool(receive, "enable")
+                && receiveSubnetsMatch
                 && (expectedPrefix is null || string.Equals(prefix, expectedPrefix, StringComparison.Ordinal))
                 && (expectedMask is null || string.Equals(mask, expectedMask, StringComparison.Ordinal))
                 && (expectedTtl is null || ttl == expectedTtl)

@@ -301,32 +301,55 @@ public sealed class TeleToolFleetService(
             return;
         }
 
-        var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
-        if (!HasDevMulticastFields(config))
-            throw new InvalidOperationException("This TeleTool Dev build does not expose NDI multicast configuration. Update it from the TeleTool Dev channel first.");
-        var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
-        var updated = await PostAsync(device.IpAddress, device.WebPort, "/api/config/ui", new
+        var gate = _adoptionGates.GetOrAdd(device.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
         {
-            ndi_multicast_enabled = true,
-            ndi_multicast_netprefix = settings.NetPrefix,
-            ndi_multicast_netmask = settings.Netmask,
-            ndi_multicast_ttl = settings.Ttl
-        }, TimeSpan.FromSeconds(12), ct);
-        var applied = Object(updated, "config");
-        if (!MatchesMulticast(applied, settings))
-            throw new InvalidOperationException("TeleTool did not retain the requested NDI multicast allocation.");
+            var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            if (!HasDevMulticastFields(config))
+                throw new InvalidOperationException("This TeleTool Dev build does not expose NDI multicast configuration. Update it from the TeleTool Dev channel first.");
+            var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
+            var wasRunning = Flag(status, "running");
+            JsonObject? applied = null;
+            try
+            {
+                if (wasRunning) await StopForConfigurationAsync(device, status, ct);
+                var updated = await PostAsync(device.IpAddress, device.WebPort, "/api/config/ui", new
+                {
+                    ndi_multicast_enabled = true,
+                    ndi_multicast_netprefix = settings.NetPrefix,
+                    ndi_multicast_netmask = settings.Netmask,
+                    ndi_multicast_ttl = settings.Ttl
+                }, TimeSpan.FromSeconds(12), ct);
+                applied = Object(updated, "config");
+                if (!MatchesMulticast(applied, settings))
+                    throw new InvalidOperationException("TeleTool did not retain the requested NDI multicast allocation.");
 
-        if (Flag(status, "running"))
-        {
-            var start = BuildStartPayload(status, applied, device.NdiChannelName, device.NdiGroup);
-            ApplyMulticastSettings(start, settings);
-            await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(25), ct);
-            await ConfirmRunningMulticastAsync(device, settings, ct);
+                if (wasRunning)
+                {
+                    var start = BuildPreviousSourcePayload(status, applied, device.NdiChannelName, device.NdiGroup);
+                    ApplyMulticastSettings(start.Payload, settings);
+                    await PostAsync(device.IpAddress, device.WebPort, start.Path, start.Payload, TimeSpan.FromSeconds(25), ct);
+                    await ConfirmRunningMulticastAsync(device, settings, ct);
+                }
+            }
+            catch (Exception primary) when (wasRunning)
+            {
+                using var recovery = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+                await ThrowWithRestoreFailureAsync(
+                    primary,
+                    () => RestorePreviousSourceAsync(device, status, applied ?? config, recovery.Token));
+                throw;
+            }
+
+            var retained = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            if (!MatchesMulticast(retained, settings))
+                throw new InvalidOperationException("TeleTool multicast configuration changed after the stream restart.");
         }
-
-        var retained = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
-        if (!MatchesMulticast(retained, settings))
-            throw new InvalidOperationException("TeleTool multicast configuration changed after the stream restart.");
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task DisableMulticastAsync(ManagedDevice device, CancellationToken ct)
@@ -345,29 +368,52 @@ public sealed class TeleToolFleetService(
             return;
         }
 
-        var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
-        if (!HasDevMulticastFields(config))
-            throw new InvalidOperationException("This TeleTool Dev build does not expose NDI multicast configuration. Update it from the TeleTool Dev channel first.");
-        var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
-        var updated = await PostAsync(device.IpAddress, device.WebPort, "/api/config/ui", new
+        var gate = _adoptionGates.GetOrAdd(device.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
         {
-            ndi_multicast_enabled = false
-        }, TimeSpan.FromSeconds(12), ct);
-        var applied = Object(updated, "config");
-        if (Flag(applied, "ndi_multicast_enabled"))
-            throw new InvalidOperationException("TeleTool did not retain unicast mode.");
+            var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            if (!HasDevMulticastFields(config))
+                throw new InvalidOperationException("This TeleTool Dev build does not expose NDI multicast configuration. Update it from the TeleTool Dev channel first.");
+            var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
+            var wasRunning = Flag(status, "running");
+            JsonObject? applied = null;
+            try
+            {
+                if (wasRunning) await StopForConfigurationAsync(device, status, ct);
+                var updated = await PostAsync(device.IpAddress, device.WebPort, "/api/config/ui", new
+                {
+                    ndi_multicast_enabled = false
+                }, TimeSpan.FromSeconds(12), ct);
+                applied = Object(updated, "config");
+                if (Flag(applied, "ndi_multicast_enabled"))
+                    throw new InvalidOperationException("TeleTool did not retain unicast mode.");
 
-        if (Flag(status, "running"))
-        {
-            var start = BuildStartPayload(status, applied, device.NdiChannelName, device.NdiGroup);
-            start["ndi_multicast_enabled"] = false;
-            await PostAsync(device.IpAddress, device.WebPort, "/api/start", start, TimeSpan.FromSeconds(25), ct);
-            await ConfirmRunningUnicastAsync(device, ct);
+                if (wasRunning)
+                {
+                    var start = BuildPreviousSourcePayload(status, applied, device.NdiChannelName, device.NdiGroup);
+                    start.Payload["ndi_multicast_enabled"] = false;
+                    await PostAsync(device.IpAddress, device.WebPort, start.Path, start.Payload, TimeSpan.FromSeconds(25), ct);
+                    await ConfirmRunningUnicastAsync(device, ct);
+                }
+            }
+            catch (Exception primary) when (wasRunning)
+            {
+                using var recovery = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+                await ThrowWithRestoreFailureAsync(
+                    primary,
+                    () => RestorePreviousSourceAsync(device, status, applied ?? config, recovery.Token));
+                throw;
+            }
+
+            var retained = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            if (Flag(retained, "ndi_multicast_enabled"))
+                throw new InvalidOperationException("TeleTool returned to multicast mode after the stream restart.");
         }
-
-        var retained = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
-        if (Flag(retained, "ndi_multicast_enabled"))
-            throw new InvalidOperationException("TeleTool returned to multicast mode after the stream restart.");
+        finally
+        {
+            gate.Release();
+        }
     }
 
     public async Task<ManagedDevice> StartAsync(ManagedDevice device, CancellationToken ct)
@@ -623,6 +669,62 @@ public sealed class TeleToolFleetService(
         return result;
     }
 
+    private static (string Path, Dictionary<string, object?> Payload) BuildPreviousSourcePayload(
+        JsonObject status,
+        JsonObject config,
+        string ndiName,
+        string ndiGroups) => IsTestCard(status)
+            ? ("/api/test-card/start", BuildStreamSettings(status, config, ndiName, ndiGroups))
+            : ("/api/start", BuildStartPayload(status, config, ndiName, ndiGroups));
+
+    private async Task StopForConfigurationAsync(
+        ManagedDevice device,
+        JsonObject status,
+        CancellationToken ct)
+    {
+        var path = IsTestCard(status) ? "/api/test-card/stop" : "/api/stop";
+        await PostAsync(device.IpAddress, device.WebPort, path, new { }, TimeSpan.FromSeconds(15), ct);
+        await ConfirmStoppedAsync(device, ct);
+    }
+
+    private async Task RestorePreviousSourceAsync(
+        ManagedDevice device,
+        JsonObject previousStatus,
+        JsonObject config,
+        CancellationToken ct)
+    {
+        var current = await GetAsync(
+            device.IpAddress,
+            device.WebPort,
+            "/api/status?lite=1&rf=0",
+            TimeSpan.FromSeconds(5),
+            ct);
+        if (Flag(current, "running")) return;
+
+        var start = BuildPreviousSourcePayload(
+            previousStatus,
+            config,
+            device.NdiChannelName,
+            device.NdiGroup);
+        await PostAsync(device.IpAddress, device.WebPort, start.Path, start.Payload, TimeSpan.FromSeconds(25), ct);
+    }
+
+    private static async Task ThrowWithRestoreFailureAsync(
+        Exception primary,
+        Func<Task> restore)
+    {
+        try
+        {
+            await restore();
+        }
+        catch (Exception restoreError)
+        {
+            throw new InvalidOperationException(
+                $"{primary.Message} The previous TeleTool source could not be restored: {restoreError.Message}",
+                new AggregateException(primary, restoreError));
+        }
+    }
+
     private static Dictionary<string, object?> BuildStreamSettings(
         JsonObject status,
         JsonObject config,
@@ -673,6 +775,34 @@ public sealed class TeleToolFleetService(
         string.Equals(Text(status, "source_mode"), "test_card", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(Text(Object(status, "supervisor"), "source_mode"), "test_card", StringComparison.OrdinalIgnoreCase) ||
         (Text(status, "input_url")?.StartsWith("test-card:", StringComparison.OrdinalIgnoreCase) ?? false);
+
+    private async Task ConfirmStoppedAsync(ManagedDevice device, CancellationToken ct)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                var status = await GetAsync(
+                    device.IpAddress,
+                    device.WebPort,
+                    "/api/status?lite=1&rf=0",
+                    TimeSpan.FromSeconds(5),
+                    ct);
+                if (!Flag(status, "running")) return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested
+                && ex is HttpRequestException or TaskCanceledException or DeviceApiException or JsonException)
+            {
+                lastError = ex;
+            }
+            if (attempt < 7) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+
+        throw new InvalidOperationException(
+            "TeleTool did not stop before its NDI multicast configuration was changed.",
+            lastError);
+    }
 
     private async Task ConfirmRunningMulticastAsync(
         ManagedDevice device,

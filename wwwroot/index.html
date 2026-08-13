@@ -77,12 +77,12 @@
 
         <div class="section-title"><span>04</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
         <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required maxlength="32"></label>
+        <label class="check clean-onboarding-option wide"><input name="cleanOnboarding" type="checkbox"><span><strong>Clean onboarding</strong><small>Delete all existing KiloLink devices/groups and previous configurator job devices before this run. Leave off when adding to an existing job.</small></span></label>
         <details class="wide advanced">
           <summary>Device login & test options</summary>
           <div class="details-grid">
             <label><span>Username</span><input name="username" value="admin"></label>
             <label><span>Factory password</span><input name="password" type="password" value="admin" autocomplete="off"><small>Kiloview N6/N60 factory default is admin/admin. TeleTool Dev does not require device credentials.</small></label>
-            <label class="check"><input name="cleanOnboarding" type="checkbox"><span>Clean onboarding — delete all existing KiloLink devices/groups and previous configurator job devices before this run</span></label>
             <label class="check"><input name="simulation" type="checkbox"><span>Simulation mode — no hardware changes</span></label>
           </div>
         </details>
@@ -95,16 +95,10 @@
       <div id="discoverySummary" class="summary-strip"></div>
       <div id="discoveredGrid" class="device-grid"></div>
       <section class="device-group discovery-windows-endpoints" aria-labelledby="windowsNdiEndpointsTitle">
-        <div class="device-group-title"><h2 id="windowsNdiEndpointsTitle">Windows NDI Endpoints</h2><span>1 ENDPOINT</span></div>
-        <div class="device-grid"><article id="onboardingLocalPcCard" class="device-card local-pc-card" aria-live="polite"></article></div>
+        <div class="device-group-title"><h2 id="windowsNdiEndpointsTitle">Windows NDI Endpoints</h2><span id="windowsEndpointDiscoveryCount">1 ENDPOINT</span></div>
+        <div class="device-grid"><article id="onboardingLocalPcCard" class="device-card local-pc-card" aria-live="polite"></article><div id="onboardingPcAgentCards" class="contents"></div></div>
       </section>
-      <div class="sticky-action"><div><strong id="selectedCount">0 onboard · 0 standalone</strong><small>Use each card to onboard the unit or leave it standalone with no changes.</small></div><button id="buildPlan" class="primary">Review address plan <b>→</b></button></div>
-    </section>
-
-    <section id="planView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">CONFIRMATION</p><h1>Review the run</h1><p>No device is changed until you confirm this plan.</p></div><button class="quiet" data-action="back-devices">← Device list</button></div>
-      <div class="panel plan-panel"><div id="planRows"></div><div id="planWarnings" class="warnings"></div></div>
-      <div class="sticky-action"><div><strong id="planCount"></strong><small id="planConfirmation">Kiloview EULA acceptance applies only to selected Kiloview units.</small></div><button id="runPlan" class="danger"><span>Onboard selected devices</span> <b>→</b></button></div>
+      <div class="sticky-action"><div><strong id="selectedCount">0 onboard · 0 standalone</strong><small>Build the address plan and continue directly to firmware or onboarding.</small></div><button id="buildPlan" class="primary"><span>Continue onboarding</span> <b>→</b></button></div>
     </section>
 
     <section id="progressView" class="view hidden">
@@ -147,7 +141,7 @@
           <p class="eyebrow">AUTOMATIC ADDRESS PLAN</p>
           <h2 id="multicastPool">Generating…</h2>
           <p id="multicastPoolMeta" class="settings-copy">Selecting an organization-local multicast range.</p>
-          <div class="settings-row"><span>Per-sender allocation</span><strong id="multicastAllocationMask">/28</strong></div>
+          <div class="settings-row"><span>Per-sender allocation</span><strong id="multicastAllocationMask">/24</strong></div>
           <button id="regenerateMulticast" class="primary multicast-regenerate" type="button"><span>Generate another range</span><b>↻</b></button>
         </article>
         <article class="panel multicast-panel">

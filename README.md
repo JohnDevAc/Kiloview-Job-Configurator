@@ -15,22 +15,22 @@ This repository contains the **job configurator only**. The separate [Kiloview E
 3. Confirm a collision-checked address plan and authorize the application to accept the Kiloview EULA on the selected devices. A clean-onboarding scan automatically retries credentials retained for previously managed Kiloviews, so units whose factory password was replaced by an earlier job remain discoverable without displaying the saved password. New addresses start above the highest occupied/onboarded address in the pool. When the plan starts, the configurator atomically replaces its previously managed local NDI send/receive group with the new Job Name, while preserving unrelated Access Manager groups. It also reapplies the selected interface and Discovery Server and verifies the saved configuration before any device is changed. If NDI Access Manager is open or the configuration cannot be verified, onboarding stops for user intervention. Display-identification cards are published as standard 1080p59.94 NDI sources for hardware-decoder and HDMI-output compatibility. Successfully onboarded Kiloviews continue to the display-naming page even when another selected device fails, and the live monitor provides a **Name displays** recovery action whenever an onboarded decoder exists.
 4. Before the run starts, select the latest N6 and N60 `.bin` firmware packages required by the plan. The application stores local copies with SHA-256 fingerprints. Each selected Kiloview is logged into at its discovered address, its license is accepted, and its login is changed to `admin/<Job Name>`. Devices already on the staged version are skipped; outdated units are updated directly through their model-specific device API and must return reporting the staged version before any network or KiloLink change is allowed. The new local device credentials are stored with the device record for monitoring and future configuration.
 
-Remote Windows NDI endpoints do not require a resident companion service. The Job Configurator sends a lightweight ICMP availability check during its existing 15-second monitor pass. A card remains green while replies are received, turns amber after one or two missed checks, and turns red only after three consecutive failures to avoid flicker during brief network interruptions. Successful checks refresh the endpoint's last-seen time. The separate PC Onboarding utility installs the narrowly scoped inbound ICMP rule needed for this check when the PC joins a job.
+Remote Windows NDI endpoints use a Kiloview PC Agent that advertises `remote-onboarding-v2` and `network-config-v1`. The Job Configurator sends the exact `KILOVIEW_PC_AGENT_DISCOVER_V1` datagram by UDP unicast to the bounded selected-adapter scan range on port `8093`, validates the response address, product, schema, endpoint GUID and capabilities, then confirms `GET /api/health` on TCP `8094`. Duplicate replies are reconciled by stable `endpointId`; a discovered agent remains transient until the existing registration API succeeds. The monitor reads `/api/v1/status` every 15 seconds with a three-second timeout. A card remains green while status is available, turns amber after one missed poll, and red after three. ICMP/agentless monitoring is no longer used.
 
-Windows endpoint card headers use `Windows · <OS version>`. The local version is read directly from Windows; the companion registration API accepts an optional `operatingSystemVersion` value for remote PCs. Existing remote registrations remain compatible and show `VERSION UNKNOWN` until a companion version that supplies the field registers them again.
+Windows endpoint card headers use `Windows · <OS version>`. Agent-backed cards show the live NDI Tools and agent versions, agent and machine uptime, available/total physical memory, available/total system-disk space, adapter, current IPv4/gateway/DNS state, and job membership information. Only `schemaVersion: 1` payloads and individually advertised capabilities are used; unknown fields are ignored for forward compatibility.
 
 Local and remote Windows endpoint cards use the same pill sequence where the data applies: availability, preferred-interface state, adapter, NDI runtime version, job group, multicast allocation, and TTL. The local NDI runtime version is read from the installed NDI Tools runtime; remote values continue to come from companion registration.
 5. For each serial number, the service creates or reuses a KiloLink device record, generates any required authorization code on KiloLink Server, and keeps the KiloLink Alias equal to the assigned hostname.
 6. The service onboards up to four devices concurrently. Each individual device still follows the required order: access and firmware verification, static addressing and reconnect, KiloLink authorization, then NDI identity/group configuration.
-7. Each Kiloview is checked for a live HDMI input in encoder mode. Units with an active input remain encoders; units without an input switch to decoder mode so they can show display-identification cards. This is an input-based role assignment and does not claim that an HDMI output display is connected.
+7. N6 and N60 units enter a verified encoder phase so their NDI identity can be configured and their HDMI input can be checked. Units with an active input remain encoders; units without an input switch to decoder mode so they can show display-identification cards. Explicit role choices still take precedence, but an explicitly selected decoder also passes through the required encoder setup phase before its final role is applied. Mode changes wait for authenticated codec recovery before onboarding continues. The NDI Discovery Server address, enabled state, and Job Name group are applied again and read back after the final role is active because N60 firmware keeps separate encoder and decoder codec settings. Before an N6 changes from decoder to encoder, active preview presets are stopped and cleared to prevent firmware 2.00's codec proxy from becoming unavailable; the final preset pass restores the correct job feeds. After roles are final, every decoder is populated with every advertising encoder in the Job Name group: N60 feed slots and N6 preview slots are replaced deterministically in hostname order and verified. A stopped TeleTool has no discoverable NDI source to store and is reported as omitted rather than failing the decoder; start its NDI stream before onboarding when it must be included. Stale feed slots from an earlier job are cleared, the N60 black preset is retained, and onboarding reports when the number of encoders exceeds the available hardware slots or an expected active sender is not discoverable.
 8. On the **Name the displays** page, the application confirms that the Job Name has been applied as the NDI group, publishes one temporary NDI identity card per decoder, and selects it on that unit. Every connected HDMI display shows its hostname, IP address, `JOB NAME / NDI GROUP`, and NDI channel. Decoder and encoder cards both allow the hostname and NDI channel name to be changed; encoder previews make the associated HDMI input easy to identify. Renaming refreshes the displayed decoder card and synchronizes the KiloLink Alias.
 9. Select **Setup completed** to stop the temporary NDI identity sources and send the black preset to every decoder.
 10. The application becomes a red/green card-based monitor, with Kiloview decoders, Kiloview encoders, and TeleTool encoders in separate groups. Kiloview and TeleTool encoder cards include a 320x240 capture of their current NDI output. When a TeleTool reports that its NDI stream is active but two consecutive frame captures fail, its preview changes to a warning image and the card highlights a likely NDI output, group, or Discovery Server error; the warning clears when a frame is received or the stream stops. TeleTool cards use the TeleTool Fleet Manager snapshot and adoption APIs to show reachability, stream state, TV channel, NDI name/group, RF signal, pipeline health, and Dev version. They also query the TeleTool audio status/device APIs and display a compact green or red Dante audio badge; its text and tooltip identify active, stopped, unavailable, or faulted output without relying on colour alone. Controls include Start NDI, Stop NDI, direct device-UI, and Remove from job. Removing a TeleTool releases this configurator's Fleet Manager adoption and updates the fleet totals immediately; it does not reset the unit's network/NDI configuration or stop an active stream.
 Kiloview monitor cards also provide **Remove from job** beside **Device UI**. Removal deletes the device's KiloLink registration, stops its local identity-card sender, and removes its Job Configurator and multicast records while retaining the unit's network, login, and NDI settings.
 
-11. Open **Multicast setup** from the monitor to generate a deterministic organization-local address pool. It reuses the adapter selected during onboarding rather than asking for another local interface. Every NDI sender receives a unique `/28` allocation, every decoder is registered with the complete sender list, and N60 decoders are explicitly switched to multicast receive mode. The existing local-PC card is updated with its multicast allocation and live state rather than creating another endpoint. Reverting to unicast removes those multicast details but retains the onboarded PC and preferred NDI interface. Device cards show a green multicast icon while the transport is in use, amber when configured but inactive, and grey when unconfigured.
+11. Open **Multicast setup** from the monitor to generate a deterministic organization-local address pool. It reuses the adapter selected during onboarding rather than asking for another local interface. Every NDI sender receives a unique `/24` allocation, numbered sequentially in the third octet (`239.x.1.0/24`, `239.x.2.0/24`, and so on), every decoder is registered with the complete sender list, and N60 decoders are explicitly switched to multicast receive mode. The existing local-PC card is updated with its multicast allocation and live state rather than creating another endpoint. Reverting to unicast removes those multicast details but retains the onboarded PC and preferred NDI interface. Device cards show a green multicast icon while the transport is in use, amber when configured but inactive, and grey when unconfigured.
 
-Enable **Clean onboarding** only when intentionally rebuilding a network. At the start of the confirmed run it permanently deletes all existing KiloLink device records and real device groups, clears prior configurator job devices and multicast/remote-endpoint state, preserves the selected devices and local PC, and then creates the new job from an empty inventory. The option is off by default.
+Enable **Clean onboarding** only when intentionally rebuilding a network. Its always-visible checkbox appears directly beneath Job Name rather than inside the advanced device-login options. At the start of the confirmed run it permanently deletes all existing KiloLink device records and real device groups, clears prior configurator job devices and multicast/remote-endpoint state, preserves the selected devices and local PC, and then creates the new job from an empty inventory. The option is off by default.
 
 TeleTool-only onboarding runs skip the Kiloview firmware and decoder-identification stages, even when an older Kiloview fleet remains in local state. Starting a real network scan with Simulation mode disabled removes all simulated devices and clears any simulated job/firmware state before discovery results are stored.
 
@@ -46,7 +46,7 @@ The advanced setup section contains factory credentials and a simulation mode. S
 
 ## Multicast setup
 
-Multicast is deliberately separate from onboarding. The generated pool stays within the organization-local `239.192.0.0/14` scope and grows with the fleet while preserving a non-overlapping `/28` block per encoder and for the optional local PC. Regenerating selects another aligned pool; applying validates every range again before making changes.
+Multicast is deliberately separate from onboarding. The generated pool stays within the organization-local `239.192.0.0/14` scope and assigns one readable, non-overlapping `/24` per encoder and for the optional local PC. Each job receives an aligned `/16`; sender ranges start at third-octet 1 and increase sequentially. Regenerating selects another aligned job pool; applying validates every range again before making changes.
 
 N6/N60 encoders are configured and read back through their documented multicast sender APIs. N60 decoders use their explicit multicast receive endpoint. The N6 API does not expose a separate receiver-transport switch, so N6 decoders receive the sender-advertised transport and are populated with the job group and every onboarded sender address. TeleTool senders require a Dev build that exposes the multicast prefix, mask, and TTL fields; an active TeleTool stream is restarted so its new transport settings take effect.
 
@@ -69,9 +69,12 @@ Open `http://localhost:8091`. Use **Simulation mode** for the first acceptance r
 
 ## Windows PC onboarding companion
 
-The Windows PC Onboarding Utility is maintained as a separate project. This
-repository retains only the compatible registration API, remote Windows-PC
-state, and device-monitor cards required by that companion.
+The Windows PC Onboarding Utility and per-user Kiloview PC Agent are maintained
+as a separate project. This repository implements the opposing discovery,
+monitoring, locally approved onboarding-open, registration, removal, and device
+card integration. Registration and deletion remain authoritative and
+idempotently reconcile by `endpointId`; discovery alone never adds a PC to a
+job.
 
 After it finds an active Job Configurator on TCP `8091`, the utility backs up
 the local NDI configuration, applies the selected preferred interface, Job Name
@@ -79,11 +82,29 @@ send/receive group, and NDI Discovery Server, verifies the result, and
 registers the PC in the main device monitor. Remote Windows endpoint cards can
 be removed from the job without changing that PC's NDI configuration. The Job
 Configurator's own local endpoint remains protected and has no removal action.
-Multicast planning reserves a unique `/28` sender range for every onboarded
-remote Windows endpoint. Because the Job Configurator cannot change NDI Access
-Manager on another PC, the endpoint card shows the prefix, netmask, and TTL for
-the user to apply manually; the reservation is not reported as remotely applied
-or verified.
+Compatible agent cards offer a minimized remote-onboarding editor only when the
+agent advertises both `remote-onboarding-v2` and `network-config-v1`; older
+agents show **PC Agent update required** and the legacy local UI is never opened.
+The operator can retain the current network configuration, switch to DHCP, or
+stage a validated static address, gateway, and DNS plan against the read-only
+agent adapter ID. The plan is bound to the stable endpoint ID and discovered
+source address for ten minutes. After the endpoint user approves the visible
+Yes/No prompt, the elevated utility fetches the declarative schema from
+`/api/pc-onboarding/configuration/{endpointId}`, applies Windows and NDI
+settings, and registers through the existing API. HTTP `202` means approval and
+launch only: the server and UI require a stable-ID registration update within
+90 seconds before reporting success. Denials are shown, leave the staged plan
+available until expiry, and are never retried automatically. Unknown `/api/*`
+paths return JSON `404` responses rather than the single-page application shell.
+The approval request finishes as soon as the agent's HTTP response headers arrive,
+so the configuration endpoint remains independently available to the elevated
+client. Operation status and diagnostics distinguish a configuration that was
+never fetched from one that was fetched but did not subsequently register.
+Multicast planning reserves a unique `/24` sender range for every onboarded
+remote Windows endpoint. Agents advertising `multicast-config-v1` receive an
+idempotent, membership-authorized NDI Access Manager apply or unicast-revert
+request, and their live status is monitored for drift. Older agents retain a
+clearly marked manual setup card showing the reserved prefix, netmask, and TTL.
 
 ## Create the Windows package
 
@@ -135,6 +156,7 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 ## Operational safeguards
 
 - The installed UI listens on TCP `8091` for LAN management. Windows Firewall limits inbound access to `LocalSubnet` on Domain/Private profiles and blocks Public profiles. The UI has no separate application login, so expose it only on a trusted management LAN.
+- PC Agent discovery and monitoring are read-only, bound to the selected adapter/subnet, and fixed to UDP `8093` and TCP `8094`. The Job Configurator does not scan outside its existing bounded IPv4 range, trust an advertised address different from the datagram source, or expose remote NDI editing, software installation, membership removal, agent control, UAC bypass, or command execution. Privileged onboarding remains local and confirmation-gated by the endpoint user.
 - Stored device credentials remain in local `state.json` for device management but are excluded from every HTTP API response.
 - KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
 - KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. A newly discovered factory server is authenticated with the official `admin/Kiloview001` login, changed to `admin/<Job Name>`, re-authenticated, and only then stored. When a stored login is available, onboarding displays its username and a masked password indicator and allows the blank password field to reuse it. An explicit View/Hide control can retrieve the password only through a no-cache, loopback-only endpoint opened from `localhost` on the setup PC; LAN clients cannot retrieve it. Passwords are never written to `state.json`.

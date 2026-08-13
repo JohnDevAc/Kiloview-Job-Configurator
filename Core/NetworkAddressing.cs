@@ -35,6 +35,30 @@ public static class NetworkAddressing
         return $"{FromUInt(ToUInt(address) & mask)}/{prefix}";
     }
 
+    public static string GetNetworkCidr(IPAddress address, int prefixLength)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetwork || prefixLength is < 0 or > 32)
+            throw new ArgumentException("A valid IPv4 address and prefix length are required.");
+        var mask = prefixLength == 0 ? 0u : uint.MaxValue << (32 - prefixLength);
+        return $"{FromUInt(ToUInt(address) & mask)}/{prefixLength}";
+    }
+
+    public static IReadOnlyList<string> GetSenderSubnets(
+        IEnumerable<string> senderAddresses,
+        LocalNetworkInterface localNetwork)
+    {
+        var localAddress = InputValidation.Ip(localNetwork.Address, "Network adapter address");
+        return senderAddresses
+            .Select(address => InputValidation.Ip(address, "NDI sender address"))
+            .Where(address => !address.Equals(localAddress))
+            .Select(address => Contains(address, localAddress, localNetwork.PrefixLength)
+                ? GetNetworkCidr(address, localNetwork.PrefixLength)
+                : GetNetworkCidr(address, 32))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public static int GetPrefixLength(uint mask)
     {
         var prefixLength = 0;

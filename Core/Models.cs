@@ -201,7 +201,17 @@ public sealed record RemoteWindowsPcEndpoint(
     DateTimeOffset? LastConnectivityCheckUtc = null,
     int ConsecutiveConnectivityFailures = 0,
     string ConnectivityStatus = "unknown",
-    string? OperatingSystemVersion = null);
+    string? OperatingSystemVersion = null,
+    int? AgentSchemaVersion = null,
+    string? AgentVersion = null,
+    IReadOnlyList<string>? AgentCapabilities = null,
+    long? AgentUptimeSeconds = null,
+    long? MachineUptimeSeconds = null,
+    long? PhysicalMemoryTotalBytes = null,
+    long? PhysicalMemoryAvailableBytes = null,
+    long? SystemDriveTotalBytes = null,
+    long? SystemDriveFreeBytes = null,
+    DateTimeOffset? AgentObservedUtc = null);
 public sealed record WindowsPcRegistration(
     string EndpointId,
     string Hostname,
@@ -213,6 +223,155 @@ public sealed record WindowsPcRegistration(
     string UtilityVersion,
     string EulaVersion,
     string? OperatingSystemVersion = null);
+public sealed record WindowsPcAgentHealth(string Status, string Product, string Version, int SchemaVersion);
+public sealed record WindowsPcAgentMembership(
+    string ServerAddress,
+    string ConfiguratorUrl,
+    string JobName,
+    DateTimeOffset RegisteredUtc);
+public sealed record WindowsPcAgentMemberships(
+    string EndpointId,
+    IReadOnlyList<WindowsPcAgentMembership> Memberships);
+public sealed record WindowsPcAgentNetworkConfiguration(
+    bool? DhcpEnabled,
+    IReadOnlyList<string>? DefaultGateways,
+    IReadOnlyList<string>? DnsServers);
+public sealed record WindowsPcAgentMulticastConfiguration(
+    string Mode,
+    string AdapterId,
+    bool SendEnabled,
+    bool ReceiveEnabled,
+    string? NetPrefix,
+    string? Netmask,
+    int? Ttl,
+    string? JobName,
+    bool InUse,
+    DateTimeOffset ObservedUtc);
+public sealed record WindowsPcAgentDiscovery(
+    int SchemaVersion,
+    string Product,
+    string AgentVersion,
+    string EndpointId,
+    string Hostname,
+    string Address,
+    int PrefixLength,
+    int ApiPort,
+    string Status,
+    int MembershipCount,
+    IReadOnlyList<string> Capabilities);
+public sealed record WindowsPcAgentStatus(
+    int SchemaVersion,
+    string Product,
+    string AgentVersion,
+    string Status,
+    string EndpointId,
+    string Hostname,
+    string OperatingSystemVersion,
+    string Address,
+    int PrefixLength,
+    string AdapterId,
+    string AdapterName,
+    bool NdiToolsInstalled,
+    string? NdiToolsVersion,
+    DateTimeOffset AgentStartedUtc,
+    long AgentUptimeSeconds,
+    long MachineUptimeSeconds,
+    long PhysicalMemoryTotalBytes,
+    long PhysicalMemoryAvailableBytes,
+    long SystemDriveTotalBytes,
+    long SystemDriveFreeBytes,
+    IReadOnlyList<WindowsPcAgentMembership> Memberships,
+    DateTimeOffset ObservedUtc,
+    WindowsPcAgentNetworkConfiguration? NetworkConfiguration = null,
+    WindowsPcAgentMulticastConfiguration? MulticastConfiguration = null);
+public sealed record WindowsPcAgentSnapshot(
+    string EndpointId,
+    string Hostname,
+    string Address,
+    int PrefixLength,
+    int ApiPort,
+    string AgentVersion,
+    IReadOnlyList<string> Capabilities,
+    string Status,
+    string OperatingSystemVersion,
+    string AdapterId,
+    string AdapterName,
+    bool NdiToolsInstalled,
+    string? NdiToolsVersion,
+    DateTimeOffset AgentStartedUtc,
+    long AgentUptimeSeconds,
+    long MachineUptimeSeconds,
+    long PhysicalMemoryTotalBytes,
+    long PhysicalMemoryAvailableBytes,
+    long SystemDriveTotalBytes,
+    long SystemDriveFreeBytes,
+    IReadOnlyList<WindowsPcAgentMembership> Memberships,
+    DateTimeOffset ObservedUtc,
+    DateTimeOffset LastDiscoveredUtc,
+    WindowsPcAgentNetworkConfiguration? NetworkConfiguration = null,
+    WindowsPcAgentMulticastConfiguration? MulticastConfiguration = null);
+public sealed record WindowsPcAgentOpenRequest(
+    string ServerName,
+    string ServerAddress,
+    string JobName,
+    string ConfiguratorUrl);
+public sealed record WindowsPcRemoteOnboardingRequest(
+    WindowsPcRemoteNetworkRequest Network);
+public sealed record WindowsPcRemoteNetworkRequest(
+    string Mode,
+    string? AdapterId = null,
+    string? Address = null,
+    int? PrefixLength = null,
+    string? DefaultGateway = null,
+    IReadOnlyList<string>? DnsServers = null);
+public sealed record WindowsPcRemoteNetworkConfiguration(
+    string AdapterId,
+    string Mode,
+    string? Address = null,
+    int? PrefixLength = null,
+    string? DefaultGateway = null,
+    IReadOnlyList<string>? DnsServers = null);
+public sealed record WindowsPcRemoteOnboardingConfiguration(
+    int SchemaVersion,
+    string Product,
+    string EndpointId,
+    string JobName,
+    string NdiDiscoveryServerIp,
+    WindowsPcRemoteNetworkConfiguration? Network);
+public sealed record WindowsPcRemoteOnboardingState(
+    string EndpointId,
+    string Status,
+    string Message,
+    DateTimeOffset RequestedUtc,
+    DateTimeOffset? RegistrationDeadlineUtc,
+    DateTimeOffset ExpiresUtc,
+    string? RegisteredAddress = null,
+    DateTimeOffset? ConfigurationFetchedUtc = null);
+public sealed record WindowsPcAgentMulticastRequest(
+    int SchemaVersion,
+    string EndpointId,
+    string JobName,
+    string AdapterId,
+    string Mode,
+    bool SendEnabled,
+    bool ReceiveEnabled,
+    string? NetPrefix = null,
+    string? Netmask = null,
+    int? Ttl = null);
+public sealed record WindowsPcAgentMulticastResult(
+    int SchemaVersion,
+    string Product,
+    string EndpointId,
+    string Mode,
+    string AdapterId,
+    bool SendEnabled,
+    bool ReceiveEnabled,
+    string? NetPrefix,
+    string? Netmask,
+    int? Ttl,
+    string? JobName,
+    bool InUse,
+    DateTimeOffset ObservedUtc);
 public sealed record MulticastDeviceConfiguration(
     string Group,
     string? NetPrefix,

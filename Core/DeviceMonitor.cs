@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Net.NetworkInformation;
 using KiloviewSetup.Devices;
 
 namespace KiloviewSetup.Core;
@@ -8,6 +7,7 @@ public sealed class DeviceMonitor(
     AppStateStore store,
     DeviceClientFactory factory,
     NdiAccessManagerService accessManager,
+    WindowsPcAgentService pcAgents,
     ILogger<DeviceMonitor> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -73,15 +73,26 @@ public sealed class DeviceMonitor(
                             LastError = null
                         };
                     }
+                    if (!device.IsOnboarded && device.Health == DeviceHealth.Error && !string.IsNullOrWhiteSpace(device.LastError))
+                    {
+                        updated = updated with
+                        {
+                            Health = DeviceHealth.Error,
+                            LastError = device.LastError
+                        };
+                    }
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException
                                                or InvalidOperationException or System.Text.Json.JsonException)
                 {
+                    var preserveOnboardingFailure = !device.IsOnboarded
+                        && device.Health == DeviceHealth.Error
+                        && !string.IsNullOrWhiteSpace(device.LastError);
                     updated = device with
                     {
-                        Health = DeviceHealth.Offline,
+                        Health = preserveOnboardingFailure ? DeviceHealth.Error : DeviceHealth.Offline,
                         MulticastInUse = false,
-                        LastError = ex.Message
+                        LastError = preserveOnboardingFailure ? device.LastError : ex.Message
                     };
                 }
                 results[device.Id] = new(device, updated);
@@ -195,6 +206,44 @@ public sealed class DeviceMonitor(
                     result.Original.EndpointId,
                     StringComparison.OrdinalIgnoreCase));
             if (index < 0 || remoteWindowsPcs[index] != result.Original) continue;
+            if (multicast is not null && assignments is not null
+                && result.Updated.AgentCapabilities?.Contains("multicast-config-v1", StringComparer.Ordinal) == true)
+            {
+                var assignmentIndex = Array.FindIndex(assignments, assignment =>
+                    string.Equals(assignment.EndpointId, result.Original.EndpointId, StringComparison.OrdinalIgnoreCase));
+                if (assignmentIndex >= 0)
+                {
+                    var assignment = assignments[assignmentIndex];
+                    var reported = result.LiveStatus?.MulticastConfiguration;
+                    var matches = reported is not null
+                        && string.Equals(reported.Mode, "multicast", StringComparison.Ordinal)
+                        && reported.SendEnabled
+                        && reported.ReceiveEnabled
+                        && string.Equals(reported.AdapterId, result.LiveStatus?.AdapterId, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(reported.NetPrefix, assignment.NetPrefix, StringComparison.Ordinal)
+                        && string.Equals(reported.Netmask, assignment.Netmask, StringComparison.Ordinal)
+                        && reported.Ttl == assignment.Ttl
+                        && string.Equals(reported.JobName, multicast.JobName, StringComparison.Ordinal);
+                    var error = matches
+                        ? null
+                        : result.Updated.ConnectivityStatus == "offline"
+                            ? "PC Agent multicast status is unavailable because the endpoint is offline."
+                            : reported is null
+                                ? "PC Agent did not report NDI Access Manager multicast status. Reapply multicast setup."
+                                : $"Remote NDI Access Manager settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}.";
+                    var refreshed = assignment with
+                    {
+                        Status = matches ? "applied" : "drifted",
+                        InUse = matches && reported!.InUse,
+                        Error = error
+                    };
+                    if (refreshed != assignment)
+                    {
+                        assignments[assignmentIndex] = refreshed;
+                        assignmentsChanged = true;
+                    }
+                }
+            }
             if (remoteWindowsPcs[index] == result.Updated) continue;
             remoteWindowsPcs[index] = result.Updated;
             remoteWindowsChanged = true;
@@ -240,13 +289,18 @@ public sealed class DeviceMonitor(
         };
     }
 
-    private static async Task<IReadOnlyList<RemoteWindowsPollResult>> PollRemoteWindowsPcsAsync(
+    private async Task<IReadOnlyList<RemoteWindowsPollResult>> PollRemoteWindowsPcsAsync(
         AppState state,
         CancellationToken ct)
     {
         var endpoints = state.RemoteWindowsPcs ?? [];
         if (endpoints.Count == 0) return [];
 
+        var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress);
+        var discovered = pcAgents.Snapshot()
+            .ToDictionary(agent => agent.EndpointId, StringComparer.OrdinalIgnoreCase);
         var results = new ConcurrentBag<RemoteWindowsPollResult>();
         await Parallel.ForEachAsync(
             endpoints,
@@ -254,27 +308,37 @@ public sealed class DeviceMonitor(
             async (endpoint, token) =>
             {
                 var checkedUtc = DateTimeOffset.UtcNow;
-                var reachable = false;
+                WindowsPcAgentStatus? live = null;
                 try
                 {
-                    using var ping = new Ping();
-                    var reply = await ping.SendPingAsync(
-                        endpoint.Address,
-                        TimeSpan.FromMilliseconds(900),
-                        cancellationToken: token);
-                    reachable = reply.Status == IPStatus.Success;
+                    if (selectedNetwork is not null &&
+                        discovered.TryGetValue(endpoint.EndpointId, out var agent) &&
+                        agent.Capabilities.Contains("status-v1", StringComparer.Ordinal))
+                    {
+                        live = await pcAgents.TryReadStatusAsync(
+                            agent.Address,
+                            agent.ApiPort,
+                            endpoint.EndpointId,
+                            selectedNetwork,
+                            token);
+                    }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
                     throw;
                 }
-                catch (Exception ex) when (ex is PingException
-                    or InvalidOperationException
-                    or System.Net.Sockets.SocketException)
+                catch (OperationCanceledException)
                 {
-                    reachable = false;
+                    logger.LogDebug("PC Agent status poll timed out for {EndpointId}", endpoint.EndpointId);
+                }
+                catch (Exception ex) when (ex is HttpRequestException
+                    or InvalidOperationException
+                    or System.Text.Json.JsonException)
+                {
+                    logger.LogDebug(ex, "PC Agent status poll failed for {EndpointId}", endpoint.EndpointId);
                 }
 
+                var reachable = live is not null;
                 var failures = reachable
                     ? 0
                     : Math.Min(endpoint.ConsecutiveConnectivityFailures + 1, 3);
@@ -285,12 +349,28 @@ public sealed class DeviceMonitor(
                         : "stale";
                 var updated = endpoint with
                 {
+                    Hostname = live?.Hostname ?? endpoint.Hostname,
+                    Address = live?.Address ?? endpoint.Address,
+                    AdapterName = live?.AdapterName ?? endpoint.AdapterName,
+                    PrefixLength = live?.PrefixLength ?? endpoint.PrefixLength,
+                    NdiToolsVersion = live?.NdiToolsVersion ?? endpoint.NdiToolsVersion,
+                    OperatingSystemVersion = live?.OperatingSystemVersion ?? endpoint.OperatingSystemVersion,
                     LastConnectivityCheckUtc = checkedUtc,
                     LastSeenUtc = reachable ? checkedUtc : endpoint.LastSeenUtc,
                     ConsecutiveConnectivityFailures = failures,
-                    ConnectivityStatus = connectivityStatus
+                    ConnectivityStatus = connectivityStatus,
+                    AgentSchemaVersion = live?.SchemaVersion ?? endpoint.AgentSchemaVersion,
+                    AgentVersion = live?.AgentVersion ?? endpoint.AgentVersion,
+                    AgentCapabilities = discovered.GetValueOrDefault(endpoint.EndpointId)?.Capabilities ?? endpoint.AgentCapabilities,
+                    AgentUptimeSeconds = live?.AgentUptimeSeconds ?? endpoint.AgentUptimeSeconds,
+                    MachineUptimeSeconds = live?.MachineUptimeSeconds ?? endpoint.MachineUptimeSeconds,
+                    PhysicalMemoryTotalBytes = live?.PhysicalMemoryTotalBytes ?? endpoint.PhysicalMemoryTotalBytes,
+                    PhysicalMemoryAvailableBytes = live?.PhysicalMemoryAvailableBytes ?? endpoint.PhysicalMemoryAvailableBytes,
+                    SystemDriveTotalBytes = live?.SystemDriveTotalBytes ?? endpoint.SystemDriveTotalBytes,
+                    SystemDriveFreeBytes = live?.SystemDriveFreeBytes ?? endpoint.SystemDriveFreeBytes,
+                    AgentObservedUtc = live?.ObservedUtc ?? endpoint.AgentObservedUtc
                 };
-                results.Add(new(endpoint, updated));
+                results.Add(new(endpoint, updated, live));
             });
         return results.ToArray();
     }
@@ -337,6 +417,14 @@ public sealed class DeviceMonitor(
         var multicast = state.Multicast;
         var local = multicast?.Assignments.FirstOrDefault(assignment => assignment.EndpointId == "local-pc");
         if (multicast is null || local is null) return null;
+        var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress);
+        var expectedReceiveSubnets = selectedNetwork is null
+            ? null
+            : NetworkAddressing.GetSenderSubnets(
+                multicast.Assignments.Where(assignment => assignment.Sender).Select(assignment => assignment.Address),
+                selectedNetwork);
 
         var status = await accessManager.ReadStatusAsync(
             local.NetPrefix,
@@ -345,7 +433,8 @@ public sealed class DeviceMonitor(
             ct,
             multicast.JobName,
             state.LastJob?.NdiDiscoveryServerIp,
-            state.LocalPc?.Address ?? local.Address);
+            state.LocalPc?.Address ?? local.Address,
+            expectedReceiveSubnets);
         var error = status.Configured
             ? null
             : status.Error ?? (status.AccessManagerRunning
@@ -372,7 +461,8 @@ public sealed class DeviceMonitor(
     private sealed record DevicePollResult(ManagedDevice Original, ManagedDevice Updated);
     private sealed record RemoteWindowsPollResult(
         RemoteWindowsPcEndpoint Original,
-        RemoteWindowsPcEndpoint Updated);
+        RemoteWindowsPcEndpoint Updated,
+        WindowsPcAgentStatus? LiveStatus);
     private sealed record AccessManagerPollResult(
         MulticastAssignment Original,
         MulticastAssignment Updated,
