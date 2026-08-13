@@ -201,18 +201,44 @@ internal sealed class N6DeviceApi(
     {
         using var client = await AuthorizedAsync(ct);
         await ConfigureKiloLinkAsync(client, settings, ct);
-        using var discovery = await PostAsync(client, "/api/device/set_discovery_server.json",
+        using var discovery = await PostWhenCodecReadyAsync(client, "/api/device/set_discovery_server.json",
             new { enable = true, servers = new[] { new { ip = settings.NdiDiscoveryServerIp, group_name = settings.JobName } } },
             "set N6 NDI discovery server",
             ct);
         foreach (var type in new[] { "ndihx", "ndifull" })
         {
-            using var stream = await PostAsync(client, "/api/device/modify.json",
+            using var stream = await PostWhenCodecReadyAsync(client, "/api/device/modify.json",
                 new { types = type, device_group = settings.JobName, channel_name = channelName, machine_name = hostname },
                 $"set N6 {type} identity",
                 ct);
         }
         using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
+    }
+
+    private async Task<JsonDocument> PostWhenCodecReadyAsync(
+        HttpClient client,
+        string path,
+        object body,
+        string description,
+        CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(45);
+        DeviceApiException? last = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            try
+            {
+                return await PostAsync(client, path, body, description, ct);
+            }
+            catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
+            {
+                last = ex;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(3), ct);
+        }
+        throw new DeviceApiException(
+            $"The N6 codec proxy remained unavailable (0201001) while attempting to {description}. Power-cycle the N6 and retry; if the error persists, reflash a known-good firmware or contact Kiloview support.",
+            last);
     }
 
     private async Task ConfigureKiloLinkAsync(HttpClient client, OnboardingRequest settings, CancellationToken ct)
@@ -224,15 +250,26 @@ internal sealed class N6DeviceApi(
             try { using var _ = await PostAsync(client, path, body, "configure N6 KiloLink", ct); return; }
             catch (DeviceApiException ex) { last = ex; }
         }
-        try
+        for (var attempt = 1; attempt <= 4; attempt++)
         {
-            using var _ = await PostAsync(client, "/kilolink/kilolink/Set.json",
-                new { cfg = body },
-                "configure N6 KiloLink",
-                ct);
-            return;
+            try
+            {
+                using var _ = await PostAsync(client, "/kilolink/kilolink/Set.json",
+                    new { cfg = body },
+                    "configure N6 KiloLink",
+                    ct);
+                return;
+            }
+            catch (DeviceApiException ex) { last = ex; }
+
+            try
+            {
+                if (await KiloLinkConfigurationMatchesAsync(client, settings, ct)) return;
+            }
+            catch (DeviceApiException ex) { last = ex; }
+
+            if (attempt < 4) await Task.Delay(TimeSpan.FromSeconds(attempt), ct);
         }
-        catch (DeviceApiException ex) { last = ex; }
         try
         {
             var legacy = $"/api/platform/set.json?MASTER_ADDR={Uri.EscapeDataString(settings.KiloLinkServerIp)}&MASTER_PORT={settings.KiloLinkPort}&AUTH_CODE={Uri.EscapeDataString(settings.KiloLinkOnboardingCode)}";
@@ -240,7 +277,36 @@ internal sealed class N6DeviceApi(
             return;
         }
         catch (DeviceApiException ex) { last = ex; }
+        try
+        {
+            if (await KiloLinkConfigurationMatchesAsync(client, settings, ct)) return;
+        }
+        catch (DeviceApiException ex) { last = ex; }
         throw new DeviceApiException("This N6 firmware did not expose the KiloLink configuration endpoint. Update its firmware or configure KiloLink once in the device UI.", last);
+    }
+
+    private async Task<bool> KiloLinkConfigurationMatchesAsync(HttpClient client, OnboardingRequest settings, CancellationToken ct)
+    {
+        using var current = await GetAsync(client, "/kilolink/kilolink/Get.json", "verify N6 KiloLink", ct);
+        if (!current.RootElement.TryGetProperty("cfg", out var config) || config.ValueKind != JsonValueKind.Object)
+            return false;
+        var enabled = config.TryGetProperty("enable", out var enabledValue)
+            && enabledValue.ValueKind is JsonValueKind.True or JsonValueKind.String
+            && (enabledValue.ValueKind == JsonValueKind.True
+                || string.Equals(enabledValue.GetString(), "true", StringComparison.OrdinalIgnoreCase));
+        var interfaces = config.TryGetProperty("ifname", out var names) && names.ValueKind == JsonValueKind.Array
+            ? names.EnumerateArray().Select(value => value.ToString()).ToArray()
+            : [];
+        var port = config.TryGetProperty("port", out var portValue)
+            && (portValue.TryGetInt32(out var numericPort)
+                || portValue.ValueKind == JsonValueKind.String && int.TryParse(portValue.GetString(), out numericPort))
+                ? numericPort
+                : 0;
+        return enabled
+            && string.Equals(String(config, "ip"), settings.KiloLinkServerIp, StringComparison.Ordinal)
+            && port == settings.KiloLinkPort
+            && string.Equals(String(config, "key"), settings.KiloLinkOnboardingCode, StringComparison.Ordinal)
+            && interfaces.Contains("eth0", StringComparer.OrdinalIgnoreCase);
     }
 
     public async Task SetRoleAsync(DeviceRole role, CancellationToken ct)

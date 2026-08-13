@@ -905,14 +905,32 @@ public sealed class OnboardingService(
     {
         lock (_progressGate)
         {
-            var steps = _progress.Steps.Append(new OnboardingStep(device.Id, device.IpAddress, name, "error", message)).ToArray();
+            var steps = _progress.Steps.ToList();
+            var index = steps.FindLastIndex(step => step.DeviceId == device.Id && step.Step == name && step.Status == "running");
+            if (index < 0) index = steps.FindLastIndex(step => step.DeviceId == device.Id && step.Status == "running");
+            if (index >= 0)
+                steps[index] = steps[index] with { Status = "error", Message = message, IpAddress = device.IpAddress };
+            else
+                steps.Add(new(device.Id, device.IpAddress, name, "error", message));
             _progress = _progress with { Steps = steps, Completed = Math.Min(_progress.Total, _progress.Completed + 1) };
         }
     }
 
     private void Finish(string status)
     {
-        lock (_progressGate) _progress = _progress with { Status = status, FinishedUtc = DateTimeOffset.UtcNow, Completed = _progress.Total };
+        lock (_progressGate)
+        {
+            var steps = _progress.Steps.Select(step => step.Status == "running"
+                ? step with { Status = "error", Message = step.Message ?? "The run finished before this step completed." }
+                : step).ToArray();
+            _progress = _progress with
+            {
+                Status = status,
+                FinishedUtc = DateTimeOffset.UtcNow,
+                Completed = _progress.Total,
+                Steps = steps
+            };
+        }
     }
 
     private static string SanitizeName(string name)

@@ -8,6 +8,8 @@ namespace KiloviewSetup.Core;
 /// <summary>Validated against the KiloLink Server Pro 1.08.0034 web API.</summary>
 public sealed class KiloLinkServerClient(IHttpClientFactory clients)
 {
+    private readonly SemaphoreSlim _deviceMutationGate = new(1, 1);
+
     public async Task<IReadOnlyList<KiloLinkServerDiscovery>> DiscoverAsync(
         int webPort,
         LocalNetworkInterface network,
@@ -104,41 +106,49 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
     {
         if (string.IsNullOrWhiteSpace(serialNumber)) throw new ArgumentException("A device serial number is required for KiloLink authorization.");
         if (string.IsNullOrWhiteSpace(hostname)) throw new ArgumentException("A device hostname is required for the KiloLink alias.");
-        using var session = await LoginAsync(serverIp, webPort, credential, ct);
-        using var devicesResponse = await PostAsync(session.Client, "api/tools/getDeviceList.json", new { dn = "", @virtual = false }, ct);
-        var existing = Flatten(Data(devicesResponse), "list").FirstOrDefault(row => ContainsNormalizedValue(row, serialNumber));
-        if (existing.ValueKind == JsonValueKind.Object)
+        await _deviceMutationGate.WaitAsync(ct);
+        try
         {
-            var code = GetStringDeep(existing, "description");
-            var currentName = GetStringDeep(existing, "cn") ?? "";
-            if (string.IsNullOrWhiteSpace(code))
+            using var session = await LoginAsync(serverIp, webPort, credential, ct);
+            using var devicesResponse = await PostAsync(session.Client, "api/tools/getDeviceList.json", new { dn = "", @virtual = false }, ct);
+            var existing = Flatten(Data(devicesResponse), "list").FirstOrDefault(row => ContainsNormalizedValue(row, serialNumber));
+            if (existing.ValueKind == JsonValueKind.Object)
             {
-                code = await CreateAuthorizationCodeAsync(session.Client, ct);
-                await ModifyDeviceAsync(session.Client, existing, hostname, serialNumber, code, ct);
+                var code = GetStringDeep(existing, "description");
+                var currentName = GetStringDeep(existing, "cn") ?? "";
+                if (string.IsNullOrWhiteSpace(code))
+                {
+                    code = await CreateAuthorizationCodeAsync(session.Client, ct);
+                    await ModifyDeviceAsync(session.Client, existing, hostname, serialNumber, code, ct);
+                }
+                else if (!string.Equals(currentName, hostname, StringComparison.Ordinal))
+                {
+                    await RenameDeviceAsync(session.Client, existing, hostname, ct);
+                }
+                return new(serialNumber, hostname, code, false);
             }
-            else if (!string.Equals(currentName, hostname, StringComparison.Ordinal))
-            {
-                await RenameDeviceAsync(session.Client, existing, hostname, ct);
-            }
-            return new(serialNumber, hostname, code, false);
-        }
 
-        using var treeResponse = await PostWithoutBodyAsync(session.Client, "api/tools/searchFix.json", ct);
-        var parentDn = await FindOrCreateDeviceGroupAsync(session.Client, Data(treeResponse), hostname, ct);
-        var generated = await CreateAuthorizationCodeAsync(session.Client, ct);
-        using var added = await PostAsync(session.Client, "api/tools/add.json", new
-        {
-            dn = Uri.EscapeDataString(parentDn),
-            type = "device",
-            cfg = new
+            using var treeResponse = await PostWithoutBodyAsync(session.Client, "api/tools/searchFix.json", ct);
+            var parentDn = await FindOrCreateDeviceGroupAsync(session.Client, Data(treeResponse), hostname, ct);
+            var generated = await CreateAuthorizationCodeAsync(session.Client, ct);
+            using var added = await PostAsync(session.Client, "api/tools/add.json", new
             {
-                cn = Uri.EscapeDataString(hostname),
-                serialNumber = Uri.EscapeDataString(serialNumber),
-                description = Uri.EscapeDataString(generated),
-                o = ""
-            }
-        }, ct);
-        return new(serialNumber, hostname, generated, true);
+                dn = Uri.EscapeDataString(parentDn),
+                type = "device",
+                cfg = new
+                {
+                    cn = Uri.EscapeDataString(hostname),
+                    serialNumber = Uri.EscapeDataString(serialNumber),
+                    description = Uri.EscapeDataString(generated),
+                    o = ""
+                }
+            }, ct);
+            return new(serialNumber, hostname, generated, true);
+        }
+        finally
+        {
+            _deviceMutationGate.Release();
+        }
     }
 
     public async Task<KiloLinkClearResult> ClearDeviceInventoryAsync(

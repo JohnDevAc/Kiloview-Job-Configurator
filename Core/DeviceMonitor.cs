@@ -73,15 +73,26 @@ public sealed class DeviceMonitor(
                             LastError = null
                         };
                     }
+                    if (!device.IsOnboarded && device.Health == DeviceHealth.Error && !string.IsNullOrWhiteSpace(device.LastError))
+                    {
+                        updated = updated with
+                        {
+                            Health = DeviceHealth.Error,
+                            LastError = device.LastError
+                        };
+                    }
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or DeviceApiException
                                                or InvalidOperationException or System.Text.Json.JsonException)
                 {
+                    var preserveOnboardingFailure = !device.IsOnboarded
+                        && device.Health == DeviceHealth.Error
+                        && !string.IsNullOrWhiteSpace(device.LastError);
                     updated = device with
                     {
-                        Health = DeviceHealth.Offline,
+                        Health = preserveOnboardingFailure ? DeviceHealth.Error : DeviceHealth.Offline,
                         MulticastInUse = false,
-                        LastError = ex.Message
+                        LastError = preserveOnboardingFailure ? device.LastError : ex.Message
                     };
                 }
                 results[device.Id] = new(device, updated);
