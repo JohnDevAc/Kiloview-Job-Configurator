@@ -14,8 +14,9 @@ public sealed class MulticastService(
     EncoderThumbnailService thumbnails,
     ILogger<MulticastService> logger)
 {
-    private const int AllocationPrefixLength = 28;
-    private const string AllocationNetmask = "255.255.255.240";
+    private const int AllocationPrefixLength = 24;
+    private const string AllocationNetmask = "255.255.255.0";
+    private const uint AllocationSize = 256;
     private static readonly uint ScopeStart = NetworkAddressing.ToUInt(IPAddress.Parse("239.192.0.0"));
     private static readonly uint ScopeEnd = NetworkAddressing.ToUInt(IPAddress.Parse("239.195.255.255"));
 
@@ -51,7 +52,7 @@ public sealed class MulticastService(
         foreach (var device in devices)
         {
             var sender = device.Role == DeviceRole.Encoder;
-            var prefix = sender ? NetworkAddressing.FromUInt(poolStart + slot++ * 16).ToString() : null;
+            var prefix = sender ? SenderPrefix(poolStart, slot++) : null;
             assignments.Add(new(
                 device.Id,
                 device.Hostname,
@@ -75,7 +76,7 @@ public sealed class MulticastService(
                 DeviceRole.Encoder,
                 true,
                 true,
-                NetworkAddressing.FromUInt(poolStart + slot++ * 16).ToString(),
+                SenderPrefix(poolStart, slot++),
                 AllocationNetmask,
                 request.Ttl));
         }
@@ -90,7 +91,7 @@ public sealed class MulticastService(
                 DeviceRole.Encoder,
                 true,
                 true,
-                NetworkAddressing.FromUInt(poolStart + slot * 16).ToString(),
+                SenderPrefix(poolStart, slot),
                 AllocationNetmask,
                 request.Ttl));
         }
@@ -199,6 +200,9 @@ public sealed class MulticastService(
             .Where(address => IPAddress.TryParse(address, out _))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        var localReceiveSubnets = selectedNetwork is null
+            ? []
+            : NetworkAddressing.GetSenderSubnets(senderAddresses, selectedNetwork);
         var results = new ConcurrentDictionary<string, MulticastAssignment>(StringComparer.Ordinal);
 
         async Task ApplyAssignmentAsync(MulticastAssignment assignment, CancellationToken token)
@@ -215,6 +219,7 @@ public sealed class MulticastService(
                         plan.JobName,
                         job.NdiDiscoveryServerIp,
                         assignment.Address,
+                        localReceiveSubnets,
                         token);
                     inUse = local.InUse;
                 }
@@ -549,16 +554,32 @@ public sealed class MulticastService(
 
     private static int PoolPrefixLength(int slots)
     {
-        var requiredAddresses = Math.Max(256, Math.Max(1, slots) * 16);
-        var size = 1;
-        while (size < requiredAddresses) size <<= 1;
-        var prefix = 32 - (int)Math.Log2(size);
-        if (prefix < 20) throw new InvalidOperationException("The onboarded fleet is too large for the supported multicast allocation pool.");
-        return prefix;
+        // Keep one readable /16 per job and reserve third-octet zero. Sender
+        // allocations then progress as 239.x.1.0/24, 239.x.2.0/24, and so on.
+        if (slots > 255)
+            throw new InvalidOperationException("A multicast job supports up to 255 sender endpoints.");
+        return 16;
     }
+
+    private static string SenderPrefix(uint poolStart, uint zeroBasedSlot) =>
+        NetworkAddressing.FromUInt(poolStart + (zeroBasedSlot + 1) * AllocationSize).ToString();
 
     private static uint SelectPool(string jobName, uint poolSize, bool regenerate, MulticastConfiguration? previous)
     {
+        // A range-layout upgrade must not move an existing job to a different
+        // organization-local /16 merely because its old pool was smaller.
+        // Preserve the first two octets and replace only the sender blocks with
+        // the new readable .1, .2, .3 ... /24 sequence.
+        if (!regenerate
+            && previous is not null
+            && string.Equals(previous.JobName, jobName, StringComparison.Ordinal)
+            && IPAddress.TryParse(previous.PoolPrefix, out var previousPrefix))
+        {
+            var alignedPrevious = NetworkAddressing.ToUInt(previousPrefix) & PrefixMask(16);
+            if (alignedPrevious >= ScopeStart && alignedPrevious + poolSize - 1 <= ScopeEnd)
+                return alignedPrevious;
+        }
+
         var scopeSize = ScopeEnd - ScopeStart + 1;
         var blockCount = scopeSize / poolSize;
         uint selected;
@@ -601,7 +622,7 @@ public sealed class MulticastService(
                 $"Multicast subnet mask for {assignment.Hostname}"));
             if (mask != PrefixMask(AllocationPrefixLength) || (prefix & mask) != prefix)
                 throw new ArgumentException($"Sender {assignment.Hostname} must use an aligned /{AllocationPrefixLength} multicast allocation.");
-            var end = prefix + 15;
+            var end = prefix + AllocationSize - 1;
             if (prefix < poolStart || end > poolEnd)
                 throw new ArgumentException($"Sender {assignment.Hostname}'s multicast allocation is outside the generated pool.");
             if (ranges.Any(existing => RangesOverlap(prefix, end, existing.Start, existing.End)))

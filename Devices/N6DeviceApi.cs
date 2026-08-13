@@ -672,6 +672,12 @@ internal sealed class N6DeviceApi(
                 var match = rows
                     .Where(row => N6DecoderSourceScore(row.Stream, encoder) > 0)
                     .OrderByDescending(row => N6DecoderSourceScore(row.Stream, encoder))
+                    // An N60 HB-only restart can leave its previous listener in
+                    // Discovery Server results until that advertisement expires.
+                    // The replacement listener is allocated after the old one;
+                    // prefer it when identity and address scores are otherwise
+                    // identical so presets do not retain the retired HX/HB URL.
+                    .ThenByDescending(row => DiscoveredSourcePort(row.Stream))
                     .FirstOrDefault();
                 if (match.Stream.ValueKind == JsonValueKind.Object)
                     sources[encoder.Id] = (match.GroupId, match.Stream.Clone());
@@ -789,6 +795,14 @@ internal sealed class N6DeviceApi(
         return (channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
     }
 
+    private static int DiscoveredSourcePort(JsonElement source)
+    {
+        var port = Integer(source, "listener_port");
+        if (port > 0) return port;
+        var url = String(source, "url");
+        return Uri.TryCreate($"tcp://{url}", UriKind.Absolute, out var parsed) ? parsed.Port : 0;
+    }
+
     private static int N6PreviewScore(JsonElement preset, ManagedDevice encoder)
     {
         var name = String(preset, "stream_name");
@@ -831,20 +845,38 @@ internal sealed class N6DeviceApi(
             {
                 try
                 {
-                    using var configured = await PostAsync(client, "/api/encoder/ndi/set_config.json", new
+                    var retained = false;
+                    DeviceApiException? configurationError = null;
+                    for (var attempt = 0; attempt < 6 && !retained; attempt++)
                     {
-                        types = type,
-                        ndi_connection = "multicast",
-                        netprefix = settings.NetPrefix,
-                        netmask = settings.Netmask,
-                        ttl = settings.Ttl
-                    }, $"configure N6 {type} multicast sender", ct);
-                    using var verified = await PostAsync(client, "/api/encoder/ndi/get_config.json", new { types = type }, $"verify N6 {type} multicast sender", ct);
-                    var data = verified.RootElement.GetProperty("data");
-                    if (!string.Equals(String(data, "ndi_connection"), "multicast", StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
-                        || !string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal))
-                        throw new DeviceApiException($"N6 {type} did not retain its multicast allocation.");
+                        if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+                        try
+                        {
+                            // Changing these parameters restarts the N6 sender.
+                            // Always write the complete transport tuple so a
+                            // previous Auto/unicast selection cannot survive.
+                            using var configured = await PostAsync(client, "/api/encoder/ndi/set_config.json", new
+                            {
+                                types = type,
+                                ndi_connection = "multicast",
+                                netprefix = settings.NetPrefix,
+                                netmask = settings.Netmask,
+                                ttl = settings.Ttl
+                            }, $"configure N6 {type} multicast sender", ct);
+                            using var verified = await PostAsync(client, "/api/encoder/ndi/get_config.json", new { types = type }, $"verify N6 {type} multicast sender", ct);
+                            var data = verified.RootElement.GetProperty("data");
+                            retained = string.Equals(String(data, "ndi_connection"), "multicast", StringComparison.OrdinalIgnoreCase)
+                                && string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
+                                && string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal)
+                                && (!data.TryGetProperty("ttl", out _) || Integer(data, "ttl") == settings.Ttl);
+                        }
+                        catch (DeviceApiException ex) when (attempt < 5)
+                        {
+                            configurationError = ex;
+                        }
+                    }
+                    if (!retained)
+                        throw configurationError ?? new DeviceApiException($"N6 {type} did not retain its multicast allocation.");
                 }
                 catch (DeviceApiException) when (type == "ndifull")
                 {

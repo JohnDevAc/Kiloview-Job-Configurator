@@ -417,6 +417,14 @@ public sealed class DeviceMonitor(
         var multicast = state.Multicast;
         var local = multicast?.Assignments.FirstOrDefault(assignment => assignment.EndpointId == "local-pc");
         if (multicast is null || local is null) return null;
+        var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
+            state.SelectedNetworkAdapterId,
+            state.SelectedNetworkAddress);
+        var expectedReceiveSubnets = selectedNetwork is null
+            ? null
+            : NetworkAddressing.GetSenderSubnets(
+                multicast.Assignments.Where(assignment => assignment.Sender).Select(assignment => assignment.Address),
+                selectedNetwork);
 
         var status = await accessManager.ReadStatusAsync(
             local.NetPrefix,
@@ -425,7 +433,8 @@ public sealed class DeviceMonitor(
             ct,
             multicast.JobName,
             state.LastJob?.NdiDiscoveryServerIp,
-            state.LocalPc?.Address ?? local.Address);
+            state.LocalPc?.Address ?? local.Address,
+            expectedReceiveSubnets);
         var error = status.Configured
             ? null
             : status.Error ?? (status.AccessManagerRunning

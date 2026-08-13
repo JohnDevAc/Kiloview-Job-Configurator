@@ -146,6 +146,7 @@ internal sealed class N60DeviceApi(
             ? list.EnumerateArray().Select(x => x.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray()
             : new[] { "eth0" };
         using var kilo = await PostAsync(client, "/api/kilolink/set", new { ip = settings.KiloLinkServerIp, port = settings.KiloLinkPort, ifname = interfaces, key = settings.KiloLinkOnboardingCode, crypto = false, enable = true }, "configure N60 KiloLink", ct);
+        await EnsureHbOnlyEncodingAsync(client, ct);
         await SetIdentityAndDiscoveryAsync(client, hostname, channelName, settings.JobName, settings.NdiDiscoveryServerIp, ct);
     }
 
@@ -164,44 +165,92 @@ internal sealed class N60DeviceApi(
                     ct),
                 ct);
         }
-        foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
+        const string stream = "main_full";
+        const string type = "ndi-full";
+        // Onboarding deliberately selects the dedicated NDI-HB mode. Do not
+        // write identity settings to the inactive HX stream: doing so can wake
+        // the shared HX/HB mode and advertise two senders with one identity.
+        await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
+        object body = new { group, group_server = group, channel_name = channel };
+        using (var configured = await RetryRateLimitedAsync(
+                   () => PostAsync(client, $"/api/codec/streams/{stream}/{type}/set", body, "configure N60 ndi-full", ct),
+                   ct))
         {
+        }
+        await VerifyNdiGroupAsync(client, stream, type, group, ct);
+        await RestartHbSenderAsync(client, ct);
+    }
+
+    private async Task EnsureHbOnlyEncodingAsync(HttpClient client, CancellationToken ct)
+    {
+        using var current = await RetryRateLimitedAsync(
+            () => GetAsync(client, "/api/codec/encoders/get_encode", "read N60 encoder mode", ct),
+            ct);
+        var currentMode = String(Payload(current.RootElement), "encode_mode");
+        if (!string.Equals(currentMode, "hb", StringComparison.OrdinalIgnoreCase))
+        {
+            using var changed = await RetryRateLimitedAsync(
+                () => PostAsync(client, "/api/codec/encoders/choose_encode", new { encode_mode = "hb" }, "select N60 NDI-HB no-record mode", ct),
+                ct);
+        }
+
+        for (var attempt = 1; attempt <= 20; attempt++)
+        {
+            if (attempt > 1) await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
             try
             {
-                // The N60 rejects otherwise valid back-to-back codec mutations.
-                // Pace each stream write as well as retrying its explicit
-                // "Request too often" response below.
-                await Task.Delay(TimeSpan.FromMilliseconds(750), ct);
-                // Current N60 firmware exposes both the NDI sender group and the
-                // Discovery Server registration group. Supplying only `group`
-                // leaves the NDI-FULL sender group blank even though the request
-                // returns success.
-                object body = new { group, group_server = group, channel_name = channel };
-                using var configured = await RetryRateLimitedAsync(
-                    () => PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", body, $"configure N60 {stream.Item2}", ct),
+                using var selected = await RetryRateLimitedAsync(
+                    () => GetAsync(client, "/api/codec/encoders/get_encode", "verify N60 encoder mode", ct),
                     ct);
-                await VerifyNdiGroupAsync(client, stream.Item1, stream.Item2, group, ct);
+                using var hb = await RetryRateLimitedAsync(
+                    () => GetAsync(client, "/api/codec/streams/main_full/ndi-full/get", "verify N60 NDI-HB sender", ct),
+                    ct);
+                using var hx = await RetryRateLimitedAsync(
+                    () => GetAsync(client, "/api/codec/streams/main/ndi-hx/get", "verify N60 NDI-HX sender is disabled", ct),
+                    ct);
+                var selectedMode = String(Payload(selected.RootElement), "encode_mode");
+                var hbEnabled = Boolean(Payload(hb.RootElement), "enable");
+                var hxEnabled = Boolean(Payload(hx.RootElement), "enable");
+                if (string.Equals(selectedMode, "hb", StringComparison.OrdinalIgnoreCase) && hbEnabled && !hxEnabled)
+                    return;
             }
-            catch (DeviceApiException) when (stream.Item1 == "main_full")
+            catch (DeviceApiException) when (attempt < 20)
             {
-                // Ignore only a genuinely unavailable/disabled NDI-FULL stream.
-                // If the stream is enabled, a rejected or non-persistent group
-                // setting must fail onboarding instead of being silently hidden.
-                bool enabled;
-                try
-                {
-                    using var current = await RetryRateLimitedAsync(
-                        () => GetAsync(client, "/api/codec/streams/main_full/ndi-full/get", "check N60 ndi-full availability", ct),
-                        ct);
-                    var currentData = Payload(current.RootElement);
-                    enabled = currentData.TryGetProperty("enable", out var value) &&
-                              (value.ValueKind == JsonValueKind.True ||
-                               (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out var parsed) && parsed));
-                }
-                catch (DeviceApiException) { continue; }
-                if (enabled) throw;
+                // Codec endpoints can briefly disappear while the encoder mode
+                // restarts. The final attempt remains actionable for the user.
             }
         }
+        throw new DeviceApiException("N60 did not enter NDI-HB (no record) mode with NDI-HX disabled.");
+    }
+
+    private async Task RestartHbSenderAsync(HttpClient client, CancellationToken ct)
+    {
+        using var restarted = await RetryRateLimitedAsync(
+            () => GetAsync(client, "/api/codec/streams/main_full/reset", "restart N60 NDI-HB sender", ct),
+            ct);
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            try
+            {
+                using var current = await RetryRateLimitedAsync(
+                    () => GetAsync(client, "/api/codec/streams/main_full/ndi-full/get", "verify restarted N60 NDI-HB sender", ct),
+                    ct);
+                if (Boolean(Payload(current.RootElement), "enable")) return;
+            }
+            catch (DeviceApiException) when (attempt < 12) { }
+        }
+        throw new DeviceApiException("N60 NDI-HB sender did not return after its configuration restart.");
+    }
+
+    private static bool Boolean(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value)) return false;
+        return value.ValueKind == JsonValueKind.True ||
+               (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number != 0) ||
+               (value.ValueKind == JsonValueKind.String &&
+                (bool.TryParse(value.GetString(), out var boolean) ? boolean :
+                 int.TryParse(value.GetString(), out var numeric) && numeric != 0));
     }
 
     public async Task ConfigureDiscoveryServerAsync(string ipAddress, string group, CancellationToken ct)
@@ -528,6 +577,9 @@ internal sealed class N60DeviceApi(
                 var match = rows
                     .Where(row => DecoderSourceScore(row, encoder) > 0)
                     .OrderByDescending(row => DecoderSourceScore(row, encoder))
+                    // Prefer the newest listener while an N60 HB-only restart's
+                    // retired advertisement is still expiring from discovery.
+                    .ThenByDescending(DiscoveredSourcePort)
                     .FirstOrDefault();
                 if (match.ValueKind == JsonValueKind.Object) found[encoder.Id] = match.Clone();
             }
@@ -550,6 +602,14 @@ internal sealed class N60DeviceApi(
         return (channelMatch ? 8 : 0) + (deviceMatch ? 4 : 0) + (ipMatch ? 2 : 0);
     }
 
+    private static int DiscoveredSourcePort(JsonElement source)
+    {
+        var port = Number(source, "port", Number(source, "listener_port", 0));
+        if (port > 0) return port;
+        var url = String(source, "original_url", String(source, "url"));
+        return Uri.TryCreate($"tcp://{url}", UriKind.Absolute, out var parsed) ? parsed.Port : 0;
+    }
+
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
@@ -570,11 +630,18 @@ internal sealed class N60DeviceApi(
         {
             if (settings.NetPrefix is null || settings.Netmask is null)
                 throw new ArgumentException("An N60 encoder requires a multicast prefix and subnet mask.");
-            foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
+            await EnsureHbOnlyEncodingAsync(client, ct);
+            const string streamKey = "main_full";
+            const string streamType = "ndi-full";
+            var getPath = $"/api/codec/streams/{streamKey}/{streamType}/get";
+            var configuredSuccessfully = false;
+            DeviceApiException? configurationError = null;
+            for (var attempt = 0; attempt < 6 && !configuredSuccessfully; attempt++)
             {
+                if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 try
                 {
-                    using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", new
+                    using var configured = await PostAsync(client, $"/api/codec/streams/{streamKey}/{streamType}/set", new
                     {
                         connection = "multicast",
                         netprefix = settings.NetPrefix,
@@ -582,23 +649,33 @@ internal sealed class N60DeviceApi(
                         // N60 firmware silently replaces a JSON number with its
                         // default TTL (127); its own UI submits this as a string.
                         ttl = settings.Ttl.ToString(),
-                        types = stream.Item2
-                    }, $"configure N60 {stream.Item2} multicast sender", ct);
-                    using var verified = await GetAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/get", $"verify N60 {stream.Item2} multicast sender", ct);
-                    var data = verified.RootElement.TryGetProperty("data", out var wrapped)
-                        ? wrapped
-                        : verified.RootElement;
-                    if (!string.Equals(String(data, "connection"), "multicast", StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
-                        || !string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal)
-                        || Number(data, "ttl", -1) != settings.Ttl)
-                        throw new DeviceApiException($"N60 {stream.Item2} did not retain its multicast allocation.");
+                        types = streamType
+                    }, "configure N60 ndi-full multicast sender", ct);
+                    configuredSuccessfully = true;
                 }
-                catch (DeviceApiException) when (stream.Item1 == "main_full")
+                catch (DeviceApiException ex) when (attempt < 5
+                    && ex.Message.Contains("Request too often", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Full NDI can be disabled on some N60 configurations.
+                    configurationError = ex;
                 }
             }
+            if (!configuredSuccessfully)
+                throw configurationError ?? new DeviceApiException("N60 ndi-full multicast configuration did not complete.");
+
+            var retained = false;
+            for (var attempt = 0; attempt < 8 && !retained; attempt++)
+            {
+                if (attempt > 0) await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+                using var verified = await GetAsync(client, getPath, "verify N60 ndi-full multicast sender", ct);
+                var data = Payload(verified.RootElement);
+                retained = string.Equals(String(data, "connection"), "multicast", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(String(data, "netprefix"), settings.NetPrefix, StringComparison.Ordinal)
+                    && string.Equals(String(data, "netmask"), settings.Netmask, StringComparison.Ordinal)
+                    && Number(data, "ttl", -1) == settings.Ttl;
+            }
+            if (!retained)
+                throw new DeviceApiException("N60 ndi-full did not retain its multicast allocation.");
+            await RestartHbSenderAsync(client, ct);
             return;
         }
 
@@ -642,27 +719,21 @@ internal sealed class N60DeviceApi(
             return;
         }
 
-        foreach (var stream in new[] { ("main", "ndi-hx"), ("main_full", "ndi-full") })
+        await EnsureHbOnlyEncodingAsync(client, ct);
+        const string stream = "main_full";
+        const string type = "ndi-full";
+        using (var configured = await PostAsync(client, $"/api/codec/streams/{stream}/{type}/set", new
         {
-            try
-            {
-                using var configured = await PostAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/set", new
-                {
-                    connection = "unicast",
-                    types = stream.Item2
-                }, $"configure N60 {stream.Item2} unicast sender", ct);
-                using var verified = await GetAsync(client, $"/api/codec/streams/{stream.Item1}/{stream.Item2}/get", $"verify N60 {stream.Item2} unicast sender", ct);
-                var data = verified.RootElement.TryGetProperty("data", out var wrapped)
-                    ? wrapped
-                    : verified.RootElement;
-                if (!string.Equals(String(data, "connection"), "unicast", StringComparison.OrdinalIgnoreCase))
-                    throw new DeviceApiException($"N60 {stream.Item2} did not confirm unicast mode.");
-            }
-            catch (DeviceApiException) when (stream.Item1 == "main_full")
-            {
-                // Full NDI can be disabled on some N60 configurations.
-            }
+            connection = "unicast",
+            types = type
+        }, "configure N60 ndi-full unicast sender", ct))
+        {
         }
+        using var verified = await GetAsync(client, $"/api/codec/streams/{stream}/{type}/get", "verify N60 ndi-full unicast sender", ct);
+        var data = Payload(verified.RootElement);
+        if (!string.Equals(String(data, "connection"), "unicast", StringComparison.OrdinalIgnoreCase))
+            throw new DeviceApiException("N60 ndi-full did not confirm unicast mode.");
+        await RestartHbSenderAsync(client, ct);
     }
 
     public async Task BlankAsync(CancellationToken ct)
