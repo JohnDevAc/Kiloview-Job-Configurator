@@ -19,6 +19,8 @@ public interface IDeviceApi
     Task<HdmiInputProbeResult> ProbeEncoderInputAsync(CancellationToken ct);
     Task<HdmiProbeResult> ProbeHdmiAsync(CancellationToken ct);
     Task ShowIdentityAsync(TitleCardSource source, CancellationToken ct);
+    Task ConfigureDiscoveryServerAsync(string ipAddress, string group, CancellationToken ct) => Task.CompletedTask;
+    Task ConfigureDecoderFeedsAsync(IReadOnlyList<ManagedDevice> encoders, CancellationToken ct) => Task.CompletedTask;
     Task SetHostnameAsync(string hostname, CancellationToken ct);
     Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct);
     Task ConfigureMulticastAsync(MulticastDeviceConfiguration settings, CancellationToken ct);

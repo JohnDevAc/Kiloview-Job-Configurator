@@ -148,7 +148,7 @@ public sealed class OnboardingService(
             {
                 if (_run is { IsCompleted: false }) throw new InvalidOperationException("An onboarding run is already in progress.");
                 titleCards.StopAll();
-                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 9));
+                var total = Math.Max(1, plan.Devices.Sum(device => device.Family is DeviceFamily.TeleTool or DeviceFamily.SimulatedTeleTool ? 5 : 10));
                 _progress = new(Guid.NewGuid(), "running", 0, total, [], DateTimeOffset.UtcNow);
                 _run = Task.Run(() => ExecuteAsync(plan));
                 return new { _progress.RunId, _progress.Status };
@@ -327,21 +327,14 @@ public sealed class OnboardingService(
                     var requestedRole = item.Role;
                     var hasRoleOverride = requestedRole != DeviceRole.Unknown;
 
-                    // N6 firmware 2.00 can leave its codec proxy permanently
-                    // unavailable after an otherwise accepted mode switch. Keep
-                    // the reported physical mode unless the operator explicitly
-                    // selected a role. N60 retains automatic HDMI role detection.
-                    var preserveUnavailableN6Mode = device.Family == DeviceFamily.N6 &&
-                        device.Role == DeviceRole.Unknown &&
-                        string.Equals(device.ManagementState, "mode-recovery-required", StringComparison.OrdinalIgnoreCase);
-                    var preserveReportedN6Mode = device.Family == DeviceFamily.N6 &&
-                        !hasRoleOverride &&
-                        device.Role is DeviceRole.Encoder or DeviceRole.Decoder;
-                    var preparationRole = hasRoleOverride ? requestedRole : DeviceRole.Encoder;
-                    if (!preserveReportedN6Mode && !preserveUnavailableN6Mode && device.Role != preparationRole)
+                    // Kiloview identity and HDMI-input APIs are encoder services.
+                    // Even an explicitly selected decoder must pass through a
+                    // healthy encoder phase before its final role is applied.
+                    var preparationRole = DeviceRole.Encoder;
+                    if (device.Role != preparationRole)
                     {
                         Step(device, "Prepare", "running", hasRoleOverride
-                            ? $"Applying explicit {preparationRole} role before NDI setup"
+                            ? $"Preparing encoder services before applying explicit {requestedRole} role"
                             : "Ensuring encoder mode is ready for NDI setup and input detection");
                         logger.LogInformation(
                             "Changing {Model} {DeviceId} at {Address} from {CurrentRole} to {TargetRole} during onboarding preparation",
@@ -355,10 +348,6 @@ public sealed class OnboardingService(
                         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.IsKiloview() ? 90 : 45));
                         CompleteStep(device, "Prepare", $"{preparationRole} mode ready");
                     }
-                    else if (preserveUnavailableN6Mode)
-                        CompleteStep(device, "Prepare", "N6 codec proxy unavailable; current physical mode preserved without a rejected switch or extra reboot");
-                    else if (preserveReportedN6Mode)
-                        CompleteStep(device, "Prepare", $"N6 {device.Role} mode preserved; no automatic mode switch performed");
                     else CompleteStep(device, "Prepare", $"{device.Role} mode ready");
 
                     Step(device, "KiloLink authorization", "running", "Generating server-side device code");
@@ -400,25 +389,21 @@ public sealed class OnboardingService(
             await Parallel.ForEachAsync(ready, parallelOptions, async (original, _) =>
             {
                 var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == original.Id) ?? original;
+                var finalizationStep = "HDMI role detection";
                 try
                 {
                     var overrideRole = DeviceRole.Unknown;
                     var forced = plan.Settings.RoleOverrides is not null && plan.Settings.RoleOverrides.TryGetValue(device.Id, out overrideRole) && overrideRole != DeviceRole.Unknown;
-                    var preserveN6Role = device.Family == DeviceFamily.N6 && !forced && device.Role != DeviceRole.Unknown;
                     Step(device, "HDMI role detection", "running", forced
                         ? $"Applying explicit {overrideRole} role"
-                        : preserveN6Role
-                            ? $"Preserving reported N6 {device.Role} mode"
                         : "Checking for a live HDMI input in encoder mode");
 
-                    var input = forced || preserveN6Role
+                    var input = forced
                         ? new HdmiInputProbeResult(false, null)
                         : await factory.Create(device).ProbeEncoderInputAsync(CancellationToken.None);
                     var role = forced
                         ? overrideRole
-                        : preserveN6Role
-                            ? device.Role
-                            : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
+                        : input.SignalPresent ? DeviceRole.Encoder : DeviceRole.Decoder;
 
                     if (role == DeviceRole.Decoder && device.Role != DeviceRole.Decoder)
                     {
@@ -445,11 +430,17 @@ public sealed class OnboardingService(
                     await SaveDeviceAsync(device);
                     CompleteStep(device, "HDMI role detection", forced
                         ? $"Role set explicitly to {role}"
-                        : preserveN6Role
-                            ? $"N6 reported {role} mode preserved; automatic mode switching disabled for firmware safety"
                         : input.SignalPresent
                             ? $"Encoder — live HDMI input{(string.IsNullOrWhiteSpace(input.Resolution) ? "" : $" at {input.Resolution}")}"
                             : "Decoder — no live encoder input; ready for display identification");
+
+                    finalizationStep = "NDI Discovery Server";
+                    Step(device, finalizationStep, "running", $"Applying {plan.Settings.NdiDiscoveryServerIp} after final role selection");
+                    await factory.Create(device).ConfigureDiscoveryServerAsync(
+                        plan.Settings.NdiDiscoveryServerIp,
+                        plan.Settings.JobName,
+                        CancellationToken.None);
+                    CompleteStep(device, "NDI Discovery Server", $"Connected to {plan.Settings.NdiDiscoveryServerIp} for group '{plan.Settings.JobName}'");
 
                     // Identity is persisted now; decoder cards can fine-tune both names on the next UI page.
                     CompleteStep(device, "Identity", device.Hostname);
@@ -457,7 +448,45 @@ public sealed class OnboardingService(
                 catch (Exception ex)
                 {
                     await SaveDeviceAsync(device with { Health = DeviceHealth.Error, LastError = ex.Message });
-                    FailStep(device, "HDMI role detection", ex.Message);
+                    FailStep(device, finalizationStep, ex.Message);
+                }
+            });
+
+            var onboardedFleet = (await store.ReadAsync()).Devices
+                .Where(device => device.IsOnboarded &&
+                                 device.Health != DeviceHealth.Error &&
+                                 string.Equals(device.NdiGroup, plan.Settings.JobName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var stoppedTeleTools = onboardedFleet.Count(device =>
+                device.Role == DeviceRole.Encoder && device.IsTeleTool() && device.StreamRunning == false);
+            var encoders = onboardedFleet
+                .Where(device => device.Role == DeviceRole.Encoder &&
+                                 (!device.IsTeleTool() || device.StreamRunning != false))
+                .OrderBy(device => device.Hostname, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(device => device.IpAddress, StringComparer.Ordinal)
+                .ToArray();
+            var decoders = onboardedFleet
+                .Where(device => device.Role == DeviceRole.Decoder && device.IsKiloview())
+                .ToArray();
+            AddProgressWork(decoders.Length);
+            await Parallel.ForEachAsync(decoders, parallelOptions, async (decoder, _) =>
+            {
+                try
+                {
+                    Step(decoder, "Decoder feed presets", "running", encoders.Length == 0
+                        ? "Clearing stale feed presets; this job has no encoders"
+                        : $"Adding {encoders.Length} advertising job encoder feed{(encoders.Length == 1 ? "" : "s")}");
+                    await factory.Create(decoder).ConfigureDecoderFeedsAsync(encoders, CancellationToken.None);
+                    CompleteStep(decoder, "Decoder feed presets", encoders.Length == 0
+                        ? "Preset bank cleared; no encoder feeds available"
+                        : $"All {encoders.Length} advertising encoder feed{(encoders.Length == 1 ? "" : "s")} stored" +
+                          (stoppedTeleTools == 0 ? "" : $"; {stoppedTeleTools} stopped TeleTool omitted until it has an active NDI source"));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Could not populate decoder feed presets on {Device}", decoder.Id);
+                    await SaveDeviceAsync(decoder with { Health = DeviceHealth.Error, LastError = ex.Message });
+                    FailStep(decoder, "Decoder feed presets", ex.Message);
                 }
             });
 
@@ -945,6 +974,12 @@ public sealed class OnboardingService(
                 steps.Add(new(device.Id, device.IpAddress, name, "error", message));
             _progress = _progress with { Steps = steps, Completed = Math.Min(_progress.Total, _progress.Completed + 1) };
         }
+    }
+
+    private void AddProgressWork(int count)
+    {
+        if (count <= 0) return;
+        lock (_progressGate) _progress = _progress with { Total = _progress.Total + count };
     }
 
     private void Finish(string status)

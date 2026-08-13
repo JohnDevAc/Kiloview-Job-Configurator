@@ -204,6 +204,36 @@ internal sealed class N60DeviceApi(
         }
     }
 
+    public async Task ConfigureDiscoveryServerAsync(string ipAddress, string group, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var configured = await RetryRateLimitedAsync(
+            () => PostAsync(client, "/api/codec/discovery/setDiscoveryServer",
+                new { enable = true, servers = new[] { new { ip = ipAddress, group_name = group } } },
+                "set N60 NDI discovery server after role selection",
+                ct),
+            ct);
+
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350 * attempt), ct);
+            using var verified = await RetryRateLimitedAsync(
+                () => GetAsync(client, "/api/codec/discovery/getDiscoveryServer", "verify N60 NDI discovery server", ct),
+                ct);
+            var data = Payload(verified.RootElement);
+            var enabled = data.TryGetProperty("enable", out var enable) &&
+                          (enable.ValueKind == JsonValueKind.True ||
+                           (enable.ValueKind == JsonValueKind.Number && enable.TryGetInt32(out var number) && number != 0) ||
+                           (enable.ValueKind == JsonValueKind.String && bool.TryParse(enable.GetString(), out var parsed) && parsed));
+            var matches = data.TryGetProperty("servers", out var servers) && servers.ValueKind == JsonValueKind.Array &&
+                          servers.EnumerateArray().Any(server =>
+                              string.Equals(String(server, "ip"), ipAddress, StringComparison.Ordinal) &&
+                              string.Equals(String(server, "group_name"), group, StringComparison.Ordinal));
+            if (enabled && matches) return;
+        }
+        throw new DeviceApiException($"N60 did not retain NDI Discovery Server {ipAddress} for group '{group}' after role selection.");
+    }
+
     private async Task VerifyNdiGroupAsync(HttpClient client, string stream, string type, string expectedGroup, CancellationToken ct)
     {
         string actualGroup = "";
@@ -405,6 +435,119 @@ internal sealed class N60DeviceApi(
             catch (DeviceApiException) when (attempt < 7) { }
         }
         return false;
+    }
+
+    public async Task ConfigureDecoderFeedsAsync(IReadOnlyList<ManagedDevice> encoders, CancellationToken ct)
+    {
+        var ordered = encoders
+            .OrderBy(encoder => encoder.Hostname, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(encoder => encoder.IpAddress, StringComparer.Ordinal)
+            .ToArray();
+        using var client = await AuthorizedAsync(ct, TimeSpan.FromSeconds(45));
+
+        using var targets = await PostAsync(client, "/api/codec/discovery/addManualIpsGroups", new
+        {
+            groups = ordered.Select(encoder => encoder.NdiGroup)
+                .Where(group => !string.IsNullOrWhiteSpace(group))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            manuals = ordered.Select(encoder => encoder.IpAddress)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+        }, "register encoder discovery targets on the N60 decoder", ct);
+
+        using var current = await GetAsync(client, "/api/codec/preset/get", "read N60 decoder feed presets", ct);
+        var slots = current.RootElement.GetProperty("data")
+            .EnumerateArray()
+            .Where(preset => Number(preset, "id", 0) > 0 && string.IsNullOrWhiteSpace(String(preset, "color")))
+            .Select(preset => Number(preset, "id", 0))
+            .Distinct()
+            .Order()
+            .ToArray();
+        if (ordered.Length > slots.Length)
+            throw new DeviceApiException($"The N60 has {slots.Length} feed preset slots but this job contains {ordered.Length} encoders.");
+
+        var sources = ordered.Length == 0
+            ? new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase)
+            : await WaitForEncoderSourcesAsync(client, ordered, ct);
+
+        // Replace the preset bank deterministically so feeds from an earlier job
+        // cannot remain in unused positions. The colour/blank preset is excluded.
+        foreach (var slot in slots)
+            using (var removed = await PostAsync(client, "/api/codec/preset/remove", new { id = slot }, $"clear N60 decoder feed preset {slot}", ct)) { }
+
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            var encoder = ordered[index];
+            var source = sources[encoder.Id];
+            var url = String(source, "original_url", String(source, "url"));
+            using var added = await PostAsync(client, "/api/codec/preset/add", new
+            {
+                position = slots[index],
+                channel_name = String(source, "channel_name", encoder.NdiChannelName),
+                device_name = String(source, "device_name", encoder.Hostname).Trim(),
+                enable = 1,
+                group = encoder.NdiGroup,
+                ip = String(source, "ip", encoder.IpAddress),
+                name = String(source, "name", $"{encoder.Hostname} ({encoder.NdiChannelName})"),
+                port = Number(source, "port", 0),
+                url,
+                original_url = url,
+                type = "ndi"
+            }, $"add {encoder.Hostname} to N60 decoder feed preset {slots[index]}", ct);
+        }
+
+        using var verified = await GetAsync(client, "/api/codec/preset/get", "verify N60 decoder feed presets", ct);
+        var presets = verified.RootElement.GetProperty("data").EnumerateArray().ToArray();
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            var encoder = ordered[index];
+            var preset = presets.FirstOrDefault(candidate => Number(candidate, "id", 0) == slots[index]);
+            if (preset.ValueKind != JsonValueKind.Object ||
+                (!string.Equals(String(preset, "ip"), encoder.IpAddress, StringComparison.Ordinal) &&
+                 !String(preset, "channel_name").Equals(encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase)))
+                throw new DeviceApiException($"N60 feed preset {slots[index]} did not retain encoder {encoder.Hostname}.");
+        }
+    }
+
+    private async Task<Dictionary<string, JsonElement>> WaitForEncoderSourcesAsync(
+        HttpClient client,
+        IReadOnlyList<ManagedDevice> encoders,
+        CancellationToken ct)
+    {
+        var found = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        for (var attempt = 0; attempt < 30 && found.Count < encoders.Count; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            using var discovery = await GetAsync(client, "/api/codec/discovery/scan", "discover encoder feeds for N60 presets", ct);
+            var rows = discovery.RootElement.TryGetProperty("data", out var data)
+                ? FlattenDiscoveryRows(data).ToArray()
+                : [];
+            foreach (var encoder in encoders.Where(encoder => !found.ContainsKey(encoder.Id)))
+            {
+                var match = rows
+                    .Where(row => DecoderSourceScore(row, encoder) > 0)
+                    .OrderByDescending(row => DecoderSourceScore(row, encoder))
+                    .FirstOrDefault();
+                if (match.ValueKind == JsonValueKind.Object) found[encoder.Id] = match.Clone();
+            }
+        }
+        if (found.Count != encoders.Count)
+        {
+            var missing = encoders.Where(encoder => !found.ContainsKey(encoder.Id)).Select(encoder => encoder.Hostname);
+            throw new DeviceApiException($"The N60 could not discover encoder feed(s): {string.Join(", ", missing)}. Confirm each NDI sender is running and visible to the selected Discovery Server.");
+        }
+        return found;
+    }
+
+    private static int DecoderSourceScore(JsonElement source, ManagedDevice encoder)
+    {
+        var ipMatch = string.Equals(String(source, "ip"), encoder.IpAddress, StringComparison.Ordinal);
+        var channelMatch = !string.IsNullOrWhiteSpace(encoder.NdiChannelName) &&
+            string.Equals(String(source, "channel_name").Trim(), encoder.NdiChannelName.Trim(), StringComparison.OrdinalIgnoreCase);
+        var deviceMatch = string.Equals(String(source, "device_name").Trim(), encoder.Hostname.Trim(), StringComparison.OrdinalIgnoreCase);
+        if (!ipMatch && !channelMatch && !deviceMatch) return 0;
+        return (channelMatch ? 8 : 0) + (deviceMatch ? 4 : 0) + (ipMatch ? 2 : 0);
     }
 
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)

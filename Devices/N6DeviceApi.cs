@@ -89,11 +89,11 @@ internal sealed class N6DeviceApi(
             : "";
         var serialFromCodec = codecStatus is null
             ? ""
-            : String(Payload(codecStatus.RootElement), "serial_number");
+            : String(Payload(codecStatus.RootElement), "serial_number").Trim();
         var serial = String(ver, "serialNumber", String(ver, "serial_number", string.IsNullOrWhiteSpace(serialFromCodec)
             ? serialFromHostname
-            : serialFromCodec));
-        var mac = String(net, "mac", serial);
+            : serialFromCodec)).Trim();
+        var mac = String(net, "mac", serial).Trim();
         if (string.IsNullOrWhiteSpace(serial)) serial = mac;
         var modeName = mode is null ? "" : String(mode.RootElement.GetProperty("data"), "mode");
         var result = new ManagedDevice
@@ -231,6 +231,32 @@ internal sealed class N6DeviceApi(
                 ct);
         }
         using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
+    }
+
+    public async Task ConfigureDiscoveryServerAsync(string ipAddress, string group, CancellationToken ct)
+    {
+        using var client = await AuthorizedAsync(ct);
+        using var configured = await PostWhenCodecReadyAsync(client, "/api/device/set_discovery_server.json",
+            new { enable = true, servers = new[] { new { ip = ipAddress, group_name = group } } },
+            "set N6 NDI discovery server after role selection",
+            ct);
+
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(350 * attempt), ct);
+            using var verified = await GetAsync(client, "/api/device/get_discovery_server.json", "verify N6 NDI discovery server", ct);
+            var data = Payload(verified.RootElement);
+            var enabled = data.TryGetProperty("enable", out var enable) &&
+                          (enable.ValueKind == JsonValueKind.True ||
+                           (enable.ValueKind == JsonValueKind.Number && enable.TryGetInt32(out var number) && number != 0) ||
+                           (enable.ValueKind == JsonValueKind.String && bool.TryParse(enable.GetString(), out var parsed) && parsed));
+            var matches = data.TryGetProperty("servers", out var servers) && servers.ValueKind == JsonValueKind.Array &&
+                          servers.EnumerateArray().Any(server =>
+                              string.Equals(String(server, "ip"), ipAddress, StringComparison.Ordinal) &&
+                              string.Equals(String(server, "group_name"), group, StringComparison.Ordinal));
+            if (enabled && matches) return;
+        }
+        throw new DeviceApiException($"N6 did not retain NDI Discovery Server {ipAddress} for group '{group}' after role selection.");
     }
 
     private async Task<JsonDocument> PostWhenCodecReadyAsync(
@@ -372,10 +398,12 @@ internal sealed class N6DeviceApi(
     {
         using (var client = await AuthorizedAsync(ct))
         {
+            string? currentMode = null;
             try
             {
                 using var current = await GetAsync(client, "/api/mode/get.json", "read N6 mode before switch", ct);
-                if (string.Equals(String(Payload(current.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase))
+                currentMode = String(Payload(current.RootElement), "mode");
+                if (string.Equals(currentMode, target, StringComparison.OrdinalIgnoreCase))
                     return;
             }
             catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
@@ -383,11 +411,21 @@ internal sealed class N6DeviceApi(
                 // Do not reboot before trying the switch. Firmware 2.00 can
                 // reject mode/get with 0201001 while mode/switch still works.
             }
+
+            // N6 firmware 2.00 can wedge its codec proxy at 0201001 when an
+            // active decoder preview is carried across a Decoder -> Encoder
+            // transition. The device UI exposes those previews as disposable
+            // presets, so clear them before requesting Encoder mode. Onboarding
+            // repopulates the bank after final roles are known.
+            if (string.Equals(currentMode, "decoder", StringComparison.OrdinalIgnoreCase) && target == "encoder")
+                await ClearDecoderPreviewsAsync(client, ct);
+
             using var switched = await PostAsync(client, "/api/mode/switch.json", new { mode = target }, "switch N6 mode", ct);
         }
 
-        var end = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(50);
+        var end = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(90);
         DeviceApiException? last = null;
+        var consecutiveReadyReads = 0;
         while (DateTimeOffset.UtcNow < end)
         {
             ct.ThrowIfCancellationRequested();
@@ -395,34 +433,47 @@ internal sealed class N6DeviceApi(
             try
             {
                 using var client = await AuthorizedAsync(ct);
+                using var status = await GetAsync(client, "/api/mode/status.json", "verify N6 mode-change status", ct);
                 using var mode = await GetAsync(client, "/api/mode/get.json", "verify N6 mode", ct);
-                if (string.Equals(String(Payload(mode.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase))
-                    return;
-            }
-            catch (DeviceApiException ex) { last = ex; }
-            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
-            {
-                last = new DeviceApiException("N6 was unavailable while changing mode.", ex);
-            }
-
-            // Firmware 2.00 can leave mode/get unavailable after a successful
-            // transition. Confirm the target codec service itself rather than
-            // failing a working decoder/encoder solely on that status endpoint.
-            try
-            {
-                using var client = await AuthorizedAsync(ct);
                 using var targetService = target == "decoder"
                     ? await GetAsync(client, "/api/decoderMode/current/get.json", "verify N6 decoder service", ct)
                     : await GetAsync(client, "/api/device/status.json?types=ndihx", "verify N6 encoder service", ct);
-                return;
+
+                var ready = string.Equals(String(Payload(status.RootElement), "status"), "ready", StringComparison.OrdinalIgnoreCase);
+                var correctMode = string.Equals(String(Payload(mode.RootElement), "mode"), target, StringComparison.OrdinalIgnoreCase);
+                consecutiveReadyReads = ready && correctMode ? consecutiveReadyReads + 1 : 0;
+                // The mode and target codec endpoints can appear briefly before
+                // firmware 2.00 has finished settling, then regress to 0201001.
+                // Require ten seconds of consecutive healthy reads, matching
+                // the device UI's mode/status contract, before continuing.
+                if (consecutiveReadyReads >= 5) return;
             }
             catch (Exception ex) when (ex is DeviceApiException or HttpRequestException or TaskCanceledException)
             {
                 if (ct.IsCancellationRequested) throw;
+                consecutiveReadyReads = 0;
                 last = ex as DeviceApiException ?? new DeviceApiException($"N6 {target} service is not ready.", ex);
             }
         }
         throw new DeviceApiException($"N6 mode service did not become ready in {target} mode.", last);
+    }
+
+    private async Task ClearDecoderPreviewsAsync(HttpClient client, CancellationToken ct)
+    {
+        using var current = await GetAsync(client, "/api/preview/get", "read N6 previews before changing to encoder mode", ct);
+        foreach (var preview in PreviewPositions(current.RootElement).ToArray())
+        {
+            var positionId = Integer(preview, "id");
+            if (positionId <= 0) continue;
+            using var removed = await PostAsync(client, "/api/preview/source/remove",
+                new { pos_id = positionId },
+                $"stop N6 decoder preview {positionId} before changing mode",
+                ct);
+        }
+
+        using var verified = await GetAsync(client, "/api/preview/get", "verify N6 previews stopped before changing mode", ct);
+        if (PreviewPositions(verified.RootElement).Any())
+            throw new DeviceApiException("The N6 retained an active decoder preview, so switching to Encoder mode was cancelled to protect its codec service.");
     }
 
     private static bool IsModeServiceUnavailable(DeviceApiException ex) =>
@@ -505,6 +556,131 @@ internal sealed class N6DeviceApi(
             }
         }
         return false;
+    }
+
+    public async Task ConfigureDecoderFeedsAsync(IReadOnlyList<ManagedDevice> encoders, CancellationToken ct)
+    {
+        var ordered = encoders
+            .OrderBy(encoder => encoder.Hostname, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(encoder => encoder.IpAddress, StringComparer.Ordinal)
+            .ToArray();
+        const int previewCapacity = 10;
+        if (ordered.Length > previewCapacity)
+            throw new DeviceApiException($"The N6 has {previewCapacity} feed preset slots but this job contains {ordered.Length} encoders.");
+
+        using var client = await AuthorizedAsync(ct, TimeSpan.FromSeconds(45));
+        using var current = await GetAsync(client, "/api/preview/get", "read N6 decoder feed presets", ct);
+        var existing = PreviewPositions(current.RootElement).ToArray();
+        foreach (var preset in existing)
+        {
+            var positionId = Integer(preset, "id");
+            if (positionId <= 0) continue;
+            using var removed = await PostAsync(client, "/api/preview/source/remove",
+                new { pos_id = positionId },
+                $"clear N6 decoder feed preset {positionId}",
+                ct);
+        }
+        if (ordered.Length == 0) return;
+
+        var sources = new Dictionary<string, JsonElement>(StringComparer.OrdinalIgnoreCase);
+        for (var attempt = 0; attempt < 30 && sources.Count < ordered.Length; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            using var discovery = await PostAsync(client, "/api/source/groups/list",
+                new { is_need_stream = true, show_template = false },
+                "discover encoder feeds for N6 presets",
+                ct);
+            var rows = DecoderGroupStreams(discovery.RootElement).ToArray();
+            foreach (var encoder in ordered.Where(encoder => !sources.ContainsKey(encoder.Id)))
+            {
+                var match = rows
+                    .Where(row => N6DecoderSourceScore(row, encoder) > 0)
+                    .OrderByDescending(row => N6DecoderSourceScore(row, encoder))
+                    .FirstOrDefault();
+                if (match.ValueKind == JsonValueKind.Object) sources[encoder.Id] = match.Clone();
+            }
+        }
+        if (sources.Count != ordered.Length)
+        {
+            var missing = ordered.Where(encoder => !sources.ContainsKey(encoder.Id)).Select(encoder => encoder.Hostname);
+            throw new DeviceApiException($"The N6 could not discover encoder feed(s): {string.Join(", ", missing)}. Confirm each NDI sender is running and visible to the selected Discovery Server.");
+        }
+
+        foreach (var encoder in ordered)
+        {
+            var source = sources[encoder.Id];
+            var streamId = String(source, "id");
+            var streamName = String(source, "name", $"{encoder.Hostname} ({encoder.NdiChannelName})");
+            var streamUrl = String(source, "url");
+            using var added = await PostAsync(client, "/api/preview/source/modify", new
+            {
+                from = new { type = "source", stream_id = streamId, stream_name = streamName, stream_url = streamUrl, pos_id = "" },
+                // Omitting pos_id appends a new preview preset. Supplying a
+                // guessed slot identifier makes N6 firmware return 0304002.
+                to = new { type = "preview", stream_id = streamId, stream_name = streamName, stream_url = streamUrl }
+            }, $"add {encoder.Hostname} to an N6 decoder feed preset", ct);
+        }
+
+        using var verified = await GetAsync(client, "/api/preview/get", "verify N6 decoder feed presets", ct);
+        var presets = PreviewPositions(verified.RootElement).ToArray();
+        foreach (var encoder in ordered)
+        {
+            if (!presets.Any(preset => N6PreviewScore(preset, encoder) > 0))
+                throw new DeviceApiException($"The N6 feed preset bank did not retain encoder {encoder.Hostname}.");
+        }
+    }
+
+    private static IEnumerable<JsonElement> PreviewPositions(JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object ||
+            !data.TryGetProperty("position", out var positions) || positions.ValueKind != JsonValueKind.Array)
+            yield break;
+        foreach (var position in positions.EnumerateArray())
+            if (position.ValueKind == JsonValueKind.Object) yield return position;
+    }
+
+    private static int Integer(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value)) return 0;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)) return number;
+        return value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number) ? number : 0;
+    }
+
+    private static IEnumerable<JsonElement> DecoderGroupStreams(JsonElement root)
+    {
+        if (!root.TryGetProperty("data", out var groups) || groups.ValueKind != JsonValueKind.Array) yield break;
+        foreach (var group in groups.EnumerateArray())
+        {
+            if (group.ValueKind != JsonValueKind.Object ||
+                !group.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array) continue;
+            foreach (var stream in streams.EnumerateArray())
+                if (stream.ValueKind == JsonValueKind.Object) yield return stream;
+        }
+    }
+
+    private static int N6DecoderSourceScore(JsonElement source, ManagedDevice encoder)
+    {
+        var addressMatch = string.Equals(String(source, "address"), encoder.IpAddress, StringComparison.Ordinal);
+        var name = String(source, "name", String(source, "ndi_name"));
+        var channelMatch = !string.IsNullOrWhiteSpace(encoder.NdiChannelName) &&
+            name.Contains(encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase);
+        var hostMatch = !string.IsNullOrWhiteSpace(encoder.Hostname) &&
+            name.Contains(encoder.Hostname, StringComparison.OrdinalIgnoreCase);
+        if (!addressMatch && !channelMatch && !hostMatch) return 0;
+        return (channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
+    }
+
+    private static int N6PreviewScore(JsonElement preset, ManagedDevice encoder)
+    {
+        var name = String(preset, "stream_name");
+        var url = String(preset, "stream_url");
+        var channelMatch = !string.IsNullOrWhiteSpace(encoder.NdiChannelName) &&
+            name.Contains(encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase);
+        var hostMatch = !string.IsNullOrWhiteSpace(encoder.Hostname) &&
+            name.Contains(encoder.Hostname, StringComparison.OrdinalIgnoreCase);
+        var addressMatch = !string.IsNullOrWhiteSpace(encoder.IpAddress) &&
+            url.StartsWith($"{encoder.IpAddress}:", StringComparison.Ordinal);
+        return (channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
     }
 
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
