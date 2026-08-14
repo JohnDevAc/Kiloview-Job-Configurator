@@ -3,9 +3,9 @@ using System.Globalization;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using KiloviewSetup.Devices;
+using NDIJobConfigurator.Devices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class TeleToolFleetService(
     IHttpClientFactory clients,
@@ -932,7 +932,7 @@ public sealed class TeleToolFleetService(
         linked.CancelAfter(timeout);
         using var request = new HttpRequestMessage(method, new Uri($"http://{address}:{port}{path}"));
         request.Headers.Accept.ParseAdd("application/json");
-        request.Headers.UserAgent.ParseAdd("Kiloview-Job-Configurator/TeleTool-Fleet");
+        request.Headers.UserAgent.ParseAdd("NDI-Job-Configurator/TeleTool-Fleet");
         if (body is not null) request.Content = JsonContent.Create(body);
         using var response = await clients.CreateClient("TeleTool").SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linked.Token);
         var text = await response.Content.ReadAsStringAsync(linked.Token);

@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public static class NetworkAddressing
 {

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using KiloviewSetup.Devices;
+using NDIJobConfigurator.Devices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class DeviceMonitor(
     AppStateStore store,

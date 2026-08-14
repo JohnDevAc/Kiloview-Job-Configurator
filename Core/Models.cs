@@ -1,6 +1,6 @@
 using System.Net;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public enum DeviceFamily { N6, N60, TeleTool, Simulated, SimulatedTeleTool }
 public enum DeviceRole { Unknown, Encoder, Decoder }

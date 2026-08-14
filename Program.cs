@@ -2,15 +2,22 @@ using System.Diagnostics;
 using System.Net;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
-using KiloviewSetup.Core;
-using KiloviewSetup.Devices;
+using NDIJobConfigurator.Core;
+using NDIJobConfigurator.Devices;
 using Microsoft.AspNetCore.Mvc;
 
-var servicePort = int.TryParse(Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"), out var configuredPort)
+var servicePort = int.TryParse(
+        Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_SERVICE_PORT")
+            ?? Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"),
+        out var configuredPort)
     && configuredPort is >= 1024 and <= 65535 ? configuredPort : 8091;
 var lanAccess = args.Contains("--lan", StringComparer.OrdinalIgnoreCase)
-    || string.Equals(Environment.GetEnvironmentVariable("KILOVIEW_LAN_ACCESS"), "1", StringComparison.Ordinal);
-using var instanceSemaphore = new Semaphore(1, 1, $"Local\\KiloviewJobConfigurator-{servicePort}");
+    || string.Equals(
+        Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_LAN_ACCESS")
+            ?? Environment.GetEnvironmentVariable("KILOVIEW_LAN_ACCESS"),
+        "1",
+        StringComparison.Ordinal);
+using var instanceSemaphore = new Semaphore(1, 1, $"Local\\NDIJobConfigurator-{servicePort}");
 var ownsInstanceSemaphore = instanceSemaphore.WaitOne(0);
 if (!ownsInstanceSemaphore)
 {
@@ -63,7 +70,7 @@ builder.Services.AddHostedService(services => services.GetRequiredService<Window
 builder.Services.AddHttpClient<GitHubUpdateService>(client =>
 {
     client.BaseAddress = new Uri("https://api.github.com/");
-    client.DefaultRequestHeaders.UserAgent.ParseAdd("Kiloview-Job-Configurator");
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("NDI-Job-Configurator");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
     client.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
     client.Timeout = TimeSpan.FromMinutes(15);
@@ -107,13 +114,14 @@ builder.Services.AddHttpClient("WindowsPcAgent", client => client.Timeout = Time
 builder.Services.AddHostedService<DeviceMonitor>();
 
 var app = builder.Build();
+WindowsInstallationRegistration.Ensure(app.Environment.ContentRootPath, app.Logger);
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapGet("/api/health", () => Results.Ok(new
 {
     status = "ok",
-    product = "Kiloview Job Configurator",
+    product = "NDI Job Configurator",
     version = BuildIdentity.Version,
     channel = BuildIdentity.ReleaseChannel
 }));
@@ -124,7 +132,7 @@ app.MapGet("/api/pc-onboarding/profile", async (AppStateStore store) =>
         return Results.Conflict(new { error = "This Job Configurator has no active job to join." });
     return Results.Ok(new
     {
-        product = "Kiloview Job Configurator",
+        product = "NDI Job Configurator",
         version = BuildIdentity.Version,
         channel = BuildIdentity.ReleaseChannel,
         jobName = state.LastJob.JobName,
@@ -226,7 +234,7 @@ app.MapPost("/api/pc-onboarding/register", async (
     if (registration.OperatingSystemVersion?.Length > 128)
         return Results.BadRequest(new { error = "The Windows operating-system version must be at most 128 characters." });
     if (!string.Equals(registration.EulaVersion, "1.0", StringComparison.Ordinal))
-        return Results.BadRequest(new { error = "The current Kiloview Job Configurator EULA must be accepted." });
+        return Results.BadRequest(new { error = "The current NDI Job Configurator EULA must be accepted." });
 
     var now = DateTimeOffset.UtcNow;
     var agent = agents.Snapshot().FirstOrDefault(item =>
@@ -440,7 +448,7 @@ app.MapGet("/api/system/diagnostics", (HttpContext context, DiagnosticsService d
             new { error = "Diagnostics can only be downloaded from the setup PC using localhost." },
             statusCode: StatusCodes.Status403Forbidden);
     app.Logger.LogInformation("Creating a local diagnostics package");
-    var fileName = $"Kiloview-Job-Configurator-Diagnostics-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.zip";
+    var fileName = $"NDI-Job-Configurator-Diagnostics-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.zip";
     return Results.File(diagnostics.CreateArchive(), "application/zip", fileName);
 });
 app.MapPut("/api/system/update/channel", async (UpdateChannelSelection selection, AppStateStore store) =>
@@ -811,7 +819,7 @@ var systemTray = app.Services.GetRequiredService<SystemTrayService>();
 try
 {
     app.Logger.LogInformation(
-        "Starting Kiloview Job Configurator {Version} ({Channel}) on port {Port}; LAN access: {LanAccess}",
+        "Starting NDI Job Configurator {Version} ({Channel}) on port {Port}; LAN access: {LanAccess}",
         BuildIdentity.Version,
         BuildIdentity.ReleaseChannel,
         servicePort,
@@ -820,7 +828,7 @@ try
 }
 finally
 {
-    app.Logger.LogInformation("Kiloview Job Configurator is stopping");
+    app.Logger.LogInformation("NDI Job Configurator is stopping");
     if (ownsInstanceSemaphore) instanceSemaphore.Release();
 }
 

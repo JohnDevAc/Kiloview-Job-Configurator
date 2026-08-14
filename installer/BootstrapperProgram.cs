@@ -4,16 +4,16 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
-namespace KiloviewSetup.Bootstrapper;
+namespace NDIJobConfigurator.Bootstrapper;
 
 internal static class BootstrapperProgram
 {
-    private const string PayloadResource = "KiloviewSetup.Payload.zip";
-    private const string BrandIconResource = "KiloviewSetup.BrandIcon.ico";
-    private const string LicenseResource = "KiloviewSetup.License.md";
-    private const string ProductName = "Kiloview Job Configurator";
-    private const string InstallerAppUserModelId = "JohnLightfoot.KiloviewJobConfigurator.Installer";
-    private static readonly string InstallerLogPath = Path.Combine(Path.GetTempPath(), "KiloviewSetup-Installer.log");
+    private const string PayloadResource = "NDIJobConfigurator.Payload.zip";
+    private const string BrandIconResource = "NDIJobConfigurator.BrandIcon.ico";
+    private const string LicenseResource = "NDIJobConfigurator.License.md";
+    private const string ProductName = "NDI Job Configurator";
+    private const string InstallerAppUserModelId = "JohnLightfoot.NDIJobConfigurator.Installer";
+    private static readonly string InstallerLogPath = Path.Combine(Path.GetTempPath(), "NDIJobConfigurator-Installer.log");
 
     [STAThread]
     private static int Main()
@@ -24,7 +24,7 @@ internal static class BootstrapperProgram
         _ = SetCurrentProcessExplicitAppUserModelID(InstallerAppUserModelId);
 
         var temporaryRoot = Path.GetFullPath(Path.GetTempPath());
-        var extractRoot = Path.Combine(temporaryRoot, $"KiloviewSetup-{Guid.NewGuid():N}");
+        var extractRoot = Path.Combine(temporaryRoot, $"NDIJobConfigurator-{Guid.NewGuid():N}");
 
         try
         {
@@ -37,7 +37,7 @@ internal static class BootstrapperProgram
             Log("License agreement accepted; extracting the installation payload.");
 
             Directory.CreateDirectory(extractRoot);
-            var archivePath = Path.Combine(extractRoot, "KiloviewSetup-Payload.zip");
+            var archivePath = Path.Combine(extractRoot, "NDIJobConfigurator-Payload.zip");
             using (var payload = Assembly.GetExecutingAssembly().GetManifestResourceStream(PayloadResource)
                 ?? throw new InvalidOperationException("The embedded installer payload is missing."))
             using (var archive = File.Create(archivePath))
@@ -51,7 +51,7 @@ internal static class BootstrapperProgram
 
             Log("Payload ready; starting the elevated installation script.");
 
-            var installerScript = Path.Combine(extractRoot, "Install-KiloviewSetup.ps1");
+            var installerScript = Path.Combine(extractRoot, "Install-NDIJobConfigurator.ps1");
             if (!File.Exists(installerScript))
             {
                 throw new FileNotFoundException("The installation script is missing from the payload.", installerScript);

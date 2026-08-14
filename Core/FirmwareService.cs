@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Net.Http.Headers;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 /// <summary>
 /// Stages model-specific firmware locally and coordinates the KiloLink fleet-update step.
@@ -206,10 +206,5 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
     private static string ModelOf(ManagedDevice device) => device.Model.StartsWith("N60", StringComparison.OrdinalIgnoreCase) ? "N60" : "N6";
 
     private static string GetFirmwareDirectory(IWebHostEnvironment environment)
-    {
-        var overrideDirectory = Environment.GetEnvironmentVariable("KILOVIEW_DATA_DIR");
-        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (string.IsNullOrWhiteSpace(root)) root = environment.ContentRootPath;
-        return Path.Combine(string.IsNullOrWhiteSpace(overrideDirectory) ? Path.Combine(root, "Kiloview Setup") : overrideDirectory, "firmware");
-    }
+        => Path.Combine(AppDataPaths.ResolveDataDirectory(environment.ContentRootPath), "firmware");
 }

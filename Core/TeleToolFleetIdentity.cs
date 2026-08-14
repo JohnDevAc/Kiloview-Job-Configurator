@@ -1,4 +1,4 @@
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed record TeleToolManagerIdentity(string ManagerId, string ManagerUrl, string ManagerName);
 
@@ -23,7 +23,7 @@ public sealed class TeleToolFleetIdentity(AppStateStore store)
             return new(
                 managerId,
                 $"http://{host}:8091/",
-                $"{host} · Kiloview Job Configurator");
+                $"{host} · NDI Job Configurator");
         }
         finally
         {

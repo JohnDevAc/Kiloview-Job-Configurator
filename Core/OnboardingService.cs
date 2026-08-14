@@ -2,9 +2,9 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using KiloviewSetup.Devices;
+using NDIJobConfigurator.Devices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class OnboardingService(
     AppStateStore store,

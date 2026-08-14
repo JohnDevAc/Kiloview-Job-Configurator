@@ -3,9 +3,9 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using KiloviewSetup.Core;
+using NDIJobConfigurator.Core;
 
-namespace KiloviewSetup.Devices;
+namespace NDIJobConfigurator.Devices;
 
 public sealed class DeviceApiException(string message, Exception? inner = null) : Exception(message, inner);
 

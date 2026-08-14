@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class SystemTrayService(
     IHostApplicationLifetime applicationLifetime,
@@ -67,7 +67,7 @@ public sealed class SystemTrayService(
             _trayThread = new Thread(RunTray)
             {
                 IsBackground = true,
-                Name = "Kiloview Job Configurator tray"
+                Name = "NDI Job Configurator tray"
             };
             _trayThread.SetApartmentState(ApartmentState.STA);
             _trayThread.Start();
@@ -118,7 +118,7 @@ public sealed class SystemTrayService(
             using var notifyIcon = new NotifyIcon
             {
                 Icon = icon,
-                Text = $"Kiloview Job Configurator v{BuildIdentity.Version}",
+                Text = $"NDI Job Configurator v{BuildIdentity.Version}",
                 ContextMenuStrip = menu,
                 Visible = true
             };
@@ -133,16 +133,16 @@ public sealed class SystemTrayService(
         catch (Exception exception)
         {
             _startupException = exception;
-            logger.LogError(exception, "The Kiloview Job Configurator tray icon failed.");
+            logger.LogError(exception, "The NDI Job Configurator tray icon failed.");
             _initialized.Set();
         }
     }
 
     private Icon LoadApplicationIcon()
     {
-        var installedIcon = Path.Combine(environment.ContentRootPath, "KiloviewSetup.ico");
+        var installedIcon = Path.Combine(environment.ContentRootPath, "NDIJobConfigurator.ico");
         if (File.Exists(installedIcon)) return new Icon(installedIcon);
-        var sourceIcon = Path.Combine(environment.ContentRootPath, "wwwroot", "KiloviewSetup.ico");
+        var sourceIcon = Path.Combine(environment.ContentRootPath, "wwwroot", "NDIJobConfigurator.ico");
         if (File.Exists(sourceIcon)) return new Icon(sourceIcon);
         var executableIcon = Environment.ProcessPath is { } executable
             ? Icon.ExtractAssociatedIcon(executable)
@@ -154,7 +154,10 @@ public sealed class SystemTrayService(
     {
         try
         {
-            var servicePort = int.TryParse(Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"), out var configuredPort)
+            var servicePort = int.TryParse(
+                    Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_SERVICE_PORT")
+                        ?? Environment.GetEnvironmentVariable("KILOVIEW_SERVICE_PORT"),
+                    out var configuredPort)
                 && configuredPort is >= 1024 and <= 65535 ? configuredPort : 8091;
             Process.Start(new ProcessStartInfo($"http://localhost:{servicePort}") { UseShellExecute = true });
         }

@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed record EncoderThumbnail(
     byte[] Bytes,
@@ -240,7 +240,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
         {
             var namePtr = Marshal.StringToCoTaskMemUTF8(source.Name);
             var urlPtr = string.IsNullOrWhiteSpace(source.Url) ? IntPtr.Zero : Marshal.StringToCoTaskMemUTF8(source.Url);
-            var receiverNamePtr = Marshal.StringToCoTaskMemUTF8($"Kiloview Setup Preview {device.Id}");
+            var receiverNamePtr = Marshal.StringToCoTaskMemUTF8($"NDI Job Configurator Preview {device.Id}");
             IntPtr receiver = IntPtr.Zero;
             try
             {

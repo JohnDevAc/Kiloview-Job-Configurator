@@ -1,6 +1,6 @@
 # Codex Project Handoff
 
-Read this file before changing or publishing Kiloview Job Configurator.
+Read this file before changing or publishing NDI Job Configurator.
 
 Last updated: 31 July 2026
 
@@ -11,7 +11,7 @@ Last updated: 31 July 2026
 - Latest implementation: uniform local and remote Windows endpoint status pills
 - Current version: `0.8.0-dev.34`
 - Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.34>
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.83>
 - Next target release: to be assigned after `v0.8.0-dev.34`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
@@ -39,7 +39,7 @@ All requested application work through `v0.8.0-dev.34` has been committed, pushe
 - Root cause: the installed executable had no inbound UDP allow rule for the
   active Private profile. The existing installer rule covered only TCP `8091`;
   an unrelated Windows-generated UDP rule covered Public only.
-- Adding `Kiloview Job Configurator NDI` for the installed executable, inbound
+- Adding `NDI Job Configurator NDI` for the installed executable, inbound
   UDP, Domain/Private profiles, and `LocalSubnet` immediately restored both
   previews with zero capture failures.
 - The installer now provisions that restricted rule and the uninstaller removes
@@ -266,8 +266,8 @@ Development releases must:
 3. Use a tag such as `v0.8.0-dev.30`.
 4. Be published as a GitHub prerelease targeting `development`.
 5. Include:
-   - `Kiloview-Job-Configurator.exe`
-   - `Kiloview-Job-Configurator-Windows.zip`
+   - `NDI-Job-Configurator.exe`
+   - `NDI-Job-Configurator-Windows.zip`
    - `SHA256SUMS.txt`
 6. Be built with:
 
@@ -283,8 +283,8 @@ Do not publish a development tag from `main`, and do not publish a stable tag fr
 
 The source folder can sync, but these items remain local to each Windows PC:
 
-- Application state: `%LOCALAPPDATA%\Kiloview Setup\state.json`
-- State backup and logs: `%LOCALAPPDATA%\Kiloview Setup`
+- Application state: `%LOCALAPPDATA%\NDI Job Configurator\state.json`
+- State backup and logs: `%LOCALAPPDATA%\NDI Job Configurator`
 - Firmware staging and downloaded updates
 - Windows Credential Manager entries
 - Installed application version
@@ -327,5 +327,5 @@ Using this file as a context handoff will work, but OneDrive is not a safe subst
 3. Do not overwrite uncommitted changes from the other machine.
 4. Use the current `development` branch unless John explicitly requests otherwise.
 5. Preserve the single local-PC endpoint design; multicast must update that card rather than creating another card.
-6. Verify changes with an isolated `KILOVIEW_DATA_DIR` and `KILOVIEW_NDI_CONFIG_PATH` before touching live NDI configuration.
+6. Verify changes with an isolated `NDI_JOB_CONFIGURATOR_DATA_DIR` and `NDI_JOB_CONFIGURATOR_NDI_CONFIG_PATH` before touching live NDI configuration. The former `KILOVIEW_*` names remain compatibility fallbacks only.
 7. Do not commit, push, publish, install, or change real devices unless John asks for that action.

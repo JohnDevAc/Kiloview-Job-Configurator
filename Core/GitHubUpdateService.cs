@@ -4,7 +4,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json.Serialization;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed record UpdateChannelSelection(SoftwareReleaseChannel Channel);
 
@@ -39,7 +39,8 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
 {
     private const string RepositoryOwner = "JohnDevAc";
     private const string RepositoryName = "Kiloview-Job-Configurator";
-    private const string InstallerAssetName = "Kiloview-Job-Configurator.exe";
+    private const string InstallerAssetName = "NDI-Job-Configurator.exe";
+    private const string LegacyInstallerAssetName = "Kiloview-Job-Configurator.exe";
     private const long MaximumInstallerBytes = 512L * 1024 * 1024;
     private static readonly SemaphoreSlim UpdateGate = new(1, 1);
 
@@ -78,7 +79,7 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         if (!OperatingSystem.IsWindows())
             throw new InvalidOperationException("Automatic updates are supported only on Windows.");
         if (!IsAdministrator())
-            throw new InvalidOperationException("Kiloview Job Configurator must be running as administrator to install an update.");
+            throw new InvalidOperationException("NDI Job Configurator must be running as administrator to install an update.");
 
         await UpdateGate.WaitAsync(cancellationToken);
         try
@@ -99,11 +100,11 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
             var localRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             if (string.IsNullOrWhiteSpace(localRoot))
                 throw new InvalidOperationException("Local application data is unavailable.");
-            var updateDirectory = Path.Combine(localRoot, "Kiloview Setup", "updates");
+            var updateDirectory = Path.Combine(localRoot, "NDI Job Configurator", "updates");
             Directory.CreateDirectory(updateDirectory);
             var safeVersion = string.Concat(resolved.Version.Display.Select(character =>
                 char.IsLetterOrDigit(character) || character is '.' or '-' ? character : '-'));
-            var installerPath = Path.Combine(updateDirectory, $"Kiloview-Job-Configurator-{safeVersion}.exe");
+            var installerPath = Path.Combine(updateDirectory, $"NDI-Job-Configurator-{safeVersion}.exe");
             var temporaryPath = installerPath + ".download";
 
             try
@@ -136,9 +137,10 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                     throw new InvalidOperationException("The downloaded installer failed SHA-256 verification.");
 
                 File.Move(temporaryPath, installerPath, true);
-                foreach (var oldInstaller in Directory.EnumerateFiles(updateDirectory, "Kiloview-Job-Configurator-*.exe"))
-                    if (!oldInstaller.Equals(installerPath, StringComparison.OrdinalIgnoreCase))
-                        File.Delete(oldInstaller);
+                foreach (var pattern in new[] { "NDI-Job-Configurator-*.exe", "Kiloview-Job-Configurator-*.exe" })
+                    foreach (var oldInstaller in Directory.EnumerateFiles(updateDirectory, pattern))
+                        if (!oldInstaller.Equals(installerPath, StringComparison.OrdinalIgnoreCase))
+                            File.Delete(oldInstaller);
 
                 var installerProcess = Process.Start(new ProcessStartInfo(installerPath)
                 {
@@ -154,7 +156,7 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                         installerProcess.Id);
 
                 logger.LogInformation(
-                    "Verified and launched Kiloview Job Configurator {Channel} update {Version} from GitHub.",
+                    "Verified and launched NDI Job Configurator {Channel} update {Version} from GitHub.",
                     channel,
                     resolved.Version.Display);
                 return new(resolved.Version.Display, channel, channelSwitch, actualSha256, true);
@@ -223,9 +225,13 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
         if (release is null) throw new InvalidOperationException($"No {channel} release has been published yet.");
         var version = selectedVersion ?? ParseVersion(release.TagName, $"latest {channel} release tag");
         var asset = release.Assets.FirstOrDefault(candidate =>
-            candidate.Name.Equals(InstallerAssetName, StringComparison.OrdinalIgnoreCase)
-            && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
-            ?? throw new InvalidOperationException($"Release {release.TagName} does not contain {InstallerAssetName}.");
+                        candidate.Name.Equals(InstallerAssetName, StringComparison.OrdinalIgnoreCase)
+                        && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
+                    ?? release.Assets.FirstOrDefault(candidate =>
+                        candidate.Name.Equals(LegacyInstallerAssetName, StringComparison.OrdinalIgnoreCase)
+                        && candidate.State.Equals("uploaded", StringComparison.OrdinalIgnoreCase))
+                    ?? throw new InvalidOperationException(
+                        $"Release {release.TagName} does not contain {InstallerAssetName} or its legacy-compatible alias.");
         ValidateAsset(asset);
         return new(release, asset, version);
     }

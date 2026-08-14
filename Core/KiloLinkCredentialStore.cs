@@ -4,7 +4,7 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed record KiloLinkCredential(string Username, string Password);
 public sealed record KiloLinkCredentialStatus(bool Stored, string? Username);
@@ -62,7 +62,8 @@ public sealed class KiloLinkCredentialStore
         return stored;
     }
 
-    private static string Target(string serverIp) => $"KiloviewSetup/KiloLink/{serverIp}";
+    private static string Target(string serverIp) => $"NDIJobConfigurator/KiloLink/{serverIp}";
+    private static string LegacyTarget(string serverIp) => $"KiloviewSetup/KiloLink/{serverIp}";
 
     private static void Write(string serverIp, KiloLinkCredential value)
     {
@@ -81,7 +82,7 @@ public sealed class KiloLinkCredentialStore
                 CredentialBlob = blob,
                 Persist = PersistLocalMachine,
                 UserName = value.Username,
-                Comment = "Kiloview Setup KiloLink server credential"
+                Comment = "NDI Job Configurator KiloLink server credential"
             };
             if (!CredWrite(ref native, 0)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows Credential Manager could not store the KiloLink credential.");
         }
@@ -95,7 +96,17 @@ public sealed class KiloLinkCredentialStore
     private static KiloLinkCredential? Read(string serverIp)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("KiloLink credential storage requires Windows Credential Manager.");
-        if (!CredRead(Target(serverIp), GenericCredential, 0, out var pointer))
+        var credential = ReadTarget(Target(serverIp));
+        if (credential is not null) return credential;
+
+        credential = ReadTarget(LegacyTarget(serverIp));
+        if (credential is not null) Write(serverIp, credential);
+        return credential;
+    }
+
+    private static KiloLinkCredential? ReadTarget(string target)
+    {
+        if (!CredRead(target, GenericCredential, 0, out var pointer))
         {
             var error = Marshal.GetLastWin32Error();
             if (error == NotFound) return null;

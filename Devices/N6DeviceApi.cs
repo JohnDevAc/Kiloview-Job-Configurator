@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Net.Http.Headers;
-using KiloviewSetup.Core;
+using NDIJobConfigurator.Core;
 
-namespace KiloviewSetup.Devices;
+namespace NDIJobConfigurator.Devices;
 
 internal sealed class N6DeviceApi(
     string ipAddress,

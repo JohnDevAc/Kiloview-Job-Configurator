@@ -1,6 +1,6 @@
 # Third-party licensing and trademark notices
 
-Kiloview Job Configurator does not reference third-party NuGet packages. Its self-contained Windows distribution does, however, embed the Microsoft .NET and ASP.NET Core runtimes.
+NDI Job Configurator does not reference third-party NuGet packages. Its self-contained Windows distribution does, however, embed the Microsoft .NET and ASP.NET Core runtimes.
 
 The corresponding upstream license and notice files distributed with the runtime packs used by this release are included here:
 
