@@ -739,7 +739,107 @@ internal sealed class N60DeviceApi(
     public async Task BlankAsync(CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        using var color = await PostAsync(client, "/api/codec/preset/set_blank_color", new { BlankColor = "#000000" }, "set N60 blank colour", ct);
-        using var blank = await PostAsync(client, "/api/codec/decode/add", new { id = 0 }, "blank N60 output", ct);
+        await RetryDecoderMutationAsync(
+            () => SelectBlankPresetAsync(client, ct),
+            "blank N60 output",
+            ct);
+        await RetryDecoderMutationAsync(
+            () => SetBlankColorAsync(client, ct),
+            "set N60 blank colour",
+            ct);
+
+        Exception? lastReadError = null;
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), ct);
+            try
+            {
+                using var current = await GetAsync(client, "/api/codec/decode/get", "verify N60 blank output", ct);
+                var data = Payload(current.RootElement);
+                var name = String(data, "name").Trim();
+                var url = String(data, "url").Trim();
+                var address = String(data, "ip").Trim();
+                if (string.IsNullOrEmpty(name) &&
+                    string.IsNullOrEmpty(url) &&
+                    (string.IsNullOrEmpty(address) || address == "0.0.0.0"))
+                    return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested &&
+                                       ex is DeviceApiException or HttpRequestException or TaskCanceledException)
+            {
+                lastReadError = ex;
+            }
+        }
+
+        throw new DeviceApiException("N60 accepted the blank preset but did not confirm an empty decoder source.", lastReadError);
+    }
+
+    private async Task SetBlankColorAsync(HttpClient client, CancellationToken ct)
+    {
+        ApplyCookies(client);
+        // This endpoint is case-sensitive. PostAsJsonAsync's web defaults turn
+        // an anonymous BlankColor property into "blankColor", which firmware
+        // 2.45 rejects with HTTP 422. Dictionary keys retain the API's exact
+        // documented spelling.
+        using var response = await client.PostAsJsonAsync(
+            "/api/codec/preset/set_blank_color",
+            new Dictionary<string, string> { ["BlankColor"] = "#000000" },
+            ct);
+        using var accepted = await ReadJsonAsync(response, "set N60 blank colour", ct);
+    }
+
+    private async Task SelectBlankPresetAsync(HttpClient client, CancellationToken ct)
+    {
+        ApplyCookies(client);
+        using var response = await client.PostAsJsonAsync("/api/codec/decode/add", new { id = 0 }, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new DeviceApiException($"blank N60 output failed with HTTP {(int)response.StatusCode}.");
+
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("result", out var result))
+                return;
+
+            var value = result.ToString();
+            // Firmware 2.45 returns {"result":"","msg":""} after it has
+            // successfully selected preset zero. Other N60 mutations use
+            // "ok", so accept both documented success representations here.
+            if (string.IsNullOrWhiteSpace(value) || value.Equals("ok", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var message = document.RootElement.TryGetProperty("msg", out var msg) ? msg.ToString() : value;
+            throw new DeviceApiException($"blank N60 output was rejected by the device: {message}");
+        }
+        catch (JsonException ex)
+        {
+            throw new DeviceApiException("blank N60 output returned an invalid response.", ex);
+        }
+    }
+
+    private static async Task RetryDecoderMutationAsync(
+        Func<Task> mutation,
+        string operation,
+        CancellationToken ct)
+    {
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            try
+            {
+                await mutation();
+                return;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested &&
+                                       ex is DeviceApiException or HttpRequestException or TaskCanceledException)
+            {
+                lastError = ex;
+                if (attempt < 5) await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), ct);
+            }
+        }
+
+        throw new DeviceApiException($"{operation} failed after 5 attempts.", lastError);
     }
 }

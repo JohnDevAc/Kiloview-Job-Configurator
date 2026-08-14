@@ -966,12 +966,21 @@ public sealed class OnboardingService(
     {
         var decoders = (await store.ReadAsync()).Devices.Where(d => d.IsOnboarded && d.Role == DeviceRole.Decoder).ToArray();
         var errors = new ConcurrentBag<object>();
-        titleCards.StopAll();
-        await Parallel.ForEachAsync(decoders, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct }, async (device, token) =>
+        try
         {
-            try { await factory.Create(device).BlankAsync(token); }
-            catch (Exception ex) { errors.Add(new { device.Id, ex.Message }); }
-        });
+            // Select and verify the blank preset before withdrawing the NDI
+            // identity sources. N60 firmware can reject preset mutations while
+            // its currently selected source is disappearing from discovery.
+            await Parallel.ForEachAsync(decoders, new ParallelOptions { MaxDegreeOfParallelism = 8, CancellationToken = ct }, async (device, token) =>
+            {
+                try { await factory.Create(device).BlankAsync(token); }
+                catch (Exception ex) { errors.Add(new { device.Id, ex.Message }); }
+            });
+        }
+        finally
+        {
+            titleCards.StopAll();
+        }
         return new { completed = errors.IsEmpty, decoders = decoders.Length, errors = errors.ToArray() };
     }
 
