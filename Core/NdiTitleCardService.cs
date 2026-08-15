@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 /// <summary>Publishes one full-frame NDI identity card per decoder using the locally installed NDI Tools runtime.</summary>
 public sealed class NdiTitleCardService(
@@ -328,7 +328,7 @@ public sealed class NdiTitleCardService(
                 Draw(dc, device.IpAddress, 92, new Rect(180, 490, 1760, 660), 0x006DD337, 600);
                 Draw(dc, $"JOB NAME / NDI® GROUP   {device.NdiGroup}", 42, new Rect(185, 715, 1760, 805), 0x00D6CEC5, 400);
                 Draw(dc, $"CHANNEL     {device.NdiChannelName}", 42, new Rect(185, 810, 1760, 900), 0x00D6CEC5, 400);
-                Draw(dc, "MATCH THIS SCREEN TO THE CARD IN KILOVIEW JOB CONFIGURATOR", 30, new Rect(180, 960, 1760, 1025), 0x008D857E, 400);
+                Draw(dc, "MATCH THIS SCREEN TO THE CARD IN NDI JOB CONFIGURATOR", 30, new Rect(180, 960, 1760, 1025), 0x008D857E, 400);
                 var pixels = new byte[Width * Height * 4];
                 Marshal.Copy(bits, pixels, 0, pixels.Length);
                 return pixels;

@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class AppStateStore
 {

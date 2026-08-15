@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>NDI Job Configurator</AssemblyName>
+    <RootNamespace>NDIJobConfigurator.Bootstrapper</RootNamespace>
+    <AssemblyTitle>NDI Job Configurator</AssemblyTitle>
+    <Description>Installer for the NDI job onboarding, configuration, and monitoring application.</Description>
+    <ApplicationIcon>..\wwwroot\NDIJobConfigurator.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\artifacts\NDI-Job-Configurator-Windows.zip" LogicalName="NDIJobConfigurator.Payload.zip" />
+    <EmbeddedResource Include="..\wwwroot\NDIJobConfigurator.ico" LogicalName="NDIJobConfigurator.BrandIcon.ico" />
+    <EmbeddedResource Include="..\LICENSE.md" LogicalName="NDIJobConfigurator.License.md" />
+  </ItemGroup>
+</Project>

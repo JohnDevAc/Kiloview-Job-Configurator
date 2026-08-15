@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using System.Collections.Concurrent;
 using System.Text.Json;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 /// <summary>Validated against the KiloLink Server Pro 1.08.0034 web API.</summary>
 public sealed class KiloLinkServerClient(IHttpClientFactory clients)
@@ -267,7 +267,7 @@ public sealed class KiloLinkServerClient(IHttpClientFactory clients)
             var targets = await WaitForTargetsAsync(session.Client, model, intended, ct);
             if (targets.Count == 0) throw new InvalidOperationException($"KiloLink has no registered {model} devices matching this onboarding job.");
 
-            var description = $"Kiloview Setup {model} {package.Sha256[..Math.Min(12, package.Sha256.Length)]}";
+            var description = $"NDI Job Configurator {model} {package.Sha256[..Math.Min(12, package.Sha256.Length)]}";
             await UploadAsync(session.Client, package, description, ct);
             uploaded++;
             var firmware = await FindFirmwareAsync(session.Client, model, description, ct);

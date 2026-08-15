@@ -1,6 +1,6 @@
-using KiloviewSetup.Core;
+using NDIJobConfigurator.Core;
 
-namespace KiloviewSetup.Devices;
+namespace NDIJobConfigurator.Devices;
 
 internal sealed class TeleToolDeviceApi(ManagedDevice device, TeleToolFleetService fleet) : IDeviceApi
 {

@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#09100f">
-  <title>Kiloview Job Configurator</title>
-  <link rel="icon" href="/KiloviewSetup.ico" sizes="any">
-  <link rel="apple-touch-icon" href="/KiloviewSetup.png">
+  <title>NDI Job Configurator</title>
+  <link rel="icon" href="/NDIJobConfigurator.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/NDIJobConfigurator.png">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="#" data-action="monitor">
-      <img class="brand-logo" src="/KiloviewSetup.png" alt="">
-      <span><strong>Kiloview Job Configurator</strong><small>ONBOARD · CONFIGURE · MONITOR</small></span>
+      <img class="brand-logo" src="/NDIJobConfigurator.png" alt="">
+      <span><strong>NDI Job Configurator</strong><small>ONBOARD · CONFIGURE · MONITOR</small></span>
     </a>
     <div class="top-actions">
       <div class="service" title="Local service status"><i id="serviceDot"></i><span id="headerVersion">Version v…</span></div>
@@ -77,7 +77,7 @@
 
         <div class="section-title"><span>04</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
         <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required maxlength="32"></label>
-        <label class="check clean-onboarding-option wide"><input name="cleanOnboarding" type="checkbox"><span><strong>Clean onboarding</strong><small>Delete all existing KiloLink devices/groups and previous configurator job devices before this run. Leave off when adding to an existing job.</small></span></label>
+        <label class="check clean-onboarding-option wide"><input name="cleanOnboarding" type="checkbox" role="switch" checked><span><strong>Clean onboarding</strong><small>Delete all existing KiloLink devices/groups and previous configurator job devices before this run. Switch off when adding to an existing job.</small></span></label>
         <details class="wide advanced">
           <summary>Device login & test options</summary>
           <div class="details-grid">
@@ -129,8 +129,11 @@
     </section>
 
     <section id="monitorView" class="view hidden">
-      <div class="page-head"><div><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div><div class="page-actions"><button id="nameDisplays" class="quiet hidden" data-action="name-displays">Name displays</button><button class="quiet" data-action="multicast">Multicast setup</button><button class="quiet" data-action="new-job">+ New onboarding</button></div></div>
-      <div class="monitor-stats" id="monitorStats"></div>
+      <div class="monitor-overview">
+        <div class="monitor-job"><p class="eyebrow">LIVE MONITOR</p><h1 id="monitorTitle">Device status</h1><p id="monitorMeta">Kiloview health and TeleTool Fleet Manager status refresh every 15 seconds.</p></div>
+        <div class="monitor-stats" id="monitorStats"></div>
+        <div class="page-actions monitor-actions"><button id="nameDisplays" class="quiet hidden" data-action="name-displays">Name displays</button><button class="quiet" data-action="multicast">Multicast setup</button><button class="monitor-primary" data-action="new-job">+ New onboarding</button></div>
+      </div>
       <div id="monitorGrid" class="device-groups"></div>
     </section>
 
@@ -166,11 +169,11 @@
       <div class="page-head"><div><h1>System settings</h1><p>Application version, administrator status, and verified updates from the selected release channel.</p></div><button class="quiet" data-action="back-settings">← Back</button></div>
       <div class="settings-grid">
         <article class="panel settings-panel">
-          <div class="settings-brand"><img src="/KiloviewSetup.png" alt=""><div><p class="eyebrow">INSTALLED SOFTWARE</p><h2 id="settingsCurrentVersion">Version …</h2></div></div>
+          <div class="settings-brand"><img src="/NDIJobConfigurator.png" alt=""><div><p class="eyebrow">INSTALLED SOFTWARE</p><h2 id="settingsCurrentVersion">Version …</h2></div></div>
           <div class="settings-row"><span>Installed channel</span><strong id="installedChannel">Checking…</strong></div>
           <div class="settings-row"><span>Service privileges</span><strong id="administratorStatus">Checking…</strong></div>
           <div class="settings-row"><span>Startup</span><strong>Elevated at sign-in</strong></div>
-          <p class="settings-copy">Kiloview Job Configurator requires administrator rights for hardware discovery, network configuration, and managed startup.</p>
+          <p class="settings-copy">NDI Job Configurator requires administrator rights for hardware discovery, network configuration, and managed startup.</p>
           <div class="diagnostics-actions">
             <button id="downloadDiagnostics" class="quiet" type="button">Download diagnostics</button>
             <small>Includes rotating application logs and system details. Device state and stored credentials are excluded.</small>
@@ -201,7 +204,7 @@
 
   <footer class="legal-footer">
     <div>
-      <strong>Kiloview Job Configurator <span id="appVersion">v…</span></strong>
+      <strong>NDI Job Configurator <span id="appVersion">v…</span></strong>
       <span>© 2026 John Lightfoot · Proprietary · Free for unmodified non-commercial use</span>
     </div>
     <nav aria-label="Legal information">

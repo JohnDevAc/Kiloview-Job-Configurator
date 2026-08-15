@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class WindowsPcRemoteOnboardingService(
     AppStateStore store,
@@ -112,7 +112,7 @@ public sealed class WindowsPcRemoteOnboardingService(
                 Stopwatch.GetElapsedTime(started).TotalMilliseconds);
             return new(
                 1,
-                "Kiloview Job Configurator",
+                "NDI Job Configurator",
                 pending.EndpointId,
                 pending.JobName,
                 pending.NdiDiscoveryServerIp,

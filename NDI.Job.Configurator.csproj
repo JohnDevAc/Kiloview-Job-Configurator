@@ -5,11 +5,11 @@
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>KiloviewSetup</RootNamespace>
-    <AssemblyName>KiloviewSetup</AssemblyName>
-    <AssemblyTitle>Kiloview Job Configurator</AssemblyTitle>
-    <Description>Discover, onboard, configure, identify, and monitor Kiloview devices for a production job.</Description>
-    <ApplicationIcon>wwwroot\KiloviewSetup.ico</ApplicationIcon>
+    <RootNamespace>NDIJobConfigurator</RootNamespace>
+    <AssemblyName>NDIJobConfigurator</AssemblyName>
+    <AssemblyTitle>NDI Job Configurator</AssemblyTitle>
+    <Description>Discover, onboard, configure, identify, and monitor NDI devices for a production job.</Description>
+    <ApplicationIcon>wwwroot\NDIJobConfigurator.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>

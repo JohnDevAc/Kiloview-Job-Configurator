@@ -2,9 +2,9 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
-using KiloviewSetup.Devices;
+using NDIJobConfigurator.Devices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class MulticastService(
     AppStateStore store,

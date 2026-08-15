@@ -137,7 +137,7 @@ export function createSystemSettingsController({ api, $, state, toast }) {
       const match = disposition.match(/filename="?([^";]+)"?/i);
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = match?.[1] || 'Kiloview-Job-Configurator-Diagnostics.zip';
+      link.download = match?.[1] || 'NDI-Job-Configurator-Diagnostics.zip';
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       toast('Diagnostics package downloaded');

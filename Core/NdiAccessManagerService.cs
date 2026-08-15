@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed record NdiAccessManagerStatus(
     bool Detected,
@@ -76,7 +76,8 @@ public sealed class NdiAccessManagerService
         WriteIndented = true,
         TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
-    private readonly string _configPath = Environment.GetEnvironmentVariable("KILOVIEW_NDI_CONFIG_PATH") is { Length: > 0 } overridePath
+    private readonly string _configPath = (Environment.GetEnvironmentVariable("NDI_JOB_CONFIGURATOR_NDI_CONFIG_PATH")
+        ?? Environment.GetEnvironmentVariable("KILOVIEW_NDI_CONFIG_PATH")) is { Length: > 0 } overridePath
         ? Path.GetFullPath(overridePath)
         : Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),

@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 /// <summary>
 /// Verifies an existing KiloLink login and completes the official first-login password change

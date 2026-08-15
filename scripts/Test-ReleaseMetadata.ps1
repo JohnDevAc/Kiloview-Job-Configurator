@@ -25,8 +25,8 @@ if ($channel -eq 'Main' -and $version -match '-') {
 }
 
 foreach ($project in @(
-    (Join-Path $Root 'Kiloview.Setup.csproj'),
-    (Join-Path $Root 'installer\Kiloview.Setup.Bootstrapper.csproj')
+    (Join-Path $Root 'NDI.Job.Configurator.csproj'),
+    (Join-Path $Root 'installer\NDI.Job.Configurator.Bootstrapper.csproj')
 )) {
     [xml]$projectXml = Get-Content -LiteralPath $project -Raw
     if ($projectXml.SelectNodes('//Version').Count -gt 0) {

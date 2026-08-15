@@ -1,7 +1,7 @@
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class DiagnosticsService(IWebHostEnvironment environment)
 {
@@ -15,7 +15,7 @@ public sealed class DiagnosticsService(IWebHostEnvironment environment)
             var summary = archive.CreateEntry("system.txt", CompressionLevel.Optimal);
             using (var writer = new StreamWriter(summary.Open()))
             {
-                writer.WriteLine($"Product: Kiloview Job Configurator");
+                writer.WriteLine($"Product: NDI Job Configurator");
                 writer.WriteLine($"Version: {BuildIdentity.Version}");
                 writer.WriteLine($"Channel: {BuildIdentity.ReleaseChannel}");
                 writer.WriteLine($"Generated: {DateTimeOffset.Now:O}");

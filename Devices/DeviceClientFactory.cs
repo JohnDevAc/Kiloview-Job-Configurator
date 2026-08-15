@@ -1,6 +1,6 @@
-using KiloviewSetup.Core;
+using NDIJobConfigurator.Core;
 
-namespace KiloviewSetup.Devices;
+namespace NDIJobConfigurator.Devices;
 
 public sealed class DeviceClientFactory(
     AppStateStore store,

@@ -1,4 +1,4 @@
-# Kiloview Job Configurator End User License Agreement (EULA)
+# NDI Job Configurator End User License Agreement (EULA)
 
 Proprietary Non-Commercial No-Derivatives License
 

@@ -1,6 +1,6 @@
 using System.Reflection;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public enum SoftwareReleaseChannel
 {

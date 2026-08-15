@@ -1,6 +1,6 @@
 using System.Net;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public enum DeviceFamily { N6, N60, TeleTool, Simulated, SimulatedTeleTool }
 public enum DeviceRole { Unknown, Encoder, Decoder }
@@ -20,6 +20,7 @@ public sealed record ManagedDevice
     public DeviceHealth Health { get; init; } = DeviceHealth.Unknown;
     public string NdiGroup { get; init; } = "public";
     public string NdiChannelName { get; init; } = "Channel-1";
+    public string? TunedNdiChannelName { get; init; }
     public string? FirmwareVersion { get; init; }
     public bool IsStatic { get; init; }
     public bool IsOnboarded { get; init; }

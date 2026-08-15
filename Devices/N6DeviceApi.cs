@@ -1,8 +1,8 @@
 using System.Text.Json;
 using System.Net.Http.Headers;
-using KiloviewSetup.Core;
+using NDIJobConfigurator.Core;
 
-namespace KiloviewSetup.Devices;
+namespace NDIJobConfigurator.Devices;
 
 internal sealed class N6DeviceApi(
     string ipAddress,
@@ -61,6 +61,7 @@ internal sealed class N6DeviceApi(
         using var network = await GetAsync(client, "/api/network/get.json", "read N6 network", ct);
         JsonDocument? mode = null;
         JsonDocument? codecStatus = null;
+        JsonDocument? decoderStatus = null;
         string? modeWarning = null;
         try { mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode", ct); }
         catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
@@ -81,6 +82,18 @@ internal sealed class N6DeviceApi(
             // keep discovery working until a healthy status read supplies the
             // immutable hardware serial.
         }
+        if (mode is null && codecStatus is null)
+        {
+            try
+            {
+                decoderStatus = await GetAsync(client, "/api/decoderMode/current/get.json", "read N6 decoder identity", ct);
+            }
+            catch (DeviceApiException)
+            {
+                // If neither target codec endpoint is ready, the monitor keeps
+                // the last confirmed role while the N6 completes a cold start.
+            }
+        }
         var net = network.RootElement.GetProperty("data")[0];
         var ver = version.RootElement.GetProperty("data");
         var hostnameText = String(hostname.RootElement.GetProperty("data"), "hostname", "N6");
@@ -96,6 +109,33 @@ internal sealed class N6DeviceApi(
         var mac = String(net, "mac", serial).Trim();
         if (string.IsNullOrWhiteSpace(serial)) serial = mac;
         var modeName = mode is null ? "" : String(mode.RootElement.GetProperty("data"), "mode");
+        var role = modeName == "decoder"
+            ? DeviceRole.Decoder
+            : modeName == "encoder"
+                ? DeviceRole.Encoder
+                : codecStatus is not null
+                    ? DeviceRole.Encoder
+                    : decoderStatus is not null
+                        ? DeviceRole.Decoder
+                        : DeviceRole.Unknown;
+        JsonDocument? decoderSource = null;
+        if (role == DeviceRole.Decoder)
+        {
+            try
+            {
+                decoderSource = await GetAsync(client, "/api/decoder/current/get.json", "read N6 selected NDI source", ct);
+            }
+            catch (DeviceApiException)
+            {
+                // decoderStatus may still expose the current source while the
+                // dedicated current-source endpoint is settling.
+            }
+        }
+        var tunedNdiChannel = decoderSource is not null
+            ? TunedNdiChannel(Payload(decoderSource.RootElement))
+            : decoderStatus is not null
+                ? TunedNdiChannel(Payload(decoderStatus.RootElement))
+                : null;
         var result = new ManagedDevice
         {
             Id = string.IsNullOrWhiteSpace(serial) ? mac : serial,
@@ -106,13 +146,20 @@ internal sealed class N6DeviceApi(
             Family = DeviceFamily.N6,
             FirmwareVersion = String(ver, "softwareVersion"),
             IsStatic = String(net, "dynamic") == "n",
-            Role = modeName == "decoder" ? DeviceRole.Decoder : modeName == "encoder" ? DeviceRole.Encoder : DeviceRole.Unknown,
+            Role = role,
+            TunedNdiChannelName = tunedNdiChannel,
             Health = DeviceHealth.Online,
             LastSeenUtc = DateTimeOffset.UtcNow,
             Credentials = Credentials,
-            ManagementState = modeWarning is null ? null : "mode-recovery-required",
-            ManagementMessage = modeWarning
+            ManagementState = modeWarning is null ? null : role == DeviceRole.Unknown ? "mode-recovery-required" : "mode-starting",
+            ManagementMessage = modeWarning is null
+                ? null
+                : role == DeviceRole.Unknown
+                    ? modeWarning
+                    : $"N6 mode service is starting; {role.ToString().ToLowerInvariant()} role was confirmed from the active codec service."
         };
+        decoderSource?.Dispose();
+        decoderStatus?.Dispose();
         codecStatus?.Dispose();
         mode?.Dispose();
         return result;
@@ -398,19 +445,8 @@ internal sealed class N6DeviceApi(
     {
         using (var client = await AuthorizedAsync(ct))
         {
-            string? currentMode = null;
-            try
-            {
-                using var current = await GetAsync(client, "/api/mode/get.json", "read N6 mode before switch", ct);
-                currentMode = String(Payload(current.RootElement), "mode");
-                if (string.Equals(currentMode, target, StringComparison.OrdinalIgnoreCase))
-                    return;
-            }
-            catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
-            {
-                // Do not reboot before trying the switch. Firmware 2.00 can
-                // reject mode/get with 0201001 while mode/switch still works.
-            }
+            var currentMode = await WaitForKnownModeAsync(client, ct);
+            if (string.Equals(currentMode, target, StringComparison.OrdinalIgnoreCase)) return;
 
             // N6 firmware 2.00 can wedge its codec proxy at 0201001 when an
             // active decoder preview is carried across a Decoder -> Encoder
@@ -456,6 +492,77 @@ internal sealed class N6DeviceApi(
             }
         }
         throw new DeviceApiException($"N6 mode service did not become ready in {target} mode.", last);
+    }
+
+    private async Task<string> WaitForKnownModeAsync(HttpClient client, CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(90);
+        string? fallbackMode = null;
+        var consecutiveFallbackReads = 0;
+        DeviceApiException? last = null;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                using var mode = await GetAsync(client, "/api/mode/get.json", "read N6 mode before switch", ct);
+                var reported = String(Payload(mode.RootElement), "mode").Trim().ToLowerInvariant();
+                if (reported is "encoder" or "decoder") return reported;
+            }
+            catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex))
+            {
+                last = ex;
+            }
+
+            // A cold-starting N6 can expose its web API before mode/get is
+            // available. Prove which codec service is active before issuing a
+            // mode write: a blind switch to the already-active mode can wedge
+            // firmware 2.00's codec proxy at 0201001.
+            var encoderActive = await CodecEndpointAvailableAsync(
+                client,
+                "/api/device/status.json?types=ndihx",
+                "probe N6 encoder service before mode switch",
+                ct);
+            var decoderActive = !encoderActive && await CodecEndpointAvailableAsync(
+                client,
+                "/api/decoderMode/current/get.json",
+                "probe N6 decoder service before mode switch",
+                ct);
+            var detected = encoderActive ? "encoder" : decoderActive ? "decoder" : null;
+            if (detected is not null && string.Equals(detected, fallbackMode, StringComparison.OrdinalIgnoreCase))
+            {
+                consecutiveFallbackReads++;
+                if (consecutiveFallbackReads >= 3) return detected;
+            }
+            else
+            {
+                fallbackMode = detected;
+                consecutiveFallbackReads = detected is null ? 0 : 1;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(3), ct);
+        }
+
+        throw new DeviceApiException(
+            "The N6 codec mode could not be confirmed, so the configurator cancelled the mode change to avoid damaging the codec service. Wait for the N6 to finish starting, then retry.",
+            last);
+    }
+
+    private async Task<bool> CodecEndpointAvailableAsync(
+        HttpClient client,
+        string path,
+        string description,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var response = await GetAsync(client, path, description, ct);
+            return true;
+        }
+        catch (DeviceApiException)
+        {
+            return false;
+        }
     }
 
     private async Task ClearDecoderPreviewsAsync(HttpClient client, CancellationToken ct)
@@ -953,6 +1060,31 @@ internal sealed class N6DeviceApi(
     {
         using var client = await AuthorizedAsync(ct);
         using var color = await PostAsync(client, "/api/decoder/preset/set_blank.json", new { color = "#000000" }, "set N6 blank colour", ct);
-        using var current = await PostAsync(client, "/api/decoder/current/set.json", new { id = "0" }, "blank N6 output", ct);
+        using (var current = await GetAsync(client, "/api/decoder/current/get.json", "read N6 output before blanking", ct))
+            if (DecoderOutputIsBlank(Payload(current.RootElement))) return;
+        try
+        {
+            using var selected = await PostAsync(client, "/api/decoder/current/set.json", new { id = "0" }, "blank N6 output", ct);
+        }
+        catch (DeviceApiException)
+        {
+            // Firmware 2.00 can reject selecting preset zero with 0301003 when
+            // the decoder has already become blank while identity discovery is
+            // being withdrawn. Treat the operation as successful only after a
+            // readback confirms there is no selected source.
+            using var verified = await GetAsync(client, "/api/decoder/current/get.json", "verify N6 blank output", ct);
+            if (!DecoderOutputIsBlank(Payload(verified.RootElement))) throw;
+        }
+    }
+
+    private static bool DecoderOutputIsBlank(JsonElement output)
+    {
+        var online = output.TryGetProperty("online", out var onlineValue) &&
+                     onlineValue.ValueKind == JsonValueKind.True;
+        var address = String(output, "ip").Trim();
+        return !online &&
+               string.IsNullOrWhiteSpace(String(output, "name")) &&
+               string.IsNullOrWhiteSpace(String(output, "url")) &&
+               (string.IsNullOrWhiteSpace(address) || address == "0.0.0.0");
     }
 }

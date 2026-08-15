@@ -4,7 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 
-namespace KiloviewSetup.Core;
+namespace NDIJobConfigurator.Core;
 
 public sealed class WindowsPcAgentService(
     AppStateStore store,

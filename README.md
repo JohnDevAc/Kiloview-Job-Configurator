@@ -1,10 +1,10 @@
-<p align="center"><img src="wwwroot/KiloviewSetup.png" width="140" alt="Kiloview Job Configurator icon"></p>
+<p align="center"><img src="wwwroot/NDIJobConfigurator.png" width="140" alt="NDI Job Configurator icon"></p>
 
-# Kiloview Job Configurator
+# NDI Job Configurator
 
 > **Proprietary source-available software — not open source.** Free for non-commercial use in unmodified form only. Modification, derivative works, redistribution, and commercial use are prohibited. See [LICENSE.md](LICENSE.md).
 
-Kiloview Job Configurator is the Windows web application for discovering, onboarding, identifying, and monitoring Kiloview N6/N60 converters and TeleTool encoders. A development run listens on `http://localhost:8091`; the Windows installer enables private-LAN access on TCP `8091`, permits local-subnet UDP reception for embedded NDI multicast previews, and installs a desktop shortcut to the local address.
+NDI Job Configurator is the Windows web application for discovering, onboarding, identifying, and monitoring Kiloview N6/N60 converters, TeleTool encoders, and Windows NDI endpoints. A development run listens on `http://localhost:8091`; the Windows installer enables private-LAN access on TCP `8091`, permits local-subnet UDP reception for embedded NDI multicast previews, and installs a desktop shortcut to the local address.
 
 This repository contains the **job configurator only**. The separate [Kiloview Environment Setup](https://github.com/JohnDevAc/Kiloview-Environment-Setup) repository installs and maintains KiloLink Server Pro, NDI® Tools, and NDI Discovery Server prerequisites.
 
@@ -62,7 +62,7 @@ Requires the .NET 8 SDK.
 
 ```powershell
 dotnet build --configuration Release
-dotnet run --project .\Kiloview.Setup.csproj
+dotnet run --project .\NDI.Job.Configurator.csproj
 ```
 
 Open `http://localhost:8091`. Use **Simulation mode** for the first acceptance run.
@@ -114,7 +114,7 @@ Recommended single-file installer (self-contained, no separate .NET installation
 .\scripts\Publish.ps1 -SetupExe
 ```
 
-Distribute `artifacts\Kiloview-Job-Configurator.exe`. The installer carries the Kiloview Job Configurator application icon, uses the same icon and identity on the Windows taskbar, and presents a branded logo/title header above the EULA. Its Per-Monitor V2 EULA window uses a responsive, resizable layout, constrains itself to the active monitor's working area, and keeps the acceptance and action controls visible while the licence text scrolls. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in with LAN access enabled, adds a Windows Firewall rule for TCP `8091` plus a separate inbound UDP rule required by embedded NDI multicast previews, limits both to `LocalSubnet` on Domain/Private profiles, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. During an upgrade it stops only the executable from this product's installation directory and removes the previous application payload before copying the replacement, while preserving `%LOCALAPPDATA%\Kiloview Setup` state, logs, credentials, and firmware. Updates launched from the web UI explicitly hand foreground activation to the elevated installer, which also brings its EULA window forward when shown. Other trusted LAN devices can open `http://<setup-pc-ip>:8091`. Public network profiles remain blocked, and uninstalling removes both firewall rules. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
+Distribute `artifacts\NDI-Job-Configurator.exe`. The installer carries the NDI Job Configurator application icon, uses the same icon and identity on the Windows taskbar, and presents a branded logo/title header above the EULA. Its Per-Monitor V2 EULA window uses a responsive, resizable layout, constrains itself to the active monitor's working area, and keeps the acceptance and action controls visible while the licence text scrolls. Double-clicking it requests Windows administrator approval, installs for the current user, registers the elevated service to start automatically at sign-in with LAN access enabled, adds a Windows Firewall rule for TCP `8091` plus a separate inbound UDP rule required by embedded NDI multicast previews, limits both to `LocalSubnet` on Domain/Private profiles, starts it immediately, opens `http://localhost:8091`, and creates branded Desktop and Start Menu shortcuts. During an upgrade it migrates a legacy Kiloview Job Configurator installation, preserves state, logs, credentials, and firmware under `%LOCALAPPDATA%\NDI Job Configurator`, and removes obsolete application payloads, tasks, shortcuts, and firewall rules. Updates launched from the web UI explicitly hand foreground activation to the elevated installer, which also brings its EULA window forward when shown. Other trusted LAN devices can open `http://<setup-pc-ip>:8091`. Public network profiles remain blocked, and uninstalling removes both firewall rules. The service runs as a notification-area application without a console window or taskbar button. Double-click its tray icon to open the web UI, or right-click it for **Open Web UI**, **Restart**, and **Exit**. The shortcuts restart the elevated service when necessary before opening the UI.
 
 Framework-dependent package (requires the .NET 8 ASP.NET Core Runtime on the destination PC):
 
@@ -128,7 +128,7 @@ Self-contained Windows x64 package (larger; restore may need internet access):
 .\scripts\Publish.ps1 -SelfContained
 ```
 
-Extract `artifacts\Kiloview-Job-Configurator-Windows.zip` and run `Install.cmd`. Installation is per-user, registers an elevated scheduled task so the service starts with administrator rights at sign-in, and creates branded Desktop and Start Menu launch shortcuts. The installer and application request elevation through Windows UAC.
+Extract `artifacts\NDI-Job-Configurator-Windows.zip` and run `Install.cmd`. Installation is per-user, registers an elevated scheduled task so the service starts with administrator rights at sign-in, and creates branded Desktop and Start Menu launch shortcuts. The installer and application request elevation through Windows UAC.
 
 ## Software updates
 
@@ -159,12 +159,12 @@ The application loads the NDI runtime only from a separate installation of [NDI 
 - PC Agent discovery and monitoring are read-only, bound to the selected adapter/subnet, and fixed to UDP `8093` and TCP `8094`. The Job Configurator does not scan outside its existing bounded IPv4 range, trust an advertised address different from the datagram source, or expose remote NDI editing, software installation, membership removal, agent control, UAC bypass, or command execution. Privileged onboarding remains local and confirmation-gated by the endpoint user.
 - Stored device credentials remain in local `state.json` for device management but are excluded from every HTTP API response.
 - KiloLink authorization codes are generated server-side per serial number, used by the active device configuration call, and are not written to `state.json`.
-- KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `KiloviewSetup/KiloLink/<server-ip>`. A newly discovered factory server is authenticated with the official `admin/Kiloview001` login, changed to `admin/<Job Name>`, re-authenticated, and only then stored. When a stored login is available, onboarding displays its username and a masked password indicator and allows the blank password field to reuse it. An explicit View/Hide control can retrieve the password only through a no-cache, loopback-only endpoint opened from `localhost` on the setup PC; LAN clients cannot retrieve it. Passwords are never written to `state.json`.
+- KiloLink server usernames/passwords are stored locally in Windows Credential Manager under `NDIJobConfigurator/KiloLink/<server-ip>`. Credentials under the legacy `KiloviewSetup/KiloLink/<server-ip>` target are migrated automatically when read. A newly discovered factory server is authenticated with the official `admin/Kiloview001` login, changed to `admin/<Job Name>`, re-authenticated, and only then stored. When a stored login is available, onboarding displays its username and a masked password indicator and allows the blank password field to reuse it. An explicit View/Hide control can retrieve the password only through a no-cache, loopback-only endpoint opened from `localhost` on the setup PC; LAN clients cannot retrieve it. Passwords are never written to `state.json`.
 - Device credentials are intentionally stored locally in `state.json`; after first-login provisioning the username is `admin` and the password is the exact Job Name.
-- Persistent state is stored in `%LOCALAPPDATA%\Kiloview Setup\state.json`, with a last-known-good `state.json.bak`. Invalid primary state is timestamped and quarantined before the backup is restored; it is never silently replaced with an empty configuration.
+- Persistent state is stored in `%LOCALAPPDATA%\NDI Job Configurator\state.json`, with a last-known-good `state.json.bak`. The legacy data directory is copied on first renamed launch. Invalid primary state is timestamped and quarantined before the backup is restored; it is never silently replaced with an empty configuration.
 - The selected network-adapter ID and current IPv4 address are stored in the same application state and reused by every network-aware workflow. Its address is also stored as the sole entry in NDI's `ndi.adapters.allowed` configuration. If that adapter disappears or Access Manager is changed, the local endpoint card is marked as needing attention instead of silently switching networks.
-- Rotating runtime logs are retained under `%LOCALAPPDATA%\Kiloview Setup\logs`. **System settings → Download diagnostics** packages those logs with runtime details while deliberately excluding device state and credentials; downloads are limited to `localhost`.
-- Staged firmware is stored under `%LOCALAPPDATA%\Kiloview Setup\firmware`, separated by device model, and checked with SHA-256 after upload.
+- Rotating runtime logs are retained under `%LOCALAPPDATA%\NDI Job Configurator\logs`. **System settings → Download diagnostics** packages those logs with runtime details while deliberately excluding device state and credentials; downloads are limited to `localhost`.
+- Staged firmware is stored under `%LOCALAPPDATA%\NDI Job Configurator\firmware`, separated by device model, and checked with SHA-256 after upload.
 - The KiloLink web/API port is configured separately from the device-link UDP port. The defaults are web `80` and device link `50000` (with KiloLink using `50000–50001` UDP).
 - Static address conflicts are checked using known inventory, ICMP, HTTP, and HTTPS before a plan is offered.
 - A failed readdress, reconnect, API call, or mode switch is shown per device and does not silently pass.
