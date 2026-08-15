@@ -429,7 +429,7 @@ public sealed class MulticastService(
                         string.Equals(candidate.EndpointId, assignment.EndpointId, StringComparison.OrdinalIgnoreCase));
                     if (agent is null || !agent.Capabilities.Contains("multicast-config-v1", StringComparer.Ordinal))
                         throw new NotSupportedException(
-                            "This PC Agent cannot revert NDI Access Manager remotely. Disable multicast manually or update the agent.");
+                            "This NDI Configurator PC Agent cannot revert NDI Access Manager remotely. Disable multicast manually or update the agent.");
                     await pcAgents.ConfigureMulticastAsync(
                         assignment.EndpointId,
                         "unicast",

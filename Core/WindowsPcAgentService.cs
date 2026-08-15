@@ -11,6 +11,7 @@ public sealed class WindowsPcAgentService(
     IHttpClientFactory clients,
     ILogger<WindowsPcAgentService> logger) : BackgroundService
 {
+    public const string ProductName = WindowsPcAgentContract.ProductName;
     public const int DiscoveryPort = 8093;
     public const int DefaultApiPort = 8094;
     private const string Probe = "KILOVIEW_PC_AGENT_DISCOVER_V1";
@@ -28,7 +29,7 @@ public sealed class WindowsPcAgentService(
         {
             try { await DiscoverAsync(stoppingToken); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception ex) { logger.LogWarning(ex, "Windows PC Agent discovery pass failed"); }
+            catch (Exception ex) { logger.LogWarning(ex, "NDI Configurator PC Agent discovery pass failed"); }
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
         }
     }
@@ -109,11 +110,11 @@ public sealed class WindowsPcAgentService(
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                 catch (OperationCanceledException)
                 {
-                    logger.LogDebug("PC Agent validation timed out for {Address}", reply.Address);
+                    logger.LogDebug("NDI Configurator PC Agent validation timed out for {Address}", reply.Address);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException)
                 {
-                    logger.LogDebug(ex, "PC Agent validation failed for {Address}", reply.Address);
+                    logger.LogDebug(ex, "NDI Configurator PC Agent validation failed for {Address}", reply.Address);
                 }
             });
 
@@ -150,7 +151,7 @@ public sealed class WindowsPcAgentService(
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
             catch (JsonException) { }
-            catch (SocketException ex) { logger.LogDebug(ex, "Ignoring malformed PC Agent discovery reply"); }
+            catch (SocketException ex) { logger.LogDebug(ex, "Ignoring malformed NDI Configurator PC Agent discovery reply"); }
         }
     }
 
@@ -166,11 +167,11 @@ public sealed class WindowsPcAgentService(
         using var health = await client.GetAsync($"http://{address}:{apiPort}/api/health", ct);
         if (!health.IsSuccessStatusCode) return null;
         var healthPayload = await health.Content.ReadFromJsonAsync<WindowsPcAgentHealth>(AgentJson.Options, ct);
-        if (healthPayload is null || healthPayload.SchemaVersion != 1 || healthPayload.Product != "Kiloview PC Agent" || healthPayload.Status != "ok") return null;
+        if (healthPayload is null || healthPayload.SchemaVersion != 1 || !WindowsPcAgentContract.IsCompatibleProduct(healthPayload.Product) || healthPayload.Status != "ok") return null;
         using var response = await client.GetAsync($"http://{address}:{apiPort}/api/v1/status", ct);
         if (!response.IsSuccessStatusCode) return null;
         var status = await response.Content.ReadFromJsonAsync<WindowsPcAgentStatus>(AgentJson.Options, ct);
-        return status is not null && status.SchemaVersion == 1 && status.Product == "Kiloview PC Agent"
+        return status is not null && status.SchemaVersion == 1 && WindowsPcAgentContract.IsCompatibleProduct(status.Product)
             && status.Status == "online"
             && string.Equals(status.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase)
             && string.Equals(status.Address, address, StringComparison.Ordinal)
@@ -201,11 +202,11 @@ public sealed class WindowsPcAgentService(
         var network = NetworkAddressing.ResolveLocalInterface(state.SelectedNetworkAdapterId, state.SelectedNetworkAddress)
             ?? throw new InvalidOperationException("The selected onboarding adapter is no longer active.");
         var agent = Snapshot().FirstOrDefault(candidate => string.Equals(candidate.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
-            ?? throw new KeyNotFoundException("The PC Agent is no longer discoverable on the selected subnet.");
+            ?? throw new KeyNotFoundException($"The {ProductName} is no longer discoverable on the selected subnet.");
         if (!agent.Capabilities.Contains("remote-onboarding-v2", StringComparer.Ordinal)
             || !agent.Capabilities.Contains("network-config-v1", StringComparer.Ordinal))
-            throw new NotSupportedException("PC Agent update required for managed remote onboarding.");
-        if (!IsSelectedSubnetAddress(agent.Address, network)) throw new InvalidOperationException("The PC Agent is outside the selected subnet.");
+            throw new NotSupportedException($"{ProductName} update required for managed remote onboarding.");
+        if (!IsSelectedSubnetAddress(agent.Address, network)) throw new InvalidOperationException($"The {ProductName} is outside the selected subnet.");
         if (state.LastJob is null) throw new InvalidOperationException("Create or open a job before requesting PC onboarding.");
         var serverAddress = network.Address;
         using var client = CreateBoundClient(network, TimeSpan.FromSeconds(60));
@@ -242,11 +243,11 @@ public sealed class WindowsPcAgentService(
             ?? throw new InvalidOperationException("The selected onboarding adapter is no longer active.");
         var agent = Snapshot().FirstOrDefault(candidate =>
             string.Equals(candidate.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
-            ?? throw new KeyNotFoundException("The PC Agent is no longer discoverable on the selected subnet.");
+            ?? throw new KeyNotFoundException($"The {ProductName} is no longer discoverable on the selected subnet.");
         if (!agent.Capabilities.Contains("multicast-config-v1", StringComparer.Ordinal))
-            throw new NotSupportedException("Update the PC Agent to configure NDI Access Manager multicast remotely.");
+            throw new NotSupportedException($"Update the {ProductName} to configure NDI Access Manager multicast remotely.");
         if (!IsSelectedSubnetAddress(agent.Address, network))
-            throw new InvalidOperationException("The PC Agent is outside the selected subnet.");
+            throw new InvalidOperationException($"The {ProductName} is outside the selected subnet.");
         if (state.LastJob is null || !string.Equals(state.LastJob.JobName, jobName, StringComparison.Ordinal))
             throw new InvalidOperationException("The active job no longer matches the multicast request.");
 
@@ -281,11 +282,11 @@ public sealed class WindowsPcAgentService(
         {
             var detail = await response.Content.ReadAsStringAsync(ct);
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(detail)
-                ? $"PC Agent returned HTTP {(int)response.StatusCode} while applying multicast settings."
-                : $"PC Agent returned HTTP {(int)response.StatusCode}: {detail}");
+                ? $"{ProductName} returned HTTP {(int)response.StatusCode} while applying multicast settings."
+                : $"{ProductName} returned HTTP {(int)response.StatusCode}: {detail}");
         }
         var result = await response.Content.ReadFromJsonAsync<WindowsPcAgentMulticastResult>(AgentJson.Options, ct)
-            ?? throw new JsonException("PC Agent returned an empty multicast result.");
+            ?? throw new JsonException($"{ProductName} returned an empty multicast result.");
         ValidateMulticastResult(result, payload);
         logger.LogInformation(
             "Remote NDI multicast {Mode} verified for endpoint {EndpointId}; send {SendEnabled}, receive {ReceiveEnabled}, in use {InUse}",
@@ -302,7 +303,7 @@ public sealed class WindowsPcAgentService(
         WindowsPcAgentMulticastRequest request)
     {
         if (result.SchemaVersion != 1
-            || !string.Equals(result.Product, "Kiloview PC Agent", StringComparison.Ordinal)
+            || !WindowsPcAgentContract.IsCompatibleProduct(result.Product)
             || !string.Equals(result.EndpointId, request.EndpointId, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(result.AdapterId, request.AdapterId, StringComparison.OrdinalIgnoreCase)
             || !string.Equals(result.Mode, request.Mode, StringComparison.Ordinal)
@@ -313,7 +314,7 @@ public sealed class WindowsPcAgentService(
             || !string.Equals(result.Netmask, request.Netmask, StringComparison.Ordinal)
             || result.Ttl != request.Ttl
             || (request.Mode == "multicast" && !string.Equals(result.JobName, request.JobName, StringComparison.Ordinal)))
-            throw new InvalidOperationException("PC Agent did not verify the requested NDI Access Manager multicast state.");
+            throw new InvalidOperationException($"{ProductName} did not verify the requested NDI Access Manager multicast state.");
     }
 
     private static HttpClient CreateBoundClient(LocalNetworkInterface network, TimeSpan timeout)
@@ -347,10 +348,10 @@ public sealed class WindowsPcAgentService(
     private static bool Compatible(WindowsPcAgentDiscovery? reply) => reply is
     {
         SchemaVersion: 1,
-        Product: "Kiloview PC Agent",
         ApiPort: DefaultApiPort,
         Status: "online"
-    } && Guid.TryParse(reply.EndpointId, out _)
+    } && WindowsPcAgentContract.IsCompatibleProduct(reply.Product)
+      && Guid.TryParse(reply.EndpointId, out _)
       && !string.IsNullOrWhiteSpace(reply.AgentVersion)
       && IPAddress.TryParse(reply.Address, out var address) && address.AddressFamily == AddressFamily.InterNetwork
       && reply.PrefixLength is >= 1 and <= 30

@@ -225,6 +225,15 @@ public sealed record WindowsPcRegistration(
     string EulaVersion,
     string? OperatingSystemVersion = null);
 public sealed record WindowsPcAgentHealth(string Status, string Product, string Version, int SchemaVersion);
+public static class WindowsPcAgentContract
+{
+    public const string ProductName = "NDI Configurator PC Agent";
+    public const string LegacyProductName = "Kiloview PC Agent";
+
+    public static bool IsCompatibleProduct(string? product) =>
+        string.Equals(product, ProductName, StringComparison.Ordinal)
+        || string.Equals(product, LegacyProductName, StringComparison.Ordinal);
+}
 public sealed record WindowsPcAgentMembership(
     string ServerAddress,
     string ConfiguratorUrl,

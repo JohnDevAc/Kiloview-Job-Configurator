@@ -35,10 +35,10 @@ public sealed class WindowsPcRemoteOnboardingService(
             ?? throw new InvalidOperationException("Create or open a job before requesting PC onboarding.");
         var agent = agents.Snapshot().FirstOrDefault(candidate =>
             string.Equals(candidate.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
-            ?? throw new KeyNotFoundException("The PC Agent is no longer discoverable on the selected subnet.");
+            ?? throw new KeyNotFoundException("The NDI Configurator PC Agent is no longer discoverable on the selected subnet.");
         RequireRemoteCapabilities(agent);
         if (!Contains(network, agent.Address))
-            throw new UnauthorizedAccessException("The PC Agent is outside the selected production subnet.");
+            throw new UnauthorizedAccessException("The NDI Configurator PC Agent is outside the selected production subnet.");
 
         var desired = ValidateNetwork(request.Network, agent, network);
         var now = DateTimeOffset.UtcNow;
@@ -183,7 +183,7 @@ public sealed class WindowsPcRemoteOnboardingService(
             _ => pending with
             {
                 Status = "failed",
-                Message = $"The PC Agent returned HTTP {(int)statusCode}. The staged configuration remains available for a retry.",
+                Message = $"The NDI Configurator PC Agent returned HTTP {(int)statusCode}. The staged configuration remains available for a retry.",
                 RegistrationDeadlineUtc = null
             }
         };
@@ -260,7 +260,7 @@ public sealed class WindowsPcRemoteOnboardingService(
             throw new ArgumentException("Choose unchanged, DHCP, or static network configuration.");
         if (string.IsNullOrWhiteSpace(request.AdapterId)
             || !string.Equals(request.AdapterId.Trim(), agent.AdapterId, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Choose the adapter currently selected by the PC Agent.");
+            throw new ArgumentException("Choose the adapter currently selected by the NDI Configurator PC Agent.");
         var mode = request.Mode.Trim().ToLowerInvariant();
         if (mode is "unchanged" or "dhcp")
         {
@@ -317,7 +317,7 @@ public sealed class WindowsPcRemoteOnboardingService(
     {
         if (!agent.Capabilities.Contains("remote-onboarding-v2", StringComparer.Ordinal)
             || !agent.Capabilities.Contains("network-config-v1", StringComparer.Ordinal))
-            throw new NotSupportedException("PC Agent update required for managed remote onboarding.");
+            throw new NotSupportedException("NDI Configurator PC Agent update required for managed remote onboarding.");
     }
 
     private static IPAddress ParseIpv4(string? value, string field)

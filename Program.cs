@@ -357,6 +357,7 @@ app.MapGet("/api/pc-agents", (WindowsPcAgentService agents, AppStateStore store,
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return Results.Ok(agents.Snapshot().Select(agent => new
         {
+            product = WindowsPcAgentService.ProductName,
             agent.EndpointId,
             agent.Hostname,
             agent.Address,
@@ -427,8 +428,8 @@ app.MapPost("/api/pc-agents/{endpointId}/onboarding/open", async (
         {
             System.Net.HttpStatusCode.Accepted => Results.Accepted(value: remoteOnboarding.Status(endpointId)),
             System.Net.HttpStatusCode.Forbidden => Results.Json(new { error = "The endpoint user denied onboarding. The staged configuration remains available until it expires." }, statusCode: StatusCodes.Status403Forbidden),
-            System.Net.HttpStatusCode.BadRequest => Results.BadRequest(new { error = "The PC Agent rejected the onboarding request." }),
-            _ => Results.Problem($"PC Agent returned HTTP {(int)status}.", statusCode: StatusCodes.Status502BadGateway)
+            System.Net.HttpStatusCode.BadRequest => Results.BadRequest(new { error = $"The {WindowsPcAgentService.ProductName} rejected the onboarding request." }),
+            _ => Results.Problem($"{WindowsPcAgentService.ProductName} returned HTTP {(int)status}.", statusCode: StatusCodes.Status502BadGateway)
         };
     }
     catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -443,7 +444,7 @@ app.MapPost("/api/pc-agents/{endpointId}/onboarding/open", async (
     }
     catch (HttpRequestException ex)
     {
-        remoteOnboarding.RecordFailure(endpointId, "The PC Agent could not be reached for local approval.");
+        remoteOnboarding.RecordFailure(endpointId, $"The {WindowsPcAgentService.ProductName} could not be reached for local approval.");
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
     }
 });

@@ -8,19 +8,36 @@ Last updated: 15 August 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active stable branch: `main`
-- Latest implementation: hardened device recovery, isolated UI gateway sessions, and aligned decoder controls
-- Current version: `0.8.4`
+- Latest implementation: NDI Configurator PC Agent branding compatibility
+- Current version: `0.8.5`
 - Release channel: `Main`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.4>
-- Development baseline: `v0.8.0-dev.95`
-- Next target release: to be assigned after `v0.8.4`
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.5>
+- Development baseline: `v0.8.0-dev.96`
+- Next target release: to be assigned after `v0.8.5`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.95` has been promoted to stable `v0.8.4`.
+All requested application work through `v0.8.0-dev.96` has been promoted to stable `v0.8.5`.
+
+## Stable 0.8.5 promotion
+
+- `main` includes the fully validated `v0.8.0-dev.96` implementation.
+- Shared release metadata uses stable version `0.8.5` and the `Main` update channel.
+- The corresponding Development prerelease remains available as `v0.8.0-dev.96`.
+
+## Dev.96 NDI Configurator PC Agent compatibility
+
+- Discovery, health, status, and managed multicast validation accept the new
+  `NDI Configurator PC Agent` product value and the legacy `Kiloview PC Agent`
+  value during rollout.
+- The compatibility wire probe remains exactly `KILOVIEW_PC_AGENT_DISCOVER_V1`.
+- Discovery and monitoring continue to reconcile endpoints by stable
+  `endpointId`; product text is not used as identity.
+- Server API responses and every operator-facing label display only the new
+  NDI Configurator PC Agent name.
 
 ## Stable 0.8.4 promotion
 
