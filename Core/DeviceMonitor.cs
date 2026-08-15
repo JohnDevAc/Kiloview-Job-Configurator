@@ -10,6 +10,9 @@ public sealed class DeviceMonitor(
     WindowsPcAgentService pcAgents,
     ILogger<DeviceMonitor> logger) : BackgroundService
 {
+    private static readonly TimeSpan N6ModeStartupGrace = TimeSpan.FromMinutes(2);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> n6ModeUnavailableSince = new(StringComparer.Ordinal);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
@@ -56,9 +59,11 @@ public sealed class DeviceMonitor(
                     }
                     else
                     {
-                        var refreshed = await factory.Create(device).ReadAsync(token);
+                        var persisted = ResolveN6PersistedIdentity(snapshot, device);
+                        var refreshed = NormalizeN6ColdStartRole(persisted, await factory.Create(device).ReadAsync(token));
                         updated = refreshed with
                         {
+                            Id = persisted.Id,
                             IsOnboarded = device.IsOnboarded,
                             NdiGroup = device.NdiGroup,
                             NdiChannelName = device.NdiChannelName,
@@ -134,6 +139,48 @@ public sealed class DeviceMonitor(
             localPcResult));
     }
 
+    private static ManagedDevice ResolveN6PersistedIdentity(AppState state, ManagedDevice device)
+    {
+        if (device.Family != DeviceFamily.N6) return device;
+
+        var assignment = state.Multicast?.Assignments.FirstOrDefault(candidate =>
+            string.Equals(candidate.EndpointId, device.Id, StringComparison.Ordinal)
+            || string.Equals(candidate.Address, device.IpAddress, StringComparison.Ordinal));
+        if (assignment is null) return device;
+
+        var role = device.Role;
+        if (role == DeviceRole.Unknown && assignment.Role != DeviceRole.Unknown)
+        {
+            role = assignment.Role;
+        }
+        return device with { Id = assignment.EndpointId, Role = role };
+    }
+
+    private ManagedDevice NormalizeN6ColdStartRole(ManagedDevice previous, ManagedDevice refreshed)
+    {
+        if (refreshed.Family != DeviceFamily.N6 || refreshed.ManagementState is not ("mode-starting" or "mode-recovery-required"))
+        {
+            n6ModeUnavailableSince.TryRemove(previous.Id, out _);
+            return refreshed;
+        }
+
+        var role = refreshed.Role != DeviceRole.Unknown
+            ? refreshed.Role
+            : previous.Role;
+        if (role == DeviceRole.Unknown) return refreshed;
+
+        var unavailableSince = n6ModeUnavailableSince.GetOrAdd(previous.Id, DateTimeOffset.UtcNow);
+        var inStartupGrace = DateTimeOffset.UtcNow - unavailableSince < N6ModeStartupGrace;
+        return refreshed with
+        {
+            Role = role,
+            ManagementState = inStartupGrace ? "mode-starting" : "mode-fallback",
+            ManagementMessage = inStartupGrace
+                ? $"N6 is online as the last confirmed {role.ToString().ToLowerInvariant()} while its mode service completes a cold start."
+                : $"N6 is online as the confirmed {role.ToString().ToLowerInvariant()}; monitoring is using the saved device assignment because the firmware mode endpoint is unavailable."
+        };
+    }
+
     private static AppState ApplyResults(
         AppState current,
         IEnumerable<DevicePollResult> results,
@@ -159,7 +206,8 @@ public sealed class DeviceMonitor(
             {
                 var assignmentIndex = Array.FindIndex(
                     assignments,
-                    assignment => assignment.EndpointId == result.Original.Id);
+                    assignment => assignment.EndpointId == monitored.Id
+                        || assignment.EndpointId == result.Original.Id);
                 if (assignmentIndex >= 0)
                 {
                     var assignment = assignments[assignmentIndex];

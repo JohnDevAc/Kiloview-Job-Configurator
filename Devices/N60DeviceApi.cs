@@ -35,6 +35,20 @@ internal sealed class N60DeviceApi(
         using var hostname = await GetAsync(client, "/api/systemctrl/system/getHostname", "read N60 hostname", ct);
         using var network = await GetAsync(client, "/api/networkmanager/network/GetLinkinfo", "read N60 network", ct);
         var modeText = (await client.GetStringAsync("/api/codec/mode/get", ct)).Trim().Trim('"');
+        string? tunedNdiChannel = null;
+        if (modeText == "decode")
+        {
+            try
+            {
+                using var current = await GetAsync(client, "/api/codec/decode/get", "read N60 selected NDI source", ct);
+                tunedNdiChannel = TunedNdiChannel(Payload(current.RootElement));
+            }
+            catch (DeviceApiException)
+            {
+                // Source status is supplementary monitoring data. Keep the
+                // decoder online while its codec service changes sources.
+            }
+        }
         var version = system.RootElement.GetProperty("data").GetProperty("version");
         var active = network.RootElement.GetProperty("data").EnumerateArray().FirstOrDefault(e => String(e, "status") == "up");
         if (active.ValueKind == JsonValueKind.Undefined) active = network.RootElement.GetProperty("data")[0];
@@ -50,6 +64,7 @@ internal sealed class N60DeviceApi(
             FirmwareVersion = String(version, "softwareVersion"),
             IsStatic = String(active, "method") == "static",
             Role = modeText == "decode" ? DeviceRole.Decoder : DeviceRole.Encoder,
+            TunedNdiChannelName = tunedNdiChannel,
             Health = DeviceHealth.Online,
             LastSeenUtc = DateTimeOffset.UtcNow,
             Credentials = Credentials

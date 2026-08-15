@@ -174,4 +174,21 @@ internal abstract class HttpDeviceApi(
         data.ValueKind == JsonValueKind.Object
             ? data
             : root;
+
+    protected static string? TunedNdiChannel(JsonElement source)
+    {
+        foreach (var property in new[] { "channel_name", "channelName", "ndi_name", "stream_name", "name" })
+        {
+            var value = String(source, property).Trim();
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            if (property is "stream_name" or "name")
+            {
+                var open = value.LastIndexOf('(');
+                if (open >= 0 && value.EndsWith(')') && open < value.Length - 2)
+                    return value[(open + 1)..^1].Trim();
+            }
+            return value;
+        }
+        return null;
+    }
 }

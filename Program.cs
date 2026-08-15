@@ -64,6 +64,7 @@ builder.Services.AddSingleton<MulticastService>();
 builder.Services.AddSingleton<DiagnosticsService>();
 builder.Services.AddSingleton<WindowsPcAgentService>();
 builder.Services.AddSingleton<WindowsPcRemoteOnboardingService>();
+builder.Services.AddSingleton<DeviceUiGatewayService>();
 builder.Services.AddSingleton<SystemTrayService>();
 builder.Services.AddHostedService(services => services.GetRequiredService<SystemTrayService>());
 builder.Services.AddHostedService(services => services.GetRequiredService<WindowsPcAgentService>());
@@ -115,6 +116,16 @@ builder.Services.AddHostedService<DeviceMonitor>();
 
 var app = builder.Build();
 WindowsInstallationRegistration.Ensure(app.Environment.ContentRootPath, app.Logger);
+app.Use(async (context, next) =>
+{
+    var gateway = context.RequestServices.GetRequiredService<DeviceUiGatewayService>();
+    if (gateway.TryGetSession(context, out var session) && session is not null)
+    {
+        await gateway.ProxyAsync(context, session, context.RequestAborted);
+        return;
+    }
+    await next();
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
@@ -567,6 +578,50 @@ app.MapPut("/api/network/selection", async (
 });
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));
 app.MapGet("/api/devices", async (AppStateStore store) => Results.Ok((await store.ReadAsync()).Devices));
+app.MapPost("/api/devices/{id}/ui-session", async (
+    string id,
+    HttpContext context,
+    AppStateStore store,
+    DeviceUiGatewayService gateway,
+    CancellationToken ct) =>
+{
+    var remoteAddress = context.Connection.RemoteIpAddress;
+    if (remoteAddress?.IsIPv4MappedToIPv6 == true) remoteAddress = remoteAddress.MapToIPv4();
+    if (remoteAddress is null || !IPAddress.IsLoopback(remoteAddress))
+        return Results.BadRequest(new { error = "Automatic Kiloview login is available from the Job Configurator host PC only." });
+    var device = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == id && candidate.IsOnboarded);
+    if (device is null) return Results.NotFound(new { error = $"Device '{id}' was not found." });
+    try
+    {
+        return Results.Ok(new { url = await gateway.CreateAsync(device, servicePort, ct) });
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+app.MapGet("/api/devices/{id}/ui", async (
+    string id,
+    HttpContext context,
+    AppStateStore store,
+    DeviceUiGatewayService gateway,
+    CancellationToken ct) =>
+{
+    var device = (await store.ReadAsync()).Devices.FirstOrDefault(candidate => candidate.Id == id && candidate.IsOnboarded);
+    if (device is null) return Results.NotFound(new { error = $"Device '{id}' was not found." });
+    var directUrl = $"http://{device.IpAddress}{(device.WebPort == 80 ? "" : $":{device.WebPort}")}";
+    var remoteAddress = context.Connection.RemoteIpAddress;
+    if (remoteAddress?.IsIPv4MappedToIPv6 == true) remoteAddress = remoteAddress.MapToIPv4();
+    if (remoteAddress is null || !IPAddress.IsLoopback(remoteAddress)) return Results.Redirect(directUrl);
+    try
+    {
+        return Results.Redirect(await gateway.CreateAsync(device, servicePort, ct));
+    }
+    catch (InvalidOperationException)
+    {
+        return Results.Redirect(directUrl);
+    }
+});
 app.MapGet("/api/devices/{id}/thumbnail", async (string id, EncoderThumbnailService thumbnails, HttpResponse response, CancellationToken ct) =>
 {
     try
