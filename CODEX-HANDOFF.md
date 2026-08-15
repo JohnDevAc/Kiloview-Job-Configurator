@@ -2,24 +2,35 @@
 
 Read this file before changing or publishing NDI Job Configurator.
 
-Last updated: 31 July 2026
+Last updated: 15 August 2026
 
 ## Current baseline
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: uniform local and remote Windows endpoint status pills
-- Current version: `0.8.0-dev.34`
+- Latest implementation: NDI Configurator PC Agent branding compatibility
+- Current version: `0.8.0-dev.96`
 - Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.83>
-- Next target release: to be assigned after `v0.8.0-dev.34`
+- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.95>
+- Next target release: `v0.8.0-dev.96`
 - Current active work: none.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.34` has been committed, pushed, packaged, and published.
+All requested application work through `v0.8.0-dev.95` has been committed, pushed, packaged, and published. Development work for `v0.8.0-dev.96` is currently local.
+
+## Dev.96 NDI Configurator PC Agent compatibility
+
+- Discovery, health, status, and managed multicast validation accept the new
+  `NDI Configurator PC Agent` product value and the legacy `Kiloview PC Agent`
+  value during rollout.
+- The compatibility wire probe remains exactly `KILOVIEW_PC_AGENT_DISCOVER_V1`.
+- Discovery and monitoring continue to reconcile endpoints by stable
+  `endpointId`; product text is not used as identity.
+- Server API responses and every operator-facing label display only the new
+  NDI Configurator PC Agent name.
 
 ## Dev.34 uniform Windows endpoint cards
 

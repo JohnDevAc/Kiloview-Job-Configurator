@@ -275,9 +275,9 @@ public sealed class DeviceMonitor(
                     var error = matches
                         ? null
                         : result.Updated.ConnectivityStatus == "offline"
-                            ? "PC Agent multicast status is unavailable because the endpoint is offline."
+                            ? "NDI Configurator PC Agent multicast status is unavailable because the endpoint is offline."
                             : reported is null
-                                ? "PC Agent did not report NDI Access Manager multicast status. Reapply multicast setup."
+                                ? "NDI Configurator PC Agent did not report NDI Access Manager multicast status. Reapply multicast setup."
                                 : $"Remote NDI Access Manager settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}.";
                     var refreshed = assignment with
                     {
@@ -377,13 +377,13 @@ public sealed class DeviceMonitor(
                 }
                 catch (OperationCanceledException)
                 {
-                    logger.LogDebug("PC Agent status poll timed out for {EndpointId}", endpoint.EndpointId);
+                    logger.LogDebug("NDI Configurator PC Agent status poll timed out for {EndpointId}", endpoint.EndpointId);
                 }
                 catch (Exception ex) when (ex is HttpRequestException
                     or InvalidOperationException
                     or System.Text.Json.JsonException)
                 {
-                    logger.LogDebug(ex, "PC Agent status poll failed for {EndpointId}", endpoint.EndpointId);
+                    logger.LogDebug(ex, "NDI Configurator PC Agent status poll failed for {EndpointId}", endpoint.EndpointId);
                 }
 
                 var reachable = live is not null;
