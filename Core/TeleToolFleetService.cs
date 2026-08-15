@@ -416,6 +416,79 @@ public sealed class TeleToolFleetService(
         }
     }
 
+    public async Task<bool> StartTemporaryDiscoverySourceAsync(
+        ManagedDevice device,
+        MulticastDeviceConfiguration settings,
+        CancellationToken ct)
+    {
+        if (!device.IsTeleTool())
+            throw new InvalidOperationException("Only TeleTool encoders support temporary decoder discovery sources.");
+        if (device.Family == DeviceFamily.SimulatedTeleTool)
+        {
+            var state = await store.ReadAsync();
+            var current = state.Devices.First(candidate => candidate.Id == device.Id);
+            if (current.StreamRunning == true) return false;
+            await ChangeSimulationAsync(device.Id, candidate => candidate with
+            {
+                StreamRunning = true,
+                StreamStatus = "running",
+                PipelineStatus = "test card running",
+                MulticastInUse = true
+            });
+            return true;
+        }
+
+        var gate = _adoptionGates.GetOrAdd(device.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
+            if (Flag(status, "running")) return false;
+            var config = await GetAsync(device.IpAddress, device.WebPort, "/api/config/ui", TimeSpan.FromSeconds(4), ct);
+            var payload = BuildStreamSettings(status, config, device.NdiChannelName, device.NdiGroup);
+            ApplyMulticastSettings(payload, settings);
+            await PostAsync(device.IpAddress, device.WebPort, "/api/test-card/start", payload, TimeSpan.FromSeconds(25), ct);
+            await ConfirmRunningMulticastAsync(device, settings, ct);
+            logger.LogInformation("Started temporary multicast test card for decoder discovery on TeleTool {EndpointId}", device.Id);
+            return true;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async Task StopTemporaryDiscoverySourceAsync(ManagedDevice device, CancellationToken ct)
+    {
+        if (!device.IsTeleTool()) return;
+        if (device.Family == DeviceFamily.SimulatedTeleTool)
+        {
+            await ChangeSimulationAsync(device.Id, candidate => candidate with
+            {
+                StreamRunning = false,
+                StreamStatus = "stopped",
+                PipelineStatus = "stopped",
+                MulticastInUse = false
+            });
+            return;
+        }
+
+        var gate = _adoptionGates.GetOrAdd(device.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            var status = await GetAsync(device.IpAddress, device.WebPort, "/api/status?lite=1&rf=0", TimeSpan.FromSeconds(5), ct);
+            if (!Flag(status, "running") || !IsTestCard(status)) return;
+            await PostAsync(device.IpAddress, device.WebPort, "/api/test-card/stop", new { }, TimeSpan.FromSeconds(15), ct);
+            await ConfirmStoppedAsync(device, ct);
+            logger.LogInformation("Stopped temporary multicast test card after decoder discovery on TeleTool {EndpointId}", device.Id);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     public async Task<ManagedDevice> StartAsync(ManagedDevice device, CancellationToken ct)
     {
         if (!device.IsTeleTool()) throw new InvalidOperationException("Only TeleTool encoders support TeleTool fleet controls.");

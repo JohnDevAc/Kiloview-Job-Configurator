@@ -11,6 +11,7 @@ public sealed class MulticastService(
     DeviceClientFactory factory,
     NdiAccessManagerService accessManager,
     WindowsPcAgentService pcAgents,
+    TeleToolFleetService teleTools,
     EncoderThumbnailService thumbnails,
     ILogger<MulticastService> logger)
 {
@@ -289,57 +290,134 @@ public sealed class MulticastService(
             .Where(device => device.Role == DeviceRole.Encoder)
             .OrderBy(device => device.Hostname, StringComparer.OrdinalIgnoreCase)
             .ToArray();
-        var failedEncoderNames = encoderDevices
-            .Where(device => !results.TryGetValue(device.Id, out var assignment) || assignment.Status != "applied")
-            .Select(device => device.Hostname)
-            .ToArray();
-        var configuredEncoders = failedEncoderNames.Length == 0
-            ? encoderDevices.Select(device =>
-            {
-                var assignment = results[device.Id];
-                return device with
+        var temporaryDiscoverySources = new ConcurrentBag<ManagedDevice>();
+        try
+        {
+            // N60 preset creation requires a currently advertised NDI source so
+            // it can retain the sender's listener URL and port. A stopped
+            // TeleTool has no advertisement, so publish its multicast test card
+            // only for the discovery window and restore the stopped state below.
+            await Parallel.ForEachAsync(
+                encoderDevices.Where(device => device.IsTeleTool()),
+                new ParallelOptions { MaxDegreeOfParallelism = 3, CancellationToken = ct },
+                async (encoder, token) =>
                 {
-                    MulticastConfigured = true,
-                    MulticastInUse = assignment.InUse,
-                    MulticastNetPrefix = assignment.NetPrefix,
-                    MulticastNetmask = assignment.Netmask,
-                    MulticastTtl = assignment.Ttl,
-                    MulticastLastError = null
-                };
-            }).ToArray()
-            : [];
-        await Parallel.ForEachAsync(
-            plan.Assignments.Where(assignment => assignment.Receiver && !assignment.Sender),
-            new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct },
-            async (assignment, token) =>
-            {
-                if (!results.TryGetValue(assignment.EndpointId, out var decoderResult)
-                    || decoderResult.Status != "applied") return;
-                try
-                {
-                    if (failedEncoderNames.Length > 0)
-                        throw new InvalidOperationException(
-                            $"Decoder presets were not refreshed because multicast failed on: {string.Join(", ", failedEncoderNames)}.");
-                    var decoder = devices[assignment.EndpointId];
-                    await factory.Create(decoder).ConfigureDecoderFeedsAsync(configuredEncoders, token);
-                }
-                catch (Exception ex) when (ex is HttpRequestException
-                    or TaskCanceledException
-                    or DeviceApiException
-                    or InvalidOperationException
-                    or IOException
-                    or KeyNotFoundException
-                    or UnauthorizedAccessException)
-                {
-                    logger.LogWarning(ex, "Refreshing multicast decoder presets failed for {EndpointId}", assignment.EndpointId);
-                    results[assignment.EndpointId] = decoderResult with
+                    if (!results.TryGetValue(encoder.Id, out var senderResult)
+                        || senderResult.Status != "applied") return;
+                    try
                     {
-                        Status = "error",
-                        InUse = false,
-                        Error = $"Multicast receive mode was applied, but decoder presets could not be refreshed: {ex.Message}"
+                        var started = await teleTools.StartTemporaryDiscoverySourceAsync(
+                            encoder,
+                            new(
+                                plan.JobName,
+                                senderResult.NetPrefix,
+                                senderResult.Netmask,
+                                senderResult.Ttl,
+                                senderAddresses),
+                            token);
+                        if (started) temporaryDiscoverySources.Add(encoder);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException
+                        or TaskCanceledException
+                        or DeviceApiException
+                        or InvalidOperationException
+                        or IOException
+                        or KeyNotFoundException
+                        or System.Text.Json.JsonException)
+                    {
+                        logger.LogWarning(ex, "Starting temporary TeleTool discovery source failed for {EndpointId}", encoder.Id);
+                        results[encoder.Id] = senderResult with
+                        {
+                            Status = "error",
+                            InUse = false,
+                            Error = $"Multicast was applied, but the temporary decoder-discovery source could not start: {ex.Message}"
+                        };
+                    }
+                });
+
+            var failedEncoderNames = encoderDevices
+                .Where(device => !results.TryGetValue(device.Id, out var assignment) || assignment.Status != "applied")
+                .Select(device => device.Hostname)
+                .ToArray();
+            var configuredEncoders = failedEncoderNames.Length == 0
+                ? encoderDevices.Select(device =>
+                {
+                    var assignment = results[device.Id];
+                    return device with
+                    {
+                        MulticastConfigured = true,
+                        MulticastInUse = assignment.InUse,
+                        MulticastNetPrefix = assignment.NetPrefix,
+                        MulticastNetmask = assignment.Netmask,
+                        MulticastTtl = assignment.Ttl,
+                        MulticastLastError = null
                     };
+                }).ToArray()
+                : [];
+            await Parallel.ForEachAsync(
+                plan.Assignments.Where(assignment => assignment.Receiver && !assignment.Sender),
+                new ParallelOptions { MaxDegreeOfParallelism = 4, CancellationToken = ct },
+                async (assignment, token) =>
+                {
+                    if (!results.TryGetValue(assignment.EndpointId, out var decoderResult)
+                        || decoderResult.Status != "applied") return;
+                    try
+                    {
+                        if (failedEncoderNames.Length > 0)
+                            throw new InvalidOperationException(
+                                $"Decoder presets were not refreshed because multicast failed on: {string.Join(", ", failedEncoderNames)}.");
+                        var decoder = devices[assignment.EndpointId];
+                        await factory.Create(decoder).ConfigureDecoderFeedsAsync(configuredEncoders, token);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException
+                        or TaskCanceledException
+                        or DeviceApiException
+                        or InvalidOperationException
+                        or IOException
+                        or KeyNotFoundException
+                        or UnauthorizedAccessException)
+                    {
+                        logger.LogWarning(ex, "Refreshing multicast decoder presets failed for {EndpointId}", assignment.EndpointId);
+                        results[assignment.EndpointId] = decoderResult with
+                        {
+                            Status = "error",
+                            InUse = false,
+                            Error = $"Multicast receive mode was applied, but decoder presets could not be refreshed: {ex.Message}"
+                        };
+                    }
+                });
+        }
+        finally
+        {
+            await Parallel.ForEachAsync(
+                temporaryDiscoverySources,
+                new ParallelOptions { MaxDegreeOfParallelism = 3, CancellationToken = CancellationToken.None },
+                async (encoder, _) =>
+                {
+                    try
+                    {
+                        using var restore = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                        await teleTools.StopTemporaryDiscoverySourceAsync(encoder, restore.Token);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException
+                        or TaskCanceledException
+                        or DeviceApiException
+                        or InvalidOperationException
+                        or IOException
+                        or System.Text.Json.JsonException)
+                    {
+                        logger.LogWarning(ex, "Stopping temporary TeleTool discovery source failed for {EndpointId}", encoder.Id);
+                        if (results.TryGetValue(encoder.Id, out var senderResult))
+                            results[encoder.Id] = senderResult with
+                            {
+                                Status = "error",
+                                InUse = true,
+                                Error = $"Decoder presets were refreshed, but the temporary TeleTool test card could not be stopped: {ex.Message}"
+                            };
+                    }
                 }
-            });
+            );
+        }
 
         if (results.TryGetValue("local-pc", out var localResult) && localResult.Status == "applied")
         {
