@@ -9,17 +9,34 @@ Last updated: 5 September 2026
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
 - Released source commit: `57a1fdb` on `development`
-- Latest implementation: September review fixes and performance improvements
-- Current version: `0.8.0-dev.98`
+- Latest implementation: firmware upload compatibility and reconnect metadata fixes
+- Current version: `0.8.0-dev.99`
 - Release channel: `Development`
 - Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.98>
-- Current active work: none; requested fixes are committed, pushed, packaged,
-  and published as a Development prerelease. The follow-up documentation commit
-  records the release verification without changing the tagged application source.
+- Current active work: user requested fix, push, and deployment of the hardware-test
+  follow-ups. Preparing dev.99 as a Development prerelease.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
+
+## September factory-reset hardware test
+
+- The user installed dev.98 and authorized onboarding two reset N60s and one N6
+  into `.90–.99`, using the firmware in Downloads.
+- Final devices: N6 `2007140023DC5` at `192.168.0.90`, N60 `320113001F0A8` at
+  `.91`, and N60 `320113001F0AA` at `.92`. All are online decoders in `LivewireTest`.
+- Both N60s were already on `2.45.0014.0170`. The N6 was upgraded from
+  `2.00.0009.0134` to `2.10.0011.0885` after diagnosing a multipart-header-order
+  incompatibility in the dev.98 uploader, then completed a normal onboarding retry.
+- Device identification and the final blank-preset completion checks passed for
+  all three. Physical displays were not visually verified.
+- Dev.99 changes in `Devices/DeviceApi.cs`, both Kiloview uploaders, and
+  `Core/OnboardingService.cs` address multipart formatting, duplicate error-message
+  fields, and reconnect metadata. The project also excludes scratch artifact C#.
+- All 14 backend checks pass and the application builds with zero warnings/errors.
+- See `E2E-ONBOARDING-TEST-2026-09-05.md` for full results and limitations. The live
+  app was dev.98 during the test; publication of dev.99 does not itself upgrade it.
 
 ## September review fixes
 

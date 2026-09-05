@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -48,6 +49,29 @@ internal abstract class HttpDeviceApi(
         return client;
     }
 
+    protected static MultipartFormDataContent FirmwareUpload(Stream file, string fileName, string fieldName)
+    {
+        static string Quote(string value) => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        var boundary = "----NdiFirmware" + Guid.NewGuid().ToString("N");
+        var form = new MultipartFormDataContent(boundary);
+        form.Headers.ContentType!.Parameters.Single(parameter => parameter.Name == "boundary").Value = boundary;
+        var content = new StreamContent(file);
+        // The N6 multipart parser requires Content-Disposition before Content-Type.
+        // Match the browser uploader's quoted names and omit filename* extensions.
+        content.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data")
+        {
+            Name = Quote(fieldName),
+            FileName = Quote(fileName)
+        };
+        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+        form.Add(content);
+        var path = new StringContent(fileName);
+        path.Headers.ContentType = null;
+        path.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data") { Name = "\"path\"" };
+        form.Add(path);
+        return form;
+    }
+
     protected static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, string operation, CancellationToken ct)
     {
         var body = await response.Content.ReadAsStringAsync(ct);
@@ -60,7 +84,12 @@ internal abstract class HttpDeviceApi(
                 result.ValueKind == JsonValueKind.String &&
                 !string.Equals(result.GetString(), "ok", StringComparison.OrdinalIgnoreCase))
             {
-                var message = doc.RootElement.TryGetProperty("msg", out var msg) ? msg.ToString() : result.GetString();
+                // Some firmware responses repeat "msg": first the explanation,
+                // then a numeric code. Preserve both instead of losing the cause.
+                var messages = doc.RootElement.EnumerateObject().Where(property => property.NameEquals("msg"))
+                    .Select(property => property.Value.ToString()).Where(message => !string.IsNullOrWhiteSpace(message))
+                    .Distinct(StringComparer.Ordinal).ToArray();
+                var message = messages.Length > 0 ? string.Join("; ", messages) : result.GetString();
                 doc.Dispose();
                 throw new DeviceApiException($"{operation} was rejected by the device: {message}");
             }

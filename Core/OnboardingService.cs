@@ -1026,6 +1026,8 @@ public sealed class OnboardingService(
                 return read with
                 {
                     Id = device.Id,
+                    Credentials = device.Credentials,
+                    LicenseAccepted = device.LicenseAccepted,
                     IsOnboarded = device.IsOnboarded,
                     NdiGroup = device.NdiGroup,
                     NdiChannelName = device.NdiChannelName

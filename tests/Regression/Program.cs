@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
 using NDIJobConfigurator.Core;
+using NDIJobConfigurator.Devices;
 
 var root = Path.Combine(Path.GetTempPath(), "ndi-regression-" + Guid.NewGuid().ToString("N"));
 Environment.SetEnvironmentVariable("NDI_JOB_CONFIGURATOR_DATA_DIR", root);
@@ -27,6 +28,7 @@ await Run("State recovery still works with caching", StateRecovery);
 await Run("Preview cache invalidates after state changes", PreviewCache);
 await Run("Preview failures back off without hiding recovery", PreviewBackoff);
 await Run("Gateway sessions work with localhost and LAN listeners", Gateway);
+await Run("Firmware uploads match the vendor parser and preserve error details", FirmwareRequests);
 Console.WriteLine($"PASS: {passed} regression checks. Isolated data: {root}");
 
 async Task Run(string name, Func<Task> test)
@@ -257,6 +259,64 @@ async Task Gateway()
         await host.StopAsync();
     }
     await deviceHost.StopAsync();
+}
+
+async Task FirmwareRequests()
+{
+    await using var host = Host("http://127.0.0.1:0");
+    host.MapPost("/api/user/authorize.json", () => Results.Json(new { result = "ok", data = new { token = "test-token" } }));
+    host.MapPost("/api/systemctrl/users/login", () => Results.Json(new { result = "ok", data = new { token = "test-token" } }));
+    host.MapGet("/api/network/get.json", () => Results.Json(new { result = "ok", data = new[] { new { ip = "127.0.0.1", dynamic = "n", mac = "00:11:22:33:44:55" } } }));
+    host.MapGet("/api/{**path}", () => Results.Json(new { result = "ok", data = new { softwareVersion = "test", hostname = "N6-test", mode = "encoder" } }));
+    var uploads = 0;
+    var returnError = false;
+    async Task<IResult> Upload(HttpRequest request)
+    {
+        using var reader = new StreamReader(request.Body);
+        var body = await reader.ReadToEndAsync();
+        var headers = body[..body.IndexOf("\r\n\r\n", StringComparison.Ordinal)];
+        var field = request.Path.Value!.EndsWith("upgrade.json", StringComparison.Ordinal) ? "upload" : "file";
+        Check(!request.ContentType!.Contains("boundary=\"", StringComparison.Ordinal), "Boundary must match the browser's bare token.");
+        Check(headers.Contains($"\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"firmware-test (1).bin\"\r\nContent-Type: application/octet-stream", StringComparison.Ordinal), "Firmware part headers do not match the vendor parser's required order and quoting.");
+        Check(!headers.Contains("filename*", StringComparison.Ordinal), "Unexpected filename extension.");
+        Check(body.Contains("name=\"path\"\r\n\r\nfirmware-test (1).bin", StringComparison.Ordinal), "Firmware filename field is missing.");
+        uploads++;
+        return returnError
+            ? Results.Content("{\"result\":\"error\",\"msg\":\"Wrong Content-Type location\",\"msg\":\"0401003\"}", "application/json")
+            : Results.Json(new { result = "ok" });
+    }
+    host.MapPost("/api/firmware/upgrade.json", Upload);
+    host.MapPost("/api/systemctrl/system/upload", Upload);
+    await host.StartAsync();
+    var clientBuilder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
+    clientBuilder.Logging.ClearProviders();
+    clientBuilder.Services.AddHttpClient("KiloviewDevice");
+    using var clientHost = clientBuilder.Build();
+    var factory = new DeviceClientFactory(store, null!, clientHost.Services.GetRequiredService<IHttpClientFactory>());
+    var file = Path.Combine(root, "firmware-test (1).bin");
+    await File.WriteAllTextAsync(file, "Synthetic firmware for local HTTP regression checks only.");
+    foreach (var family in new[] { DeviceFamily.N6, DeviceFamily.N60 })
+        await factory.Create(Device("firmware", new Uri(host.Urls.Single()).Authority, family))
+            .UpdateFirmwareAsync(new(family.ToString(), Path.GetFileName(file), file, new FileInfo(file).Length, "test"), CancellationToken.None);
+    Check(uploads == 2, "Both device families must use the compatible uploader.");
+    returnError = true;
+    try
+    {
+        await factory.Create(Device("firmware", new Uri(host.Urls.Single()).Authority, DeviceFamily.N6))
+            .UpdateFirmwareAsync(new("N6", Path.GetFileName(file), file, new FileInfo(file).Length, "test"), CancellationToken.None);
+        throw new InvalidOperationException("Expected firmware API rejection.");
+    }
+    catch (DeviceApiException error)
+    {
+        Check(error.Message.Contains("Wrong Content-Type location", StringComparison.Ordinal) && error.Message.Contains("0401003", StringComparison.Ordinal), "Repeated error message fields lost the explanation or code.");
+    }
+    using var cards = new NdiTitleCardService(store, NullLogger<NdiTitleCardService>.Instance);
+    var onboarding = new OnboardingService(store, factory, null!, null!, cards, null!, null!, NullLogger<OnboardingService>.Instance);
+    var provisioned = Device("provisioned", new Uri(host.Urls.Single()).Authority, DeviceFamily.N6) with { LicenseAccepted = true, Credentials = new("admin", "UpdatedJob2") };
+    var reconnect = (Task<ManagedDevice>)typeof(OnboardingService).GetMethod("WaitForDeviceAsync", BindingFlags.NonPublic | BindingFlags.Instance)!
+        .Invoke(onboarding, [provisioned, TimeSpan.FromSeconds(2), CancellationToken.None])!;
+    var refreshed = await reconnect;
+    Check(refreshed.LicenseAccepted && refreshed.Credentials == provisioned.Credentials, "Reconnect discarded access provisioning metadata.");
 }
 
 WebApplication Host(string url)
