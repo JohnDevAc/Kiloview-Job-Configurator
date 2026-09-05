@@ -47,9 +47,7 @@ public sealed class DeviceUiGatewayService(ILogger<DeviceUiGatewayService> logge
         if (remoteAddress?.IsIPv4MappedToIPv6 == true) remoteAddress = remoteAddress.MapToIPv4();
         if (remoteAddress is null || !IPAddress.IsLoopback(remoteAddress)) return false;
         var host = context.Request.Host.Host;
-        if (!IPAddress.TryParse(host, out var gatewayAddress) ||
-            !IPAddress.IsLoopback(gatewayAddress) ||
-            host == "127.0.0.1") return false;
+        if (!host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)) return false;
         if (!sessions.TryGetValue(host, out session)) return false;
         if (DateTimeOffset.UtcNow - session.LastUsedUtc <= SessionLifetime) return true;
         if (sessions.TryRemove(host, out var expired)) expired.Dispose();
@@ -118,11 +116,10 @@ public sealed class DeviceUiGatewayService(ILogger<DeviceUiGatewayService> logge
     {
         for (var attempt = 0; attempt < 1_024; attempt++)
         {
-            // Use the full 127/8 loopback space so a browser origin from an old
-            // application process is not reassigned to another device after an
-            // upgrade or restart. This also isolates cookies, sessionStorage,
-            // and cached Kiloview SPA assets for every UI launch.
-            var host = $"127.{RandomNumberGenerator.GetInt32(1, 255)}.{RandomNumberGenerator.GetInt32(0, 256)}.{RandomNumberGenerator.GetInt32(1, 255)}";
+            // Browsers resolve *.localhost to loopback, including when Kestrel
+            // listens only on 127.0.0.1. A random hostname isolates cookies,
+            // sessionStorage and SPA assets across devices and process restarts.
+            var host = $"kv-{Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant()}.localhost";
             if (!sessions.ContainsKey(host)) return host;
         }
         throw new InvalidOperationException("A unique loopback Device UI session address could not be allocated.");

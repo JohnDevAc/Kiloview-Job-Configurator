@@ -9,6 +9,8 @@ public sealed class AppStateStore
     private readonly string _file;
     private readonly string _backup;
     private readonly ILogger<AppStateStore> _logger;
+    private AppState? _cached;
+    private (DateTime LastWriteUtc, long Length)? _cachedStamp;
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
@@ -42,6 +44,7 @@ public sealed class AppStateStore
             var state = await ReadStateUnsafeAsync();
             var updated = update(state);
             if (ReferenceEquals(updated, state)) return state;
+            updated = Freeze(updated);
 
             var temporary = _file + ".tmp";
             try
@@ -53,6 +56,8 @@ public sealed class AppStateStore
                     output.Flush(flushToDisk: true);
                 }
                 ReplaceStateFile(temporary);
+                _cached = updated;
+                _cachedStamp = StateStamp();
             }
             finally
             {
@@ -64,6 +69,55 @@ public sealed class AppStateStore
     }
 
     private async Task<AppState> ReadStateUnsafeAsync()
+    {
+        var stamp = StateStamp();
+        if (_cached is not null && stamp == _cachedStamp) return _cached;
+        var state = Freeze(await LoadStateUnsafeAsync());
+        _cached = state;
+        _cachedStamp = StateStamp();
+        return state;
+    }
+
+    /// <summary>Force a reload after an external edit that retained file metadata.</summary>
+    public async Task<AppState> ReloadAsync()
+    {
+        await _gate.WaitAsync();
+        try
+        {
+            _cached = null;
+            return await ReadStateUnsafeAsync();
+        }
+        finally { _gate.Release(); }
+    }
+
+    private (DateTime LastWriteUtc, long Length)? StateStamp()
+    {
+        var file = new FileInfo(_file);
+        return file.Exists ? (file.LastWriteTimeUtc, file.Length) : null;
+    }
+
+    // Records protect scalar values; copy and wrap their collections as well so
+    // callers cannot mutate a cached snapshot without an atomic UpdateAsync.
+    private static AppState Freeze(AppState state) => state with
+    {
+        Devices = Array.AsReadOnly(state.Devices.ToArray()),
+        FirmwareJob = state.FirmwareJob is null ? null : state.FirmwareJob with
+        {
+            Packages = Array.AsReadOnly(state.FirmwareJob.Packages.ToArray())
+        },
+        Multicast = state.Multicast is null ? null : state.Multicast with
+        {
+            Assignments = Array.AsReadOnly(state.Multicast.Assignments.ToArray())
+        },
+        RemoteWindowsPcs = state.RemoteWindowsPcs is null ? null : Array.AsReadOnly(
+            state.RemoteWindowsPcs.Select(endpoint => endpoint with
+            {
+                AgentCapabilities = endpoint.AgentCapabilities is null
+                    ? null : Array.AsReadOnly(endpoint.AgentCapabilities.ToArray())
+            }).ToArray())
+    };
+
+    private async Task<AppState> LoadStateUnsafeAsync()
     {
         if (!File.Exists(_file))
         {

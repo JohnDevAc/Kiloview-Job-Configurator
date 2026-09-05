@@ -2,24 +2,51 @@
 
 Read this file before changing or publishing NDI Job Configurator.
 
-Last updated: 15 August 2026
+Last updated: 5 September 2026
 
 ## Current baseline
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Latest implementation: NDI Configurator PC Agent branding compatibility
-- Current version: `0.8.0-dev.96`
+- Source baseline before the review fixes: `eecd131` on `development`
+- Latest implementation: September review fixes and performance improvements
+- Current version: `0.8.0-dev.98`
 - Release channel: `Development`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.95>
-- Next target release: `v0.8.0-dev.96`
-- Current active work: none.
+- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.97>
+- Current active work: user requested push and deployment; preparing `v0.8.0-dev.98`
+  as a Development prerelease with installer, ZIP, and SHA-256 checksums.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.95` has been committed, pushed, packaged, and published. Development work for `v0.8.0-dev.96` is currently local.
+## September review fixes
+
+- Local NDI readiness/application verification now precedes clean onboarding's
+  inventory deletion. Incremental plans reserve existing hostnames for both
+  device families and revalidate collisions before starting.
+- Windows monitor snapshots compare capability contents, so successful and
+  failed polls persist across deserialization. Device polls reject stale
+  snapshots and retain saved credentials, license acceptance, and adoption state.
+- Monitoring preserves running/reverting multicast operations and successful
+  unicast reversions, while completed multicast plans still detect drift.
+- Device UI sessions use random `kv-<token>.localhost` origins that work with
+  the default `127.0.0.1` listener and retain loopback-only access.
+- Windows telemetry updates existing card elements. State reads reuse immutable
+  snapshots, automatically reload changed file metadata, and retain atomic writes
+  and backup recovery. `AppStateStore.ReloadAsync` forces a reload when an external
+  edit intentionally preserves metadata.
+- Preview capture caches source discovery for 30 seconds, backs off repeated
+  failures to at most 30 seconds, and invalidates frames when device settings
+  change. The browser refreshes visible previews and schedules healthy ones first.
+- Regression commands and isolation details are in `README.md`; implementation
+  coverage and limitations are recorded in `PROJECT-REVIEW-2026-09-05.md`.
+- Existing untracked August E2E reports and `tmp/` belong to prior work and were
+  preserved and are excluded from this release commit.
+- All 13 backend and five frontend regression checks pass. Application and
+  installer Release builds pass with zero warnings/errors; formatting, JavaScript
+  syntax, release metadata, and Git whitespace checks pass. The generated gateway
+  also opened successfully in the browser against a local mock device.
 
 ## Dev.96 NDI Configurator PC Agent compatibility
 

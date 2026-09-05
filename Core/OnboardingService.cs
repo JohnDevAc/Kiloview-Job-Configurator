@@ -67,13 +67,17 @@ public sealed class OnboardingService(
         var next = startNumber;
         var end = NetworkAddressing.ToUInt(IPAddress.Parse(request.StaticEnd));
         var plans = new List<DevicePlan>();
+        var selectedIds = selected.Select(device => device.Id).ToHashSet(StringComparer.Ordinal);
+        var reservedHostnames = state.Devices.Where(device => !selectedIds.Contains(device.Id))
+            .Select(device => device.Hostname).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var hostnamePrefix = SanitizeName(request.JobName);
         var kiloviewNumber = 0;
         var teleToolNumber = 0;
         foreach (var device in selected)
         {
             var hostname = device.IsTeleTool()
-                ? $"{SanitizeName(request.JobName)}-TT-{++teleToolNumber:000}"
-                : $"{SanitizeName(request.JobName)}-KV-{++kiloviewNumber:000}";
+                ? AllocateHostname(hostnamePrefix, "TT", ref teleToolNumber, reservedHostnames)
+                : AllocateHostname(hostnamePrefix, "KV", ref kiloviewNumber, reservedHostnames);
             var role = device.IsTeleTool()
                 ? DeviceRole.Encoder
                 : request.RoleOverrides is not null && request.RoleOverrides.TryGetValue(device.Id, out var value) ? value : DeviceRole.Unknown;
@@ -144,9 +148,12 @@ public sealed class OnboardingService(
                 throw new InvalidOperationException("This onboarding plan expired. Generate a new plan.");
             await ValidatePlanAsync(plan, ct);
             await ValidateFirmwareCoverageAsync(plan);
+            // Validate and verify local settings while the previous job and its
+            // managed group are still available. A readiness failure must not
+            // delete the existing local or KiloLink inventory.
+            await ApplyLocalNdiJobAsync(plan.Settings, ct);
             if (plan.Settings.CleanOnboarding)
                 await PrepareCleanOnboardingAsync(plan, ct);
-            await ApplyLocalNdiJobAsync(plan.Settings, ct);
             await store.UpdateAsync(state => state.FirmwareJob is null ? state : state with
             {
                 FirmwareJob = state.FirmwareJob with { Status = "running", FinishedUtc = null, Message = "Applying model firmware before network and KiloLink configuration." }
@@ -213,8 +220,13 @@ public sealed class OnboardingService(
             .Select(address => address.ToString())
             .ToHashSet(StringComparer.Ordinal);
         var targetAddresses = new HashSet<string>(StringComparer.Ordinal);
+        var planIds = plan.Devices.Select(item => item.DeviceId).ToHashSet(StringComparer.Ordinal);
+        var hostnames = state.Devices.Where(device => !planIds.Contains(device.Id))
+            .Select(device => device.Hostname).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var item in plan.Devices)
         {
+            if (!hostnames.Add(item.Hostname))
+                throw new InvalidOperationException($"Hostname '{item.Hostname}' is now in use. Generate a new plan.");
             var device = state.Devices.FirstOrDefault(candidate => candidate.Id == item.DeviceId)
                 ?? throw new InvalidOperationException($"Device '{item.DeviceId}' is no longer available. Generate a new plan.");
             if (!device.CanOnboard)
@@ -1102,5 +1114,13 @@ public sealed class OnboardingService(
     {
         var chars = name.Trim().Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '-').ToArray();
         return new string(chars).Trim('-')[..Math.Min(new string(chars).Trim('-').Length, 32)];
+    }
+
+    private static string AllocateHostname(string prefix, string family, ref int sequence, HashSet<string> reserved)
+    {
+        string hostname;
+        do { hostname = $"{prefix}-{family}-{++sequence:000}"; }
+        while (!reserved.Add(hostname));
+        return hostname;
     }
 }

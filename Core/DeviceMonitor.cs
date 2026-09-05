@@ -201,14 +201,19 @@ public sealed class DeviceMonitor(
             var index = Array.FindIndex(devices, device => device.Id == result.Original.Id);
             if (index < 0 || !SnapshotStillCurrent(devices[index], result.Original)) continue;
 
-            var monitored = result.Updated;
-            if (result.Original.IsTeleTool() && multicast is not null && assignments is not null)
+            var monitored = result.Updated with
+            {
+                Credentials = devices[index].Credentials,
+                LicenseAccepted = devices[index].LicenseAccepted,
+                IsOnboarded = devices[index].IsOnboarded
+            };
+            if (result.Original.IsTeleTool() && CanMonitorMulticast(multicast) && assignments is not null)
             {
                 var assignmentIndex = Array.FindIndex(
                     assignments,
                     assignment => assignment.EndpointId == monitored.Id
                         || assignment.EndpointId == result.Original.Id);
-                if (assignmentIndex >= 0)
+                if (assignmentIndex >= 0 && CanMonitorAssignment(assignments[assignmentIndex]))
                 {
                     var assignment = assignments[assignmentIndex];
                     var matches = monitored.Health == DeviceHealth.Online
@@ -253,13 +258,13 @@ public sealed class DeviceMonitor(
                     endpoint.EndpointId,
                     result.Original.EndpointId,
                     StringComparison.OrdinalIgnoreCase));
-            if (index < 0 || remoteWindowsPcs[index] != result.Original) continue;
-            if (multicast is not null && assignments is not null
+            if (index < 0 || !SnapshotStillCurrent(remoteWindowsPcs[index], result.Original)) continue;
+            if (CanMonitorMulticast(multicast) && assignments is not null
                 && result.Updated.AgentCapabilities?.Contains("multicast-config-v1", StringComparer.Ordinal) == true)
             {
                 var assignmentIndex = Array.FindIndex(assignments, assignment =>
                     string.Equals(assignment.EndpointId, result.Original.EndpointId, StringComparison.OrdinalIgnoreCase));
-                if (assignmentIndex >= 0)
+                if (assignmentIndex >= 0 && CanMonitorAssignment(assignments[assignmentIndex]))
                 {
                     var assignment = assignments[assignmentIndex];
                     var reported = result.LiveStatus?.MulticastConfiguration;
@@ -271,7 +276,7 @@ public sealed class DeviceMonitor(
                         && string.Equals(reported.NetPrefix, assignment.NetPrefix, StringComparison.Ordinal)
                         && string.Equals(reported.Netmask, assignment.Netmask, StringComparison.Ordinal)
                         && reported.Ttl == assignment.Ttl
-                        && string.Equals(reported.JobName, multicast.JobName, StringComparison.Ordinal);
+                        && string.Equals(reported.JobName, multicast!.JobName, StringComparison.Ordinal);
                     var error = matches
                         ? null
                         : result.Updated.ConnectivityStatus == "offline"
@@ -292,16 +297,16 @@ public sealed class DeviceMonitor(
                     }
                 }
             }
-            if (remoteWindowsPcs[index] == result.Updated) continue;
+            if (SnapshotStillCurrent(remoteWindowsPcs[index], result.Updated)) continue;
             remoteWindowsPcs[index] = result.Updated;
             remoteWindowsChanged = true;
         }
 
-        if (accessManagerResult is not null && assignments is not null && multicast is not null
-            && string.Equals(multicast.JobName, accessManagerResult.JobName, StringComparison.Ordinal))
+        if (accessManagerResult is not null && assignments is not null && CanMonitorMulticast(multicast)
+            && string.Equals(multicast!.JobName, accessManagerResult.JobName, StringComparison.Ordinal))
         {
             var localIndex = Array.FindIndex(assignments, assignment => assignment.EndpointId == "local-pc");
-            if (localIndex >= 0 && assignments[localIndex] == accessManagerResult.Original
+            if (localIndex >= 0 && CanMonitorAssignment(assignments[localIndex]) && assignments[localIndex] == accessManagerResult.Original
                 && assignments[localIndex] != accessManagerResult.Updated)
             {
                 assignments[localIndex] = accessManagerResult.Updated;
@@ -325,7 +330,7 @@ public sealed class DeviceMonitor(
             multicast = multicast with
             {
                 Assignments = assignments,
-                Status = assignments.All(assignment => assignment.Status == "applied") ? "completed" : "partial"
+                Status = assignments.All(assignment => assignment.Status is "applied" or "reserved") ? "completed" : "partial"
             };
         }
         return current with
@@ -464,14 +469,14 @@ public sealed class DeviceMonitor(
     {
         var multicast = state.Multicast;
         var local = multicast?.Assignments.FirstOrDefault(assignment => assignment.EndpointId == "local-pc");
-        if (multicast is null || local is null) return null;
+        if (!CanMonitorMulticast(multicast) || local is null || !CanMonitorAssignment(local)) return null;
         var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
             state.SelectedNetworkAdapterId,
             state.SelectedNetworkAddress);
         var expectedReceiveSubnets = selectedNetwork is null
             ? null
             : NetworkAddressing.GetSenderSubnets(
-                multicast.Assignments.Where(assignment => assignment.Sender).Select(assignment => assignment.Address),
+                multicast!.Assignments.Where(assignment => assignment.Sender).Select(assignment => assignment.Address),
                 selectedNetwork);
 
         var status = await accessManager.ReadStatusAsync(
@@ -479,7 +484,7 @@ public sealed class DeviceMonitor(
             local.Netmask,
             local.Ttl,
             ct,
-            multicast.JobName,
+            multicast!.JobName,
             state.LastJob?.NdiDiscoveryServerIp,
             state.LocalPc?.Address ?? local.Address,
             expectedReceiveSubnets);
@@ -497,14 +502,17 @@ public sealed class DeviceMonitor(
         return refreshed == local ? null : new(local, refreshed, multicast.JobName);
     }
 
-    private static bool SnapshotStillCurrent(ManagedDevice latest, ManagedDevice original) =>
-        string.Equals(latest.IpAddress, original.IpAddress, StringComparison.Ordinal)
-        && latest.IsOnboarded == original.IsOnboarded
-        && latest.IsStatic == original.IsStatic
-        && latest.Role == original.Role
-        && string.Equals(latest.Hostname, original.Hostname, StringComparison.Ordinal)
-        && string.Equals(latest.NdiChannelName, original.NdiChannelName, StringComparison.Ordinal)
-        && string.Equals(latest.NdiGroup, original.NdiGroup, StringComparison.Ordinal);
+    private static bool SnapshotStillCurrent(ManagedDevice latest, ManagedDevice original) => latest == original;
+
+    private static bool SnapshotStillCurrent(RemoteWindowsPcEndpoint latest, RemoteWindowsPcEndpoint original) =>
+        latest with { AgentCapabilities = null } == original with { AgentCapabilities = null }
+        && (latest.AgentCapabilities ?? []).SequenceEqual(original.AgentCapabilities ?? [], StringComparer.Ordinal);
+
+    private static bool CanMonitorMulticast(MulticastConfiguration? configuration) =>
+        configuration?.Status is "completed" or "partial";
+
+    private static bool CanMonitorAssignment(MulticastAssignment assignment) =>
+        assignment.Status is not ("unicast" or "reserved");
 
     private sealed record DevicePollResult(ManagedDevice Original, ManagedDevice Updated);
     private sealed record RemoteWindowsPollResult(
