@@ -31,6 +31,14 @@ Validation after the fixes:
 - All five frontend JavaScript modules pass syntax checks.
 - Release metadata validation and Git whitespace checks pass.
 
+Published as [v0.8.0-dev.98](https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.98)
+from commit `57a1fdb` on `development`. The installer, ZIP, legacy updater alias,
+and checksum file all match GitHub's reported sizes and SHA-256 digests. The
+isolated application and a harness using the installed `0.8.6` identity both
+resolved the new Development release through the production updater code. The
+local installed application remains at `0.8.6`; this deployment published the
+release for download and update-channel distribution.
+
 The findings and line references below describe the original reviewed revision.
 
 1. **[P1] Run local readiness checks before clean onboarding deletes inventory.**

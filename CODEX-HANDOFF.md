@@ -8,13 +8,14 @@ Last updated: 5 September 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Source baseline before the review fixes: `eecd131` on `development`
+- Released source commit: `57a1fdb` on `development`
 - Latest implementation: September review fixes and performance improvements
 - Current version: `0.8.0-dev.98`
 - Release channel: `Development`
-- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.97>
-- Current active work: user requested push and deployment; preparing `v0.8.0-dev.98`
-  as a Development prerelease with installer, ZIP, and SHA-256 checksums.
+- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.98>
+- Current active work: none; requested fixes are committed, pushed, packaged,
+  and published as a Development prerelease. The follow-up documentation commit
+  records the release verification without changing the tagged application source.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
@@ -47,6 +48,17 @@ Last updated: 5 September 2026
   installer Release builds pass with zero warnings/errors; formatting, JavaScript
   syntax, release metadata, and Git whitespace checks pass. The generated gateway
   also opened successfully in the browser against a local mock device.
+- Release `v0.8.0-dev.98` was published on 5 September 2026 from `57a1fdb`.
+  The application and installer version stamps include that commit. The installer's
+  embedded ZIP matches the separately published package; GitHub's sizes and SHA-256
+  digests match all four uploaded assets (installer, ZIP, legacy alias, checksums).
+- The isolated application served the packaged frontend and resolved the published
+  Development feed with the expected version, installer size, and SHA-256 digest.
+  The production updater source is unchanged from the installed `0.8.6` revision;
+  a separate harness using that installed identity confirmed the Development
+  channel switch offers `0.8.0-dev.98`.
+- The machine's existing `0.8.6` installation was not started or upgraded. Updater
+  checks used isolated state; physical devices and live NDI settings were untouched.
 
 ## Dev.96 NDI Configurator PC Agent compatibility
 
