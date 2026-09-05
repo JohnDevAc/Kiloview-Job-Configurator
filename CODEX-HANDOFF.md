@@ -8,13 +8,13 @@ Last updated: 5 September 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active development branch: `development`
-- Released source commit: `57a1fdb` on `development`
+- Released source commit: `15e122f` on `development`
 - Latest implementation: firmware upload compatibility and reconnect metadata fixes
 - Current version: `0.8.0-dev.99`
 - Release channel: `Development`
-- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.98>
-- Current active work: user requested fix, push, and deployment of the hardware-test
-  follow-ups. Preparing dev.99 as a Development prerelease.
+- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.99>
+- Current active work: none. The hardware-test follow-up fixes are committed,
+  pushed, and published as the dev.99 Development prerelease.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
@@ -34,7 +34,15 @@ Last updated: 5 September 2026
 - Dev.99 changes in `Devices/DeviceApi.cs`, both Kiloview uploaders, and
   `Core/OnboardingService.cs` address multipart formatting, duplicate error-message
   fields, and reconnect metadata. The project also excludes scratch artifact C#.
-- All 14 backend checks pass and the application builds with zero warnings/errors.
+- All 14 backend and five frontend checks pass. Application and installer Release
+  builds pass with zero warnings/errors; formatting and release metadata checks pass.
+- Release `v0.8.0-dev.99` was published on 5 September 2026 from `15e122f`.
+  Application and installer version stamps include that commit. The installer's
+  embedded ZIP matches the standalone package; all four GitHub asset sizes and
+  SHA-256 digests match the local installer, ZIP, legacy alias, and checksums.
+- The actual installed dev.98 updater offers dev.99 on the Development channel.
+  Its installer size (147,402,178 bytes) and SHA-256 match the published package.
+  Publication did not install the update locally; the running app remains dev.98.
 - See `E2E-ONBOARDING-TEST-2026-09-05.md` for full results and limitations. The live
   app was dev.98 during the test; publication of dev.99 does not itself upgrade it.
 

@@ -75,12 +75,19 @@ results above are application/device API verification.
   bookkeeping discrepancy; live records were not edited directly to mask it.
 - Scratch C# under `artifacts/` is excluded from application compilation.
 
-The user subsequently requested fix, push, and deployment. These corrections are
-included in the source prepared for `v0.8.0-dev.99`; the hardware test itself ran on
-dev.98 with the recovery upload described above. All 14 backend regression checks
-pass, including strict multipart-parser compatibility, duplicate error messages,
-and reconnect metadata preservation. The application Release build passes with
-zero warnings or errors. An upgrade preserves existing fleet state and does not
+The user subsequently requested fix, push, and deployment. These corrections were
+committed as `15e122f08af447ac60e401f1b44c46853b10da83`, pushed to `development`, and
+published in [v0.8.0-dev.99](https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.99).
+The hardware test itself ran on dev.98 with the recovery upload described above.
+All 14 backend and five frontend regression checks pass, including strict
+multipart-parser compatibility, duplicate error messages, and reconnect metadata
+preservation. Application and installer Release builds pass with zero warnings or
+errors. All four published asset sizes and SHA-256 digests match the local packages;
+the installer's embedded ZIP matches the standalone ZIP.
+
+The installed dev.98 updater successfully offers dev.99 on the Development channel,
+with the expected installer size and SHA-256. The update was not installed locally
+as part of publication. An upgrade preserves existing fleet state and does not
 retroactively rewrite license-acceptance flags lost by an older run.
 
 Detailed plans, progress snapshots, final device summaries, and endpoint results
