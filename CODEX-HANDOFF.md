@@ -6,7 +6,7 @@ Last updated: 6 September 2026
 
 ## Current baseline: shared suite, separate deployments
 
-- Release targets are server Main `0.8.8` / Development `0.8.8-dev.1` and
+- Published releases are server Main `0.8.8` / Development `0.8.8-dev.1` and
   companion Main `0.7.0` / Development `0.7.0-dev.2`. Each repository's branches
   share the same implementation; only `Directory.Build.props` differs.
 - The user explicitly requested both products on Main and all channels aligned.
@@ -25,10 +25,12 @@ Last updated: 6 September 2026
   sibling `Kiloview PC Onboarding` (override `-CompanionRoot`). Build Main with
   the released Main companion and Development with the released dev companion.
 - Initial integration validation is in `SUITE-INTEGRATION-VALIDATION.md`. The
-  promotion's release commits, package hashes, branch parity and update-feed
-  verification are recorded in `CHANNEL-ALIGNMENT-2026-09-06.md`.
+  promotion's released source commits, verified package hashes, branch parity and
+  successful live update-feed checks are in `CHANNEL-ALIGNMENT-2026-09-06.md`.
 - Publishing releases does not install them locally. This PC was running Main
-  `0.8.7` before promotion. No device or NDI settings are changed by packaging.
+  `0.8.7` and its actual updater offers Main `0.8.8` with the verified installer.
+  Both Main/Development pairs are pushed and published. No device or NDI settings
+  were changed; only version/channel metadata differs between branch tips.
 
 The entries below describe earlier released work, not the current installation.
 

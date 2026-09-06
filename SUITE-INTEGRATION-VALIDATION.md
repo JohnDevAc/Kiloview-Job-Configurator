@@ -1,5 +1,9 @@
 # Suite integration validation — 6 September 2026
 
+The subsequent Main promotion and alignment of all channels is recorded in
+[CHANNEL-ALIGNMENT-2026-09-06.md](CHANNEL-ALIGNMENT-2026-09-06.md). The entries below
+retain the initial Development implementation and publication evidence.
+
 ## Published deployment
 
 Both independent Development releases are published and their source commits are
