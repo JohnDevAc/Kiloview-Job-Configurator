@@ -23,18 +23,7 @@ public sealed class AppStateStore
         _logger = logger;
         var directory = AppDataPaths.ResolveDataDirectory(environment.ContentRootPath);
         Directory.CreateDirectory(directory);
-        var identityPath = Path.Combine(directory, "server-id.txt");
-        if (!File.Exists(identityPath))
-        {
-            try
-            {
-                using var identityFile = new FileStream(identityPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
-                using var writer = new StreamWriter(identityFile);
-                writer.Write(Guid.NewGuid().ToString("D"));
-            }
-            catch (IOException) when (File.Exists(identityPath)) { }
-        }
-        _serverId = Guid.Parse(File.ReadAllText(identityPath));
+        _serverId = ServerIdentityStore.LoadOrCreate(directory);
         _file = Path.Combine(directory, "state.json");
         _backup = Path.Combine(directory, "state.json.bak");
     }
@@ -59,23 +48,7 @@ public sealed class AppStateStore
             if (ReferenceEquals(updated, state)) return state;
             updated = Freeze(updated);
 
-            var temporary = _file + ".tmp";
-            try
-            {
-                await using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    await JsonSerializer.SerializeAsync(output, updated, _json);
-                    await output.FlushAsync();
-                    output.Flush(flushToDisk: true);
-                }
-                ReplaceStateFile(temporary);
-                _cached = updated;
-                _cachedStamp = StateStamp();
-            }
-            finally
-            {
-                if (File.Exists(temporary)) File.Delete(temporary);
-            }
+            await PersistStateUnsafeAsync(updated);
             return updated;
         }
         finally { _gate.Release(); }
@@ -85,10 +58,32 @@ public sealed class AppStateStore
     {
         var stamp = StateStamp();
         if (_cached is not null && stamp == _cachedStamp) return _cached;
-        var state = Freeze(await LoadStateUnsafeAsync());
+        var loaded = await LoadStateUnsafeAsync();
+        var state = Freeze(loaded);
+        // Publish the same identity into the credential-bearing snapshot before
+        // returning it over HTTP, including immediately after a legacy upgrade.
+        if (loaded.ServerId != _serverId) await PersistStateUnsafeAsync(state);
         _cached = state;
         _cachedStamp = StateStamp();
         return state;
+    }
+
+    private async Task PersistStateUnsafeAsync(AppState state)
+    {
+        var temporary = _file + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await JsonSerializer.SerializeAsync(output, state, _json);
+                await output.FlushAsync();
+                output.Flush(true);
+            }
+            ReplaceStateFile(temporary);
+            _cached = state;
+            _cachedStamp = StateStamp();
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     /// <summary>Force a reload after an external edit that retained file metadata.</summary>
@@ -114,6 +109,13 @@ public sealed class AppStateStore
     private AppState Freeze(AppState state) => state with
     {
         ServerId = _serverId,
+        PcOnboardingReceipts = state.PcOnboardingReceipts is null ? null : Array.AsReadOnly(
+            state.PcOnboardingReceipts.Select(receipt => receipt with {
+                Network = receipt.Network with { DnsServers = receipt.Network.DnsServers is null ? null : Array.AsReadOnly(receipt.Network.DnsServers.ToArray()) },
+                Candidate = receipt.Candidate is null ? null : receipt.Candidate with {
+                    AgentCapabilities = receipt.Candidate.AgentCapabilities is null ? null : Array.AsReadOnly(receipt.Candidate.AgentCapabilities.ToArray())
+                }
+            }).ToArray()),
         Devices = Array.AsReadOnly(state.Devices.ToArray()),
         FirmwareJob = state.FirmwareJob is null ? null : state.FirmwareJob with
         {

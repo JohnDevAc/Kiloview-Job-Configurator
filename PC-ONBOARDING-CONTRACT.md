@@ -12,7 +12,7 @@ This ownership contract covers two independently installed products within the f
 includes only its own C# and web content in its project; companion source stays
 under its own Git and build scripts. Minimum companion version: `0.7.0`.
 
-Remote onboarding additionally requires the `onboarding-attempt-v1` capability introduced by the September interoperability changes. See [INTEROPERABILITY.md](INTEROPERABILITY.md) for attempt/job identity, topology, readiness and port requirements. The local process schema remains 1.
+Remote onboarding additionally requires `onboarding-attempt-v1` and `onboarding-outcome-v1`. Registration is provisional until the durable final outcome is confirmed. See [INTEROPERABILITY.md](INTEROPERABILITY.md) for attempt/job identity, reconciliation, topology, readiness and ports. The local process schema remains 1.
 
 ## Installation and independent updates
 

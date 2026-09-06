@@ -1,5 +1,19 @@
 # Suite deployment and integration contract
 
+## QA follow-up contract — 6 September 2026
+
+This section updates the earlier contract below. Remote onboarding now also requires `onboarding-outcome-v1`; configuration must return `requiresFinalConfirmation: true`. Registration creates a durable candidate receipt and returns `awaiting-confirmation`. Only a matching `completed` final outcome posted to `/api/pc-onboarding/outcome` adds that PC to the active job. Exhausted registration responses cause local rollback and a durable `aborted` outcome, or `recovery-required` if restoration fails. Lost final confirmation never triggers rollback: Agent retries its saved outcome after Setup exits and after restart. Interrupted `applying` journals require local repair. Changed jobs/newer attempts return `superseded`; terminal outcomes are idempotent. Preserve server state/backups and the companion's `onboarding-outcomes` directory beside its configuration for reconciliation.
+
+The attempt allows ten minutes for approval/UAC. The five-minute registration window begins on the first configuration fetch; retries and late HTTP 202 responses cannot reset it. Companion execution is bounded to four minutes after fetch, with recovery separately bounded. Final outcome reconciliation can finish later. Static targets reserve known local server interfaces, gateways, Discovery and KiloLink addresses as well as inventory, agents and other attempts, even when infrastructure is offline.
+
+Server identity publication now uses a flushed temporary file and process lock. A malformed identity is recovered from persisted state where possible. Legacy credential snapshots receive the same identity/revision before the first API read returns.
+
+Environment records the server owner's Windows SID and requires that owner's signed-in administrator desktop for server maintenance, resume and removal. A legacy KiloLink task principal can establish ownership; unverifiable ownership fails before mutation. Recover missing ownership evidence from the original installation's backup; do not adopt another user's WSL deployment. Discovery snapshots preserve the prior service startup mode, delayed Automatic flag, running state, task XML and exact configuration. Removal restores the prior snapshot or disables a newly managed service. Client-only removal preserves server components and shared tools.
+
+Toolkit validates schema, nonempty endpoint/adapter GUIDs, usable IPv4 and prefix before reporting Agent configured. Live adapter/address availability is separate from installation completeness. Resolume validates current job and local NDI readiness immediately before Arena writes and decoder preset/activation writes, including after restart and internal clip/source waits.
+
+The local process contract remains schema 1. Repository, deployment, consent and offline/cached-package rules remain unchanged. See [QA-FIX-IMPLEMENTATION-2026-09-06.md](QA-FIX-IMPLEMENTATION-2026-09-06.md) for validation and deployment acceptance limits.
+
 These five applications have separate repositories, build outputs, installations and release histories. This workspace describes their integration; it does not combine their source. Paths and contract identifiers are in `suite.json`.
 
 ## Supported deployments

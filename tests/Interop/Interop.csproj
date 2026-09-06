@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <SelfContained>true</SelfContained><RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>NDI.Suite.Interop.Validation</AssemblyName>
+    <CompanionRoot Condition="'$(CompanionRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\Kiloview PC Onboarding</CompanionRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="NDIJobConfigurator"><HintPath>../../bin/Debug/net8.0-windows/NDIJobConfigurator.dll</HintPath></Reference>
+    <ProjectReference Include="$(CompanionRoot)/Kiloview.PcOnboarding.csproj" />
+  </ItemGroup>
+</Project>

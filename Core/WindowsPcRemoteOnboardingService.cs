@@ -8,10 +8,12 @@ namespace NDIJobConfigurator.Core;
 public sealed class WindowsPcRemoteOnboardingService(
     AppStateStore store,
     WindowsPcAgentService agents,
-    ILogger<WindowsPcRemoteOnboardingService> logger)
+    ILogger<WindowsPcRemoteOnboardingService> logger,
+    TimeProvider? timeProvider = null)
 {
     private static readonly TimeSpan ConfigurationLifetime = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan RegistrationTimeout = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan RegistrationTimeout = TimeSpan.FromMinutes(5);
+    private DateTimeOffset Now => (timeProvider ?? TimeProvider.System).GetUtcNow();
     private static readonly TimeSpan ResultLifetime = TimeSpan.FromMinutes(10);
     private readonly ConcurrentDictionary<string, PendingConfiguration> _pending = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, RecentResult> _results = new(StringComparer.OrdinalIgnoreCase);
@@ -47,15 +49,19 @@ public sealed class WindowsPcRemoteOnboardingService(
             throw new UnauthorizedAccessException("The NDI Configurator PC Agent is outside the selected production subnet.");
 
         var desired = ValidateNetwork(request.Network, agent, network);
-        if (Status(endpointId) is { Status: "staged" or "awaiting-local-approval" or "awaiting-registration" })
+        if (Status(endpointId, state) is { Status: "staged" or "awaiting-local-approval" or "awaiting-registration" })
             throw new InvalidOperationException("An onboarding attempt is already active for this PC. Wait for completion or expiry before retrying.");
         if (desired.Mode == "static" && desired.Address is { } target
-            && (state.Devices.Any(d => d.IpAddress == target)
+            && (KnownInfrastructure(state, agent, desired).Contains(target)
+                || state.Devices.Any(d => d.IpAddress == target)
                 || (state.WindowsPcs ?? []).Any(pc => pc.EndpointId != endpointId && pc.Address == target)
                 || agents.Snapshot().Any(pc => pc.EndpointId != endpointId && pc.Address == target)
+                || (state.PcOnboardingReceipts ?? []).Any(receipt => receipt.EndpointId != endpointId
+                    && receipt.Status is "applying" or "registered" or "recovery-required"
+                    && receipt.Network.Address == target)
                 || _pending.Values.Any(pc => pc.EndpointId != endpointId && pc.Network.Address == target && IsActive(pc))))
-            throw new InvalidOperationException("The requested static address is already occupied or reserved by another device/PC.");
-        var now = DateTimeOffset.UtcNow;
+            throw new InvalidOperationException("The requested static address is occupied or reserved by job infrastructure or another device/PC.");
+        var now = Now;
         var pending = new PendingConfiguration(
             endpointId,
             agent.Address,
@@ -121,11 +127,27 @@ public sealed class WindowsPcRemoteOnboardingService(
             if (state.JobId != pending.JobId || state.JobRevision != pending.JobRevision)
                 throw new InvalidOperationException("The active job no longer matches the pending endpoint configuration.");
 
-            var fetchedUtc = DateTimeOffset.UtcNow;
-            var fetched = pending with { ConfigurationFetchedUtc = fetchedUtc };
-            if (!_pending.TryUpdate(endpointId, fetched, pending))
-                throw new InvalidOperationException("The onboarding attempt changed during the fetch. Request fresh local approval.");
-            pending = fetched;
+            pending = UpdatePending(endpointId, attemptId, current =>
+            {
+                var firstFetch = current.ConfigurationFetchedUtc ?? Now;
+                return current with { ConfigurationFetchedUtc = firstFetch, Status = "awaiting-registration",
+                    RegistrationDeadlineUtc = firstFetch.Add(RegistrationTimeout), ExpiresUtc = firstFetch.Add(RegistrationTimeout) };
+            }) ?? throw new InvalidOperationException("The onboarding attempt changed during the fetch. Request fresh local approval.");
+            var fetchedUtc = pending.ConfigurationFetchedUtc!.Value;
+            await store.UpdateAsync(current =>
+            {
+                if (current.JobId != pending.JobId || current.JobRevision != pending.JobRevision)
+                    throw new InvalidOperationException("The job changed during configuration fetch.");
+                var receipts = (current.PcOnboardingReceipts ?? []).ToList();
+                if (!receipts.Any(receipt => receipt.AttemptId == pending.AttemptId))
+                {
+                    receipts = receipts.Select(receipt => receipt.EndpointId == endpointId
+                        ? receipt with { Status = "superseded" } : receipt).ToList();
+                    receipts.Add(new(endpointId, pending.AttemptId, pending.JobId, pending.JobRevision,
+                        pending.AgentAddress, pending.Network, fetchedUtc, pending.RegistrationDeadlineUtc!.Value, "applying"));
+                }
+                return current with { PcOnboardingReceipts = receipts };
+            });
             logger.LogInformation(
                 "Remote Windows onboarding configuration fetch completed for endpoint {EndpointId} from {RequestAddress} in {ElapsedMilliseconds} ms",
                 endpointId,
@@ -154,28 +176,31 @@ public sealed class WindowsPcRemoteOnboardingService(
     public void RecordApprovalRequestStarted(string endpointId, string? attemptId = null)
     {
         if (!_pending.TryGetValue(endpointId, out var pending) || attemptId is not null && pending.AttemptId != attemptId) return;
-        _pending.TryUpdate(endpointId, pending with
+        UpdatePending(endpointId, pending.AttemptId, current => current.ConfigurationFetchedUtc is not null ? current : current with
         {
             Status = "awaiting-local-approval",
             Message = "Waiting for the endpoint user to approve onboarding locally.",
             RegistrationDeadlineUtc = null
-        }, pending);
+        });
     }
 
-    public WindowsPcRemoteOnboardingState? Status(string endpointId)
+    public WindowsPcRemoteOnboardingState? Status(string endpointId, AppState? state = null)
     {
         Cleanup();
+        var receipt = state?.PcOnboardingReceipts?.LastOrDefault(item => item.EndpointId == endpointId);
+        if (receipt is not null && (!_pending.TryGetValue(endpointId, out var active) || active.AttemptId == receipt.AttemptId))
+            return ReceiptState(receipt);
         if (_pending.TryGetValue(endpointId, out var pending))
         {
-            if (pending.RegistrationDeadlineUtc is { } deadline && DateTimeOffset.UtcNow > deadline)
+            if (pending.RegistrationDeadlineUtc is { } deadline && Now > deadline)
             {
                 var original = pending;
                 pending = pending with
                 {
                     Status = "failed",
                     Message = pending.ConfigurationFetchedUtc is null
-                        ? "The PC approved onboarding but never fetched its staged configuration and did not register within 90 seconds. Check LAN/firewall access to TCP 8091, then retry."
-                        : "The PC fetched its staged configuration but did not register within 90 seconds. Check the endpoint's elevated onboarding result, then retry."
+                        ? "The PC has not fetched its approved settings. Check its UAC prompt and LAN access, then retry."
+                        : "The PC did not finish within five minutes after fetching settings. Its outcome requires reconciliation or fresh onboarding."
                 };
                 if (!_pending.TryUpdate(endpointId, pending, original)) return Status(endpointId);
             }
@@ -188,14 +213,13 @@ public sealed class WindowsPcRemoteOnboardingService(
     {
         if (!_pending.TryGetValue(endpointId, out var pending) || attemptId is not null && pending.AttemptId != attemptId) return;
         var original = pending;
-        var now = DateTimeOffset.UtcNow;
         pending = statusCode switch
         {
             HttpStatusCode.Accepted => pending with
             {
                 Status = "awaiting-registration",
-                Message = "The endpoint user approved onboarding. Waiting for the elevated utility to apply settings and register.",
-                RegistrationDeadlineUtc = now.Add(RegistrationTimeout)
+                Message = "The endpoint user approved onboarding. Waiting for UAC and the elevated utility; its configuration timer begins when settings are fetched.",
+                RegistrationDeadlineUtc = pending.RegistrationDeadlineUtc
             },
             HttpStatusCode.Forbidden => pending with
             {
@@ -210,7 +234,11 @@ public sealed class WindowsPcRemoteOnboardingService(
                 RegistrationDeadlineUtc = null
             }
         };
-        if (!_pending.TryUpdate(endpointId, pending, original)) return;
+        if (!_pending.TryUpdate(endpointId, pending, original))
+        {
+            RecordAgentResponse(endpointId, statusCode, attemptId);
+            return;
+        }
         logger.LogInformation(
             "Remote Windows onboarding agent response for endpoint {EndpointId}: HTTP {StatusCode}; state {State}",
             endpointId,
@@ -221,45 +249,95 @@ public sealed class WindowsPcRemoteOnboardingService(
     public void RecordFailure(string endpointId, string message, string? attemptId = null)
     {
         if (!_pending.TryGetValue(endpointId, out var pending) || attemptId is not null && pending.AttemptId != attemptId) return;
-        _pending.TryUpdate(endpointId, pending with
+        UpdatePending(endpointId, pending.AttemptId, current => current with
         {
             Status = "failed",
             Message = message,
             RegistrationDeadlineUtc = null
-        }, pending);
+        });
         logger.LogWarning("Remote Windows onboarding failed for endpoint {EndpointId}: {Message}", endpointId, message);
     }
 
     public void ValidateRegistration(WindowsPcRegistration registration, AppState current)
     {
-        // A lost HTTP acknowledgement can be retried, including after a server restart.
-        // Persisted membership, identity, address and current job must all match.
-        var existing = (current.WindowsPcs ?? []).FirstOrDefault(pc => pc.EndpointId == registration.EndpointId);
-        if (Guid.TryParse(registration.AttemptId, out _) && existing is { IsServerPc: false }
-            && existing.RegistrationAttemptId == registration.AttemptId && existing.Address == registration.Address
-            && existing.RegistrationJobId == registration.JobId && existing.RegistrationJobRevision == registration.JobRevision
-            && current.JobId == registration.JobId && current.JobRevision == registration.JobRevision
-            && (!_pending.TryGetValue(registration.EndpointId, out var active) || active.AttemptId == registration.AttemptId))
-            return;
-        if (!_pending.TryGetValue(registration.EndpointId, out var pending)
-            || !IsActive(pending) || pending.ConfigurationFetchedUtc is null
-            || registration.AttemptId != pending.AttemptId || registration.JobId != pending.JobId
-            || registration.JobRevision != pending.JobRevision
-            || current.JobId != pending.JobId || current.JobRevision != pending.JobRevision
-            || (pending.Network.Mode == "static" && registration.Address != pending.Network.Address)
-            || (pending.Network.Mode == "unchanged" && registration.Address != pending.AgentAddress))
+        var receipt = (current.PcOnboardingReceipts ?? []).LastOrDefault(item => item.EndpointId == registration.EndpointId);
+        if (receipt is null || receipt.AttemptId != registration.AttemptId
+            || receipt.JobId != registration.JobId || receipt.JobRevision != registration.JobRevision
+            || current.JobId != receipt.JobId || current.JobRevision != receipt.JobRevision
+            || receipt.Status is not ("applying" or "registered" or "completed")
+            || receipt.Status == "applying" && receipt.RegistrationDeadlineUtc <= Now
+            || receipt.Candidate is not null && receipt.Candidate.Address != registration.Address
+            || (receipt.Network.Mode == "static" && registration.Address != receipt.Network.Address)
+            || (receipt.Network.Mode == "unchanged" && registration.Address != receipt.OriginalAddress)
+            || (_pending.TryGetValue(registration.EndpointId, out var active)
+                && (active.AttemptId != registration.AttemptId || active.Status is "denied" or "failed")))
             throw new InvalidOperationException("Registration does not match the active approved onboarding attempt and job. Request fresh onboarding.");
+    }
+
+    public Task<AppState> RegisterAsync(WindowsPcRegistration registration, WindowsPcEndpoint candidate) =>
+        store.UpdateAsync(current =>
+        {
+            ValidateRegistration(registration, current);
+            var existing = current.WindowsPcs?.FirstOrDefault(pc => pc.EndpointId == registration.EndpointId);
+            if (existing?.IsServerPc == true) throw new InvalidOperationException("Remote registration cannot replace this server PC.");
+            var receipts = current.PcOnboardingReceipts!.Select(receipt =>
+                receipt.AttemptId == registration.AttemptId && receipt.Status != "completed"
+                    ? receipt with { Status = "registered", Candidate = candidate with { RegisteredUtc = existing?.RegisteredUtc ?? candidate.RegisteredUtc } }
+                    : receipt).ToArray();
+            // A registration acknowledgement is not the PC's final outcome.
+            return current with { PcOnboardingReceipts = receipts };
+        });
+
+    public async Task<WindowsPcOnboardingOutcomeResult> ReportOutcomeAsync(WindowsPcOnboardingOutcome request, string sourceAddress)
+    {
+        if (!Guid.TryParse(request.EndpointId, out var endpoint) || endpoint == Guid.Empty
+            || !Guid.TryParse(request.AttemptId, out var attempt) || attempt == Guid.Empty
+            || request.Outcome is not ("completed" or "aborted" or "recovery-required"))
+            throw new InvalidOperationException("Invalid PC onboarding outcome.");
+        var result = "superseded";
+        await store.UpdateAsync(current =>
+        {
+            var receipt = current.PcOnboardingReceipts?.FirstOrDefault(item => item.AttemptId == request.AttemptId
+                && item.EndpointId == request.EndpointId && item.JobId == request.JobId && item.JobRevision == request.JobRevision)
+                ?? throw new InvalidOperationException("This onboarding receipt is unavailable. Request fresh onboarding.");
+            var selected = NetworkAddressing.ResolveLocalInterface(current.SelectedNetworkAdapterId, current.SelectedNetworkAddress);
+            if (selected is null || !Contains(selected, sourceAddress)
+                || !(receipt.OriginalAddress == sourceAddress || receipt.Candidate?.Address == sourceAddress
+                    || agents.Snapshot().Any(agent => agent.EndpointId == request.EndpointId && agent.Address == sourceAddress)))
+                throw new UnauthorizedAccessException("This address cannot report the PC's onboarding outcome.");
+            if (current.JobId != request.JobId || current.JobRevision != request.JobRevision
+                || receipt.Status == "superseded"
+                || (_pending.TryGetValue(request.EndpointId, out var pending) && pending.AttemptId != request.AttemptId))
+                result = "superseded";
+            else if (receipt.Status is "completed" or "aborted" or "recovery-required")
+                result = receipt.Status; // Terminal outcomes are idempotent and cannot be undone by late messages.
+            else if (request.Outcome == "completed" && receipt.Candidate is null)
+                throw new InvalidOperationException("Register the applied settings before confirming completion.");
+            else result = request.Outcome;
+            var pcs = current.WindowsPcs;
+            if (result == "completed" && receipt.Status != "completed")
+                pcs = (pcs ?? []).Where(pc => pc.EndpointId != request.EndpointId)
+                    .Append(receipt.Candidate!).OrderBy(pc => pc.Hostname, StringComparer.OrdinalIgnoreCase).ToArray();
+            return current with {
+                WindowsPcs = pcs,
+                PcOnboardingReceipts = current.PcOnboardingReceipts!.Select(item => item.AttemptId == request.AttemptId
+                    ? item with { Status = result } : item).ToArray()
+            };
+        });
+        if (_pending.TryGetValue(request.EndpointId, out var active) && active.AttemptId == request.AttemptId)
+            ((ICollection<KeyValuePair<string, PendingConfiguration>>)_pending).Remove(new(request.EndpointId, active));
+        return new(request.AttemptId, request.JobId, request.JobRevision, result);
     }
 
     public void RecordRegistration(WindowsPcEndpoint endpoint, string attemptId)
     {
         if (!_pending.TryGetValue(endpoint.EndpointId, out var pending) || pending.AttemptId != attemptId) return;
         if (!((ICollection<KeyValuePair<string, PendingConfiguration>>)_pending).Remove(new(endpoint.EndpointId, pending))) return;
-        var now = DateTimeOffset.UtcNow;
+        var now = Now;
         var state = new WindowsPcRemoteOnboardingState(
             endpoint.EndpointId,
-            "completed",
-            $"Onboarding completed and the PC registered at {endpoint.Address}.",
+            "awaiting-registration",
+            $"The PC registered at {endpoint.Address}; waiting for its final outcome.",
             pending.RequestedUtc,
             pending.RegistrationDeadlineUtc,
             now.Add(ResultLifetime),
@@ -278,7 +356,7 @@ public sealed class WindowsPcRemoteOnboardingService(
 
     private void Cleanup()
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = Now;
         foreach (var item in _pending.Where(item => item.Value.ExpiresUtc <= now).ToArray())
         {
             var expired = item.Value;
@@ -360,9 +438,19 @@ public sealed class WindowsPcRemoteOnboardingService(
         return new(agent.AdapterId, mode, address.ToString(), prefix, gateway, dns);
     }
 
+    private static HashSet<string> KnownInfrastructure(AppState state, WindowsPcAgentSnapshot agent, WindowsPcRemoteNetworkConfiguration desired)
+    {
+        var addresses = NetworkAddressing.GetLocalInterfaces().Select(n => n.Address)
+            .Concat(agent.NetworkConfiguration?.DefaultGateways ?? [])
+            .Concat(new[] { state.LastJob?.NdiDiscoveryServerIp, state.LastJob?.KiloLinkServerIp, desired.DefaultGateway }
+                .OfType<string>());
+        return addresses.Where(value => !string.IsNullOrWhiteSpace(value)).ToHashSet(StringComparer.Ordinal);
+    }
+
     private static void RequireRemoteCapabilities(WindowsPcAgentSnapshot agent)
     {
-        if (!agent.Capabilities.Contains("onboarding-attempt-v1", StringComparer.Ordinal)
+        if (!agent.Capabilities.Contains("onboarding-outcome-v1", StringComparer.Ordinal)
+            || !agent.Capabilities.Contains("onboarding-attempt-v1", StringComparer.Ordinal)
             || !agent.Capabilities.Contains("remote-onboarding-v2", StringComparer.Ordinal)
             || !agent.Capabilities.Contains("network-config-v1", StringComparer.Ordinal))
             throw new NotSupportedException("NDI Configurator PC Agent update required for managed remote onboarding.");
@@ -418,10 +506,34 @@ public sealed class WindowsPcRemoteOnboardingService(
         ConfigurationFetchedUtc: pending.ConfigurationFetchedUtc,
         AttemptId: pending.AttemptId);
 
-    private static bool IsActive(PendingConfiguration pending) =>
+    private bool IsActive(PendingConfiguration pending) =>
         pending.Status is "staged" or "awaiting-local-approval" or "awaiting-registration"
-        && pending.ExpiresUtc > DateTimeOffset.UtcNow
-        && (pending.RegistrationDeadlineUtc is null || pending.RegistrationDeadlineUtc > DateTimeOffset.UtcNow);
+        && pending.ExpiresUtc > Now
+        && (pending.RegistrationDeadlineUtc is null || pending.RegistrationDeadlineUtc > Now);
+
+    private PendingConfiguration? UpdatePending(string endpointId, string? attemptId, Func<PendingConfiguration, PendingConfiguration> update)
+    {
+        while (_pending.TryGetValue(endpointId, out var current) && current.AttemptId == attemptId && IsActive(current))
+        {
+            var changed = update(current);
+            if (_pending.TryUpdate(endpointId, changed, current)) return changed;
+        }
+        return null;
+    }
+
+    private WindowsPcRemoteOnboardingState ReceiptState(WindowsPcOnboardingReceipt receipt)
+    {
+        var completed = receipt.Status == "completed";
+        var waiting = receipt.Status is "applying" or "registered" && receipt.RegistrationDeadlineUtc > Now;
+        var status = completed ? "completed" : waiting ? "awaiting-registration" : "failed";
+        var message = completed ? "Onboarding completed and the PC confirmed its applied settings."
+            : waiting ? "The PC is applying settings or confirming its final outcome."
+            : receipt.Status == "aborted" ? "The PC rolled back onboarding. Request a new attempt."
+            : receipt.Status == "superseded" ? "This attempt belongs to a replaced job or newer onboarding request."
+            : "The PC outcome needs reconciliation or local repair. It has not been marked onboarded by this attempt.";
+        return new(receipt.EndpointId, status, message, receipt.StartedUtc, receipt.RegistrationDeadlineUtc,
+            receipt.RegistrationDeadlineUtc, completed ? receipt.Candidate?.Address : null, receipt.StartedUtc, receipt.AttemptId);
+    }
 
     private sealed record PendingConfiguration(
         string EndpointId,

@@ -215,6 +215,7 @@ app.MapGet("/api/pc-onboarding/configuration/{endpointId}", async (
             configuration.AttemptId,
             configuration.JobId,
             configuration.JobRevision,
+            configuration.RequiresFinalConfirmation,
             network
         });
     }
@@ -315,30 +316,26 @@ app.MapPost("/api/pc-onboarding/register", async (
     AppState state;
     try
     {
-    state = await store.UpdateAsync(current =>
-    {
-        remoteOnboarding.ValidateRegistration(registration, current);
-        if (current.LastJob is null)
-            throw new InvalidOperationException("This Job Configurator has no active job to join.");
-        var endpoints = (current.WindowsPcs ?? [])
-            .Where(item => !string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        var existing = (current.WindowsPcs ?? []).FirstOrDefault(item =>
-            string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase));
-        if (existing?.IsServerPc == true)
-            throw new InvalidOperationException("Remote registration cannot replace this server PC's local onboarding record.");
-        endpoints.Add(endpoint with { RegisteredUtc = existing?.RegisteredUtc ?? now });
-        return current with { WindowsPcs = endpoints.OrderBy(item => item.Hostname, StringComparer.OrdinalIgnoreCase).ToArray() };
-    });
+    state = await remoteOnboarding.RegisterAsync(registration, endpoint);
     }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     remoteOnboarding.RecordRegistration(endpoint, registration.AttemptId!);
     return Results.Ok(new
     {
-        status = "onboarded",
+        status = "awaiting-confirmation",
         endpoint,
         jobName = state.LastJob!.JobName
     });
+});
+app.MapPost("/api/pc-onboarding/outcome", async (
+    WindowsPcOnboardingOutcome outcome, HttpContext context, WindowsPcRemoteOnboardingService remoteOnboarding) =>
+{
+    var source = context.Connection.RemoteIpAddress;
+    if (source?.IsIPv4MappedToIPv6 == true) source = source.MapToIPv4();
+    if (source is null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await remoteOnboarding.ReportOutcomeAsync(outcome, source.ToString())); }
+    catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 app.MapDelete("/api/pc-onboarding/{endpointId}", async (
     string endpointId,
@@ -422,7 +419,7 @@ app.MapGet("/api/pc-agents", (WindowsPcAgentService agents, AppStateStore store,
             agent.Memberships,
             agent.ObservedUtc,
             agent.LastDiscoveredUtc,
-            remoteOnboarding = remoteOnboarding.Status(agent.EndpointId),
+            remoteOnboarding = remoteOnboarding.Status(agent.EndpointId, state),
             registered = registered.Contains(agent.EndpointId)
         }));
     }
@@ -432,13 +429,14 @@ app.MapPost("/api/pc-agents/discover", async (WindowsPcAgentService agents, Canc
     await agents.DiscoverAsync(ct);
     return Results.Ok(new { status = "completed", count = agents.Snapshot().Count });
 });
-app.MapGet("/api/pc-agents/{endpointId}/onboarding/status", (
+app.MapGet("/api/pc-agents/{endpointId}/onboarding/status", async (
     string endpointId,
-    WindowsPcRemoteOnboardingService remoteOnboarding) =>
+    WindowsPcRemoteOnboardingService remoteOnboarding,
+    AppStateStore store) =>
 {
     if (!Guid.TryParse(endpointId, out _))
         return Results.BadRequest(new { error = "The Windows PC endpoint identifier is invalid." });
-    var status = remoteOnboarding.Status(endpointId);
+    var status = remoteOnboarding.Status(endpointId, await store.ReadAsync());
     return status is null
         ? Results.NotFound(new { error = "No recent remote onboarding operation exists for this endpoint." })
         : Results.Ok(status);

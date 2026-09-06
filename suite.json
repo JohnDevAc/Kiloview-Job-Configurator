@@ -2,7 +2,8 @@
   "schemaVersion": 1,
   "contracts": {
     "publicJobIdentity": 1,
-    "remoteOnboardingCapability": "onboarding-attempt-v1",
+    "remoteOnboardingCapability": "onboarding-outcome-v1",
+    "remoteOnboardingPrerequisiteCapabilities": ["remote-onboarding-v2", "network-config-v1", "onboarding-attempt-v1"],
     "componentReceipt": 1,
     "selectedSubnetPrefixes": { "minimum": 20, "maximum": 30 },
     "ports": { "jobHttp": 8091, "agentDiscoveryUdp": 8093, "agentHttp": 8094, "ndiDiscoveryTcp": 5959, "arenaHttp": 8080 }

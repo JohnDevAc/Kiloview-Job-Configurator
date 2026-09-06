@@ -106,6 +106,7 @@ public sealed record AppState(
 {
     public static AppState Empty => new([]);
     public Guid ServerId { get; init; }
+    public IReadOnlyList<WindowsPcOnboardingReceipt>? PcOnboardingReceipts { get; init; }
     public int IntegrationSchemaVersion => 1;
     public string? JobId => IntegrationIdentity.JobId(this);
     public string? JobRevision => IntegrationIdentity.Revision(this);
@@ -221,6 +222,15 @@ public sealed record WindowsPcRegistration(
     string? AttemptId = null,
     string? JobId = null,
     string? JobRevision = null);
+public sealed record WindowsPcOnboardingReceipt(
+    string EndpointId, string AttemptId, string JobId, string JobRevision,
+    string OriginalAddress, WindowsPcRemoteNetworkConfiguration Network,
+    DateTimeOffset StartedUtc, DateTimeOffset RegistrationDeadlineUtc, string Status,
+    WindowsPcEndpoint? Candidate = null);
+public sealed record WindowsPcOnboardingOutcome(
+    string EndpointId, string AttemptId, string JobId, string JobRevision, string Outcome);
+public sealed record WindowsPcOnboardingOutcomeResult(
+    string AttemptId, string JobId, string JobRevision, string Status);
 public sealed record WindowsPcAgentHealth(string Status, string Product, string Version, int SchemaVersion);
 public static class WindowsPcAgentContract
 {
@@ -351,7 +361,8 @@ public sealed record WindowsPcRemoteOnboardingConfiguration(
     WindowsPcRemoteNetworkConfiguration? Network,
     string? AttemptId = null,
     string? JobId = null,
-    string? JobRevision = null);
+    string? JobRevision = null,
+    bool RequiresFinalConfirmation = true);
 public sealed record WindowsPcRemoteOnboardingState(
     string EndpointId,
     string Status,
