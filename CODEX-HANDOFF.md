@@ -2,23 +2,37 @@
 
 Read this file before changing or publishing NDI Job Configurator.
 
-Last updated: 5 September 2026
+Last updated: 6 September 2026
 
-## Current baseline
+## Current work: shared suite, separate deployments
 
-- Repository: `JohnDevAc/Kiloview-Job-Configurator`
-- Active development branch: `development`
-- Released source commit: `15e122f` on `development`
-- Latest implementation: firmware upload compatibility and reconnect metadata fixes
-- Current version: `0.8.0-dev.99`
-- Release channel: `Development`
-- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.99>
-- Current active work: none. The hardware-test follow-up fixes are committed,
-  pushed, and published as the dev.99 Development prerelease.
-- The companion source and packages were moved to the sibling
-  `Kiloview PC Onboarding` project. Do not copy them back into this repository.
-- Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
-  (private, default branch `main`, initial commit `f8f56c3`).
+- Server work is on `development`, version `0.8.0-dev.100`, based on `cbbf2ba`.
+- Companion source is `7f7a8d9` on `dev`, version `0.7.0-dev.1`.
+- The user authorized pushing and deploying this integration. The companion
+  source is pushed; its independent Development workflow publishes first. Build
+  the server release against that clean checkout. Initial isolated validation
+  did not install either product or change live hardware/NDI configuration.
+- The preceding stable promotion published server `v0.8.7` from `b50f0d2` on
+  `main`; Development `v0.8.0-dev.99` remains the previous Development release.
+- This workspace now owns both repositories. Open `NDI-Configurator.code-workspace`
+  and read `AGENTS.md`, `suite.json`, and `PC-ONBOARDING-CONTRACT.md`.
+- Removed the server's direct NDI writer and synthetic local endpoint. Adapter
+  selection is read/select only. An optional server-PC plan entry delegates to
+  the installed companion without additional local prompts; remote approval
+  stays unchanged. All Windows PCs use one agent-backed collection and multicast
+  path, with live NDI drift checks. Prior Windows-PC state requires re-onboarding.
+- Installer includes the complete independently built companion as a checked
+  optional component. Manifest hashes identify its exact package; newer installed
+  companions are retained. Setup and tray use a distinct royal-blue icon.
+- `scripts/Publish.ps1 -SetupExe` now requires the separate companion checkout
+  (default sibling `Kiloview PC Onboarding`, override `-CompanionRoot`). Commit
+  and publish companion changes separately before producing a server release.
+- Validation commands are in both READMEs and the contract. See
+  `SUITE-INTEGRATION-VALIDATION.md` for this change's final results and limits.
+- The installed server was Main `0.8.7` when deployment began. Publishing these
+  Development releases does not automatically change its installed channel.
+
+The entries below describe earlier released work, not the current installation.
 
 ## September factory-reset hardware test
 

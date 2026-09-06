@@ -29,6 +29,10 @@ await Run("Preview cache invalidates after state changes", PreviewCache);
 await Run("Preview failures back off without hiding recovery", PreviewBackoff);
 await Run("Gateway sessions work with localhost and LAN listeners", Gateway);
 await Run("Firmware uploads match the vendor parser and preserve error details", FirmwareRequests);
+await Run("Server companion failures preserve clean onboarding inventory", ServerCompanionPreflight);
+await Run("Local-only plans require an available companion", LocalOnlyPlan);
+await Run("Server and remote PCs share multicast allocations", UnifiedWindowsMulticast);
+await Run("Windows NDI drift reports missing and changed configuration", WindowsNdiDrift);
 Console.WriteLine($"PASS: {passed} regression checks. Isolated data: {root}");
 
 async Task Run(string name, Func<Task> test)
@@ -38,33 +42,33 @@ async Task Run(string name, Func<Task> test)
     Console.WriteLine($"PASS {name}");
 }
 
-RemoteWindowsPcEndpoint Remote() => new(Guid.NewGuid().ToString(), "Review-PC", "192.0.2.25", "Test", 24,
+WindowsPcEndpoint Remote() => new(Guid.NewGuid().ToString(), "Review-PC", "192.0.2.25", "Test", 24,
     true, "6.0", "1.0", "test", now, now, "onboarded", ConnectivityStatus: "online",
     AgentCapabilities: new[] { "status-v1", "multicast-config-v1" });
 
 async Task RemotePoll()
 {
-    await store.UpdateAsync(_ => new AppState([], RemoteWindowsPcs: [Remote()]));
+    await store.UpdateAsync(_ => new AppState([], WindowsPcs: [Remote()]));
     var snapshot = await store.ReadAsync();
     var current = await store.ReloadAsync();
-    Check(!ReferenceEquals(current.RemoteWindowsPcs![0].AgentCapabilities, snapshot.RemoteWindowsPcs![0].AgentCapabilities), "Test must deserialize independent lists.");
-    var updated = snapshot.RemoteWindowsPcs[0] with { AgentUptimeSeconds = 600, LastConnectivityCheckUtc = now };
-    var result = Apply(current, [], [(snapshot.RemoteWindowsPcs[0], updated)]);
-    Check(result.RemoteWindowsPcs![0].AgentUptimeSeconds == 600, "Successful poll was discarded.");
-    var reRegistered = current.RemoteWindowsPcs[0] with { Address = "192.0.2.26" };
-    var stale = Apply(current with { RemoteWindowsPcs = [reRegistered] }, [], [(snapshot.RemoteWindowsPcs[0], updated)]);
-    Check(stale.RemoteWindowsPcs![0] == reRegistered, "Old poll replaced a new registration.");
+    Check(!ReferenceEquals(current.WindowsPcs![0].AgentCapabilities, snapshot.WindowsPcs![0].AgentCapabilities), "Test must deserialize independent lists.");
+    var updated = snapshot.WindowsPcs[0] with { AgentUptimeSeconds = 600, LastConnectivityCheckUtc = now };
+    var result = Apply(current, [], [(snapshot.WindowsPcs[0], updated)]);
+    Check(result.WindowsPcs![0].AgentUptimeSeconds == 600, "Successful poll was discarded.");
+    var reRegistered = current.WindowsPcs[0] with { Address = "192.0.2.26" };
+    var stale = Apply(current with { WindowsPcs = [reRegistered] }, [], [(snapshot.WindowsPcs[0], updated)]);
+    Check(stale.WindowsPcs![0] == reRegistered, "Old poll replaced a new registration.");
 }
 
 async Task RemoteOffline()
 {
-    await store.UpdateAsync(_ => new AppState([], RemoteWindowsPcs: [Remote()]));
+    await store.UpdateAsync(_ => new AppState([], WindowsPcs: [Remote()]));
     var agents = new WindowsPcAgentService(store, null!, NullLogger<WindowsPcAgentService>.Instance);
-    var monitor = new DeviceMonitor(store, null!, null!, agents, NullLogger<DeviceMonitor>.Instance);
+    var monitor = new DeviceMonitor(store, null!, agents, NullLogger<DeviceMonitor>.Instance);
     for (var index = 1; index <= 3; index++)
     {
         await InvokeTask(monitor, "PollAsync", CancellationToken.None);
-        var endpoint = (await store.ReloadAsync()).RemoteWindowsPcs![0];
+        var endpoint = (await store.ReloadAsync()).WindowsPcs![0];
         Check(endpoint.ConsecutiveConnectivityFailures == index, "Missed poll counter did not advance.");
         Check(endpoint.ConnectivityStatus == (index == 3 ? "offline" : "stale"), "Incorrect connectivity transition.");
     }
@@ -89,7 +93,7 @@ async Task FreshPoll()
     Check(result.Devices[0].LicenseAccepted && result.Devices[0].LastSeenUtc == now.AddSeconds(1), "Readback cleared license metadata or dropped fresh telemetry.");
     var interrupted = original with { Health = DeviceHealth.Configuring };
     await store.UpdateAsync(_ => new AppState([interrupted]));
-    var monitor = new DeviceMonitor(store, null!, null!, null!, NullLogger<DeviceMonitor>.Instance);
+    var monitor = new DeviceMonitor(store, null!, null!, NullLogger<DeviceMonitor>.Instance);
     await InvokeTask(monitor, "PollAsync", CancellationToken.None);
     Check((await store.ReadAsync()).Devices[0].Health == DeviceHealth.Online, "An interrupted configuration could not recover through monitoring.");
 }
@@ -99,7 +103,7 @@ async Task CleanPreflight()
     var selected = Device("selected", "192.0.2.20", DeviceFamily.SimulatedTeleTool) with { IsStatic = true };
     var prior = Device("prior", "192.0.2.21") with { IsStatic = true, IsOnboarded = true };
     var before = await store.UpdateAsync(_ => new AppState([selected, prior], Job(), TeleToolManagerId: "retain-manager",
-        SelectedNetworkAdapterId: "missing-test-adapter", SelectedNetworkAddress: "192.0.2.200", RemoteWindowsPcs: [Remote()]));
+        SelectedNetworkAdapterId: "missing-test-adapter", SelectedNetworkAddress: "192.0.2.200", WindowsPcs: [Remote()]));
     using var cards = new NdiTitleCardService(store, NullLogger<NdiTitleCardService>.Instance);
     var onboarding = Onboarding(cards);
     var plan = new OnboardingPlan(Guid.NewGuid(), Settings([selected.Id]) with { CleanOnboarding = true },
@@ -159,10 +163,10 @@ async Task StateCache()
 {
     var input = new[] { Device("cached", "192.0.2.20") };
     var capabilities = new[] { "status-v1" };
-    var saved = await store.UpdateAsync(_ => new AppState(input, RemoteWindowsPcs: [Remote() with { AgentCapabilities = capabilities }]));
+    var saved = await store.UpdateAsync(_ => new AppState(input, WindowsPcs: [Remote() with { AgentCapabilities = capabilities }]));
     input[0] = input[0] with { Hostname = "Unexpected" };
     capabilities[0] = "Unexpected";
-    Check(saved.Devices[0].Hostname == "cached" && saved.RemoteWindowsPcs![0].AgentCapabilities![0] == "status-v1", "Caller mutated cached collections.");
+    Check(saved.Devices[0].Hostname == "cached" && saved.WindowsPcs![0].AgentCapabilities![0] == "status-v1", "Caller mutated cached collections.");
     Check(ReferenceEquals(saved, await store.ReadAsync()), "Unchanged state was reloaded.");
     await Throws<NotSupportedException>(() => { ((IList<ManagedDevice>)saved.Devices)[0] = input[0]; return Task.CompletedTask; });
     var file = Path.Combine(root, "state.json");
@@ -319,6 +323,55 @@ async Task FirmwareRequests()
     Check(refreshed.LicenseAccepted && refreshed.Credentials == provisioned.Credentials, "Reconnect discarded access provisioning metadata.");
 }
 
+async Task ServerCompanionPreflight()
+{
+    var network = NetworkAddressing.GetLocalInterfaces().First();
+    var before = await store.UpdateAsync(_ => new AppState([Device("retained", "192.0.2.20")], Job(),
+        SelectedNetworkAdapterId: network.Id, SelectedNetworkAddress: network.Address, WindowsPcs: [Remote()]));
+    using var cards = new NdiTitleCardService(store, NullLogger<NdiTitleCardService>.Instance);
+    var companion = new FailingCompanion();
+    var onboarding = new OnboardingService(store, null!, null!, null!, cards, companion, null!, NullLogger<OnboardingService>.Instance);
+    var plan = await onboarding.BuildPlanAsync(Settings([]) with { IncludeServerPc = true, CleanOnboarding = true }, CancellationToken.None);
+    await Throws<InvalidOperationException>(() => onboarding.StartAsync(plan.PlanId, CancellationToken.None));
+    Check(companion.Attempts == 1, "The installed companion must own local configuration.");
+    Check(ReferenceEquals(before, await store.ReadAsync()), "A failed companion call cleared prior inventory.");
+}
+
+async Task LocalOnlyPlan()
+{
+    await store.UpdateAsync(_ => AppState.Empty);
+    using var cards = new NdiTitleCardService(store, NullLogger<NdiTitleCardService>.Instance);
+    var onboarding = new OnboardingService(store, null!, null!, null!, cards, new FailingCompanion(), null!, NullLogger<OnboardingService>.Instance);
+    await Throws<ArgumentException>(() => onboarding.BuildPlanAsync(Settings([]), CancellationToken.None));
+    var plan = await onboarding.BuildPlanAsync(Settings([]) with { IncludeServerPc = true }, CancellationToken.None);
+    Check(plan.Devices.Count == 0 && plan.Settings.IncludeServerPc, "A server-only plan must be available.");
+}
+
+async Task UnifiedWindowsMulticast()
+{
+    var local = Remote() with { IsServerPc = true, Hostname = "Server", Address = "192.0.2.15" };
+    var remote = Remote();
+    await store.UpdateAsync(_ => new AppState([], Job(), WindowsPcs: [local, remote]));
+    var multicast = new MulticastService(store, null!, null!, null!, null!, NullLogger<MulticastService>.Instance);
+    var plan = await multicast.BuildPlanAsync(new(), CancellationToken.None);
+    Check(plan.Assignments.Count == 2 && plan.Assignments.Any(item => item.EndpointId == local.EndpointId)
+        && plan.Assignments.Any(item => item.EndpointId == remote.EndpointId), "PCs must each receive one allocation by agent identity.");
+    Check(plan.Assignments.Select(item => item.NetPrefix).Distinct().Count() == 2, "Server and remote multicast allocations overlap.");
+}
+
+Task WindowsNdiDrift()
+{
+    var method = typeof(DeviceMonitor).GetMethod("NdiConfigurationError", BindingFlags.NonPublic | BindingFlags.Static)!;
+    string? Error(WindowsPcNdiConfiguration configuration) => (string?)method.Invoke(null, [configuration, Job()]);
+    var correct = new WindowsPcNdiConfiguration(true, ["Other", "ReviewJob2"], ["reviewjob2"], "192.0.2.1");
+    Check(Error(correct) is null, "Correct agent settings were reported as drift.");
+    Check(Error(correct with { PreferredInterfaceConfigured = false }) is not null, "Interface drift was missed.");
+    Check(Error(correct with { SendGroups = ["OldJob"] }) is not null, "Send group drift was missed.");
+    Check(Error(correct with { ReceiveGroups = null! }) is not null, "Incomplete agent status was not handled.");
+    Check(Error(correct with { DiscoveryServer = "192.0.2.2" }) is not null, "Discovery server drift was missed.");
+    return Task.CompletedTask;
+}
+
 WebApplication Host(string url)
 {
     var builder = WebApplication.CreateBuilder(new WebApplicationOptions { ContentRootPath = root });
@@ -332,7 +385,7 @@ LastJob Job() => new("ReviewJob2", "192.0.2.20", "192.0.2.23", "192.0.2.1", now)
 OnboardingRequest Settings(IReadOnlyList<string> ids) => new("192.0.2.1", "", "", "", "192.0.2.20", "192.0.2.21", "255.255.255.0", "192.0.2.1", "ReviewJob2", "192.0.2.1", ids);
 ManagedDevice Device(string id, string ip, DeviceFamily family = DeviceFamily.Simulated) => new() { Id = id, IpAddress = ip, Hostname = id, MacAddress = "00:11:22:33:44:55", Family = family, Model = "N6", Role = DeviceRole.Encoder };
 MulticastAssignment Assignment(ManagedDevice device) => new(device.Id, device.Hostname, device.IpAddress, device.Family.ToString(), DeviceRole.Encoder, true, false, "239.192.1.0", "255.255.255.0", 1, "applied");
-MulticastConfiguration Multicast(IReadOnlyList<MulticastAssignment> assignments, string status) => new(Guid.NewGuid(), "ReviewJob2", "239.192.0.0", "255.255.0.0", "239.192.255.255", "255.255.255.0", 1, false, false, assignments, status, now);
+MulticastConfiguration Multicast(IReadOnlyList<MulticastAssignment> assignments, string status) => new(Guid.NewGuid(), "ReviewJob2", "239.192.0.0", "255.255.0.0", "239.192.255.255", "255.255.255.0", 1, assignments, status, now);
 static void Check(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
 static async Task Throws<T>(Func<Task> action) where T : Exception
 {
@@ -346,7 +399,7 @@ static async Task InvokeTask(object target, string method, params object[] args)
     catch (TargetInvocationException ex) when (ex.InnerException is not null) { throw ex.InnerException; }
 }
 static AppState Apply(AppState state, (ManagedDevice Original, ManagedDevice Updated)[] devices,
-    (RemoteWindowsPcEndpoint Original, RemoteWindowsPcEndpoint Updated)[] remotes)
+    (WindowsPcEndpoint Original, WindowsPcEndpoint Updated)[] remotes)
 {
     var type = typeof(DeviceMonitor);
     var deviceType = type.GetNestedType("DevicePollResult", BindingFlags.NonPublic)!;
@@ -355,7 +408,7 @@ static AppState Apply(AppState state, (ManagedDevice Original, ManagedDevice Upd
     for (var i = 0; i < devices.Length; i++) deviceArray.SetValue(Activator.CreateInstance(deviceType, devices[i].Original, devices[i].Updated), i);
     var remoteArray = Array.CreateInstance(remoteType, remotes.Length);
     for (var i = 0; i < remotes.Length; i++) remoteArray.SetValue(Activator.CreateInstance(remoteType, remotes[i].Original, remotes[i].Updated, null), i);
-    return (AppState)type.GetMethod("ApplyResults", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [state, deviceArray, remoteArray, null, null])!;
+    return (AppState)type.GetMethod("ApplyResults", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [state, deviceArray, remoteArray])!;
 }
 
 sealed class TestEnvironment : IWebHostEnvironment
@@ -366,4 +419,15 @@ sealed class TestEnvironment : IWebHostEnvironment
     public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     public string WebRootPath { get; set; } = "";
     public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
+}
+
+sealed class FailingCompanion : ILocalPcOnboarding
+{
+    public LocalPcComponentStatus Status => new(true, true, "0.7.0", null);
+    public int Attempts { get; private set; }
+    public Task<WindowsPcEndpoint> OnboardAsync(LocalNetworkInterface network, string jobName, string discoveryServerIp, CancellationToken ct)
+    {
+        Attempts++;
+        throw new InvalidOperationException("Synthetic companion preflight failure");
+    }
 }

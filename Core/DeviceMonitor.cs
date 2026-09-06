@@ -6,7 +6,6 @@ namespace NDIJobConfigurator.Core;
 public sealed class DeviceMonitor(
     AppStateStore store,
     DeviceClientFactory factory,
-    NdiAccessManagerService accessManager,
     WindowsPcAgentService pcAgents,
     ILogger<DeviceMonitor> logger) : BackgroundService
 {
@@ -102,41 +101,9 @@ public sealed class DeviceMonitor(
                 }
                 results[device.Id] = new(device, updated);
             });
-        var remoteWindowsResults = await PollRemoteWindowsPcsAsync(snapshot, ct);
+        var remoteWindowsResults = await PollWindowsPcsAsync(snapshot, ct);
 
-        AccessManagerPollResult? accessManagerResult = null;
-        try
-        {
-            accessManagerResult = await PollAccessManagerAsync(snapshot, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Could not read local NDI Access Manager multicast status");
-        }
-
-        LocalPcPollResult? localPcResult = null;
-        try
-        {
-            localPcResult = await PollLocalPcAsync(snapshot, ct);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Could not read the preferred local NDI interface");
-        }
-        await store.UpdateAsync(current => ApplyResults(
-            current,
-            results.Values,
-            remoteWindowsResults,
-            accessManagerResult,
-            localPcResult));
+        await store.UpdateAsync(current => ApplyResults(current, results.Values, remoteWindowsResults));
     }
 
     private static ManagedDevice ResolveN6PersistedIdentity(AppState state, ManagedDevice device)
@@ -184,16 +151,14 @@ public sealed class DeviceMonitor(
     private static AppState ApplyResults(
         AppState current,
         IEnumerable<DevicePollResult> results,
-        IEnumerable<RemoteWindowsPollResult> remoteWindowsResults,
-        AccessManagerPollResult? accessManagerResult,
-        LocalPcPollResult? localPcResult)
+        IEnumerable<RemoteWindowsPollResult> remoteWindowsResults)
     {
         var devices = current.Devices.ToArray();
         var multicast = current.Multicast;
         var assignments = multicast?.Assignments.ToArray();
         var devicesChanged = false;
         var assignmentsChanged = false;
-        var remoteWindowsPcs = (current.RemoteWindowsPcs ?? []).ToArray();
+        var windowsPcs = (current.WindowsPcs ?? []).ToArray();
         var remoteWindowsChanged = false;
 
         foreach (var result in results)
@@ -253,12 +218,12 @@ public sealed class DeviceMonitor(
         foreach (var result in remoteWindowsResults)
         {
             var index = Array.FindIndex(
-                remoteWindowsPcs,
+                windowsPcs,
                 endpoint => string.Equals(
                     endpoint.EndpointId,
                     result.Original.EndpointId,
                     StringComparison.OrdinalIgnoreCase));
-            if (index < 0 || !SnapshotStillCurrent(remoteWindowsPcs[index], result.Original)) continue;
+            if (index < 0 || !SnapshotStillCurrent(windowsPcs[index], result.Original)) continue;
             if (CanMonitorMulticast(multicast) && assignments is not null
                 && result.Updated.AgentCapabilities?.Contains("multicast-config-v1", StringComparer.Ordinal) == true)
             {
@@ -297,34 +262,12 @@ public sealed class DeviceMonitor(
                     }
                 }
             }
-            if (SnapshotStillCurrent(remoteWindowsPcs[index], result.Updated)) continue;
-            remoteWindowsPcs[index] = result.Updated;
+            if (SnapshotStillCurrent(windowsPcs[index], result.Updated)) continue;
+            windowsPcs[index] = result.Updated;
             remoteWindowsChanged = true;
         }
 
-        if (accessManagerResult is not null && assignments is not null && CanMonitorMulticast(multicast)
-            && string.Equals(multicast!.JobName, accessManagerResult.JobName, StringComparison.Ordinal))
-        {
-            var localIndex = Array.FindIndex(assignments, assignment => assignment.EndpointId == "local-pc");
-            if (localIndex >= 0 && CanMonitorAssignment(assignments[localIndex]) && assignments[localIndex] == accessManagerResult.Original
-                && assignments[localIndex] != accessManagerResult.Updated)
-            {
-                assignments[localIndex] = accessManagerResult.Updated;
-                assignmentsChanged = true;
-            }
-        }
-
-        var localPc = current.LocalPc;
-        var localPcChanged = false;
-        if (localPcResult is not null
-            && localPc == localPcResult.Original
-            && localPc != localPcResult.Updated)
-        {
-            localPc = localPcResult.Updated;
-            localPcChanged = true;
-        }
-
-        if (!devicesChanged && !assignmentsChanged && !localPcChanged && !remoteWindowsChanged) return current;
+        if (!devicesChanged && !assignmentsChanged && !remoteWindowsChanged) return current;
         if (multicast is not null && assignments is not null && assignmentsChanged)
         {
             multicast = multicast with
@@ -337,16 +280,15 @@ public sealed class DeviceMonitor(
         {
             Devices = devicesChanged ? devices : current.Devices,
             Multicast = multicast,
-            LocalPc = localPc,
-            RemoteWindowsPcs = remoteWindowsChanged ? remoteWindowsPcs : current.RemoteWindowsPcs
+            WindowsPcs = remoteWindowsChanged ? windowsPcs : current.WindowsPcs
         };
     }
 
-    private async Task<IReadOnlyList<RemoteWindowsPollResult>> PollRemoteWindowsPcsAsync(
+    private async Task<IReadOnlyList<RemoteWindowsPollResult>> PollWindowsPcsAsync(
         AppState state,
         CancellationToken ct)
     {
-        var endpoints = state.RemoteWindowsPcs ?? [];
+        var endpoints = state.WindowsPcs ?? [];
         if (endpoints.Count == 0) return [];
 
         var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
@@ -402,6 +344,9 @@ public sealed class DeviceMonitor(
                         : "stale";
                 var updated = endpoint with
                 {
+                    PreferredInterfaceConfigured = live?.NdiConfiguration?.PreferredInterfaceConfigured ?? endpoint.PreferredInterfaceConfigured,
+                    Error = live?.NdiConfiguration is { } ndi && state.LastJob is { } job
+                        ? NdiConfigurationError(ndi, job) : endpoint.Error,
                     Hostname = live?.Hostname ?? endpoint.Hostname,
                     Address = live?.Address ?? endpoint.Address,
                     AdapterName = live?.AdapterName ?? endpoint.AdapterName,
@@ -428,83 +373,16 @@ public sealed class DeviceMonitor(
         return results.ToArray();
     }
 
-    private async Task<LocalPcPollResult?> PollLocalPcAsync(AppState state, CancellationToken ct)
-    {
-        var localPc = state.LocalPc;
-        if (localPc is null) return null;
-
-        var selected = NetworkAddressing.ResolveLocalInterface(
-            state.SelectedNetworkAdapterId,
-            state.SelectedNetworkAddress);
-        if (selected is null)
-        {
-            var unavailable = localPc with
-            {
-                PreferredInterfaceConfigured = false,
-                Status = "drifted",
-                Error = "The selected onboarding network adapter is no longer active.",
-                OperatingSystemVersion = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-                NdiToolsVersion = accessManager.RuntimeVersion
-            };
-            return unavailable == localPc ? null : new(localPc, unavailable);
-        }
-
-        var status = await accessManager.ReadPreferredInterfaceStatusAsync(selected.Address, ct);
-        var updated = localPc with
-        {
-            AdapterId = selected.Id,
-            AdapterName = selected.Name,
-            Address = selected.Address,
-            PrefixLength = selected.PrefixLength,
-            PreferredInterfaceConfigured = status.Configured,
-            Status = status.Configured ? "applied" : "drifted",
-            Error = status.Configured ? null : status.Error,
-            OperatingSystemVersion = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-            NdiToolsVersion = accessManager.RuntimeVersion
-        };
-        return updated == localPc ? null : new(localPc, updated);
-    }
-
-    private async Task<AccessManagerPollResult?> PollAccessManagerAsync(AppState state, CancellationToken ct)
-    {
-        var multicast = state.Multicast;
-        var local = multicast?.Assignments.FirstOrDefault(assignment => assignment.EndpointId == "local-pc");
-        if (!CanMonitorMulticast(multicast) || local is null || !CanMonitorAssignment(local)) return null;
-        var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
-            state.SelectedNetworkAdapterId,
-            state.SelectedNetworkAddress);
-        var expectedReceiveSubnets = selectedNetwork is null
-            ? null
-            : NetworkAddressing.GetSenderSubnets(
-                multicast!.Assignments.Where(assignment => assignment.Sender).Select(assignment => assignment.Address),
-                selectedNetwork);
-
-        var status = await accessManager.ReadStatusAsync(
-            local.NetPrefix,
-            local.Netmask,
-            local.Ttl,
-            ct,
-            multicast!.JobName,
-            state.LastJob?.NdiDiscoveryServerIp,
-            state.LocalPc?.Address ?? local.Address,
-            expectedReceiveSubnets);
-        var error = status.Configured
-            ? null
-            : status.Error ?? (status.AccessManagerRunning
-                ? "NDI Access Manager is open and its multicast settings do not match this job. Close it, then reapply multicast setup."
-                : $"NDI Access Manager preferred interface, multicast, NDI group, or Discovery Server settings changed. Current send range: {status.NetPrefix ?? "disabled"} / {status.Netmask ?? "not set"}, TTL {status.Ttl?.ToString() ?? "not set"}. Reapply multicast setup.");
-        var refreshed = local with
-        {
-            Status = status.Configured ? "applied" : "drifted",
-            InUse = status.Configured,
-            Error = error
-        };
-        return refreshed == local ? null : new(local, refreshed, multicast.JobName);
-    }
-
     private static bool SnapshotStillCurrent(ManagedDevice latest, ManagedDevice original) => latest == original;
 
-    private static bool SnapshotStillCurrent(RemoteWindowsPcEndpoint latest, RemoteWindowsPcEndpoint original) =>
+    internal static string? NdiConfigurationError(WindowsPcNdiConfiguration ndi, LastJob job) =>
+        ndi.PreferredInterfaceConfigured
+        && ndi.SendGroups?.Contains(job.JobName, StringComparer.OrdinalIgnoreCase) == true
+        && ndi.ReceiveGroups?.Contains(job.JobName, StringComparer.OrdinalIgnoreCase) == true
+        && string.Equals(ndi.DiscoveryServer, job.NdiDiscoveryServerIp, StringComparison.Ordinal)
+            ? null : "The PC Agent reports NDI interface, job group, or discovery-server drift. Reapply PC onboarding.";
+
+    private static bool SnapshotStillCurrent(WindowsPcEndpoint latest, WindowsPcEndpoint original) =>
         latest with { AgentCapabilities = null } == original with { AgentCapabilities = null }
         && (latest.AgentCapabilities ?? []).SequenceEqual(original.AgentCapabilities ?? [], StringComparer.Ordinal);
 
@@ -516,14 +394,8 @@ public sealed class DeviceMonitor(
 
     private sealed record DevicePollResult(ManagedDevice Original, ManagedDevice Updated);
     private sealed record RemoteWindowsPollResult(
-        RemoteWindowsPcEndpoint Original,
-        RemoteWindowsPcEndpoint Updated,
+        WindowsPcEndpoint Original,
+        WindowsPcEndpoint Updated,
         WindowsPcAgentStatus? LiveStatus);
-    private sealed record AccessManagerPollResult(
-        MulticastAssignment Original,
-        MulticastAssignment Updated,
-        string JobName);
-    private sealed record LocalPcPollResult(
-        LocalPcEndpoint Original,
-        LocalPcEndpoint Updated);
+
 }

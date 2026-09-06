@@ -18,5 +18,6 @@
     <EmbeddedResource Include="..\artifacts\NDI-Job-Configurator-Windows.zip" LogicalName="NDIJobConfigurator.Payload.zip" />
     <EmbeddedResource Include="..\wwwroot\NDIJobConfigurator.ico" LogicalName="NDIJobConfigurator.BrandIcon.ico" />
     <EmbeddedResource Include="..\LICENSE.md" LogicalName="NDIJobConfigurator.License.md" />
+    <EmbeddedResource Include="..\artifacts\NDIJobConfigurator\pc-onboarding\LICENSE.md" LogicalName="NDIJobConfigurator.PcAgentLicense.md" />
   </ItemGroup>
 </Project>

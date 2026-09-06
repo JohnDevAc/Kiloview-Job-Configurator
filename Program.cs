@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using NDIJobConfigurator.Core;
@@ -59,7 +60,7 @@ builder.Services.AddSingleton<TeleToolFleetService>();
 builder.Services.AddSingleton<DeviceClientFactory>();
 builder.Services.AddSingleton<NetworkDiscovery>();
 builder.Services.AddSingleton<OnboardingService>();
-builder.Services.AddSingleton<NdiAccessManagerService>();
+builder.Services.AddSingleton<ILocalPcOnboarding, LocalPcOnboardingService>();
 builder.Services.AddSingleton<MulticastService>();
 builder.Services.AddSingleton<DiagnosticsService>();
 builder.Services.AddSingleton<WindowsPcAgentService>();
@@ -231,6 +232,9 @@ app.MapPost("/api/pc-onboarding/register", async (
         return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (!Guid.TryParse(registration.EndpointId, out _))
         return Results.BadRequest(new { error = "The Windows PC endpoint identifier is invalid." });
+    if (registration.Address == selectedNetwork.Address || (currentState.WindowsPcs ?? []).Any(pc => pc.IsServerPc
+            && pc.EndpointId.Equals(registration.EndpointId, StringComparison.OrdinalIgnoreCase)))
+        return Results.Conflict(new { error = "This server PC must be onboarded through its installed local component." });
     if (string.IsNullOrWhiteSpace(registration.Hostname) || registration.Hostname.Length > 63)
         return Results.BadRequest(new { error = "The Windows PC hostname is required and must be at most 63 characters." });
     if (registration.PrefixLength is < 1 or > 30)
@@ -251,7 +255,7 @@ app.MapPost("/api/pc-onboarding/register", async (
     var agent = agents.Snapshot().FirstOrDefault(item =>
         string.Equals(item.EndpointId, registration.EndpointId, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(item.Address, registration.Address, StringComparison.Ordinal));
-    var endpoint = new RemoteWindowsPcEndpoint(
+    var endpoint = new WindowsPcEndpoint(
         registration.EndpointId,
         registration.Hostname.Trim(),
         registration.Address,
@@ -284,13 +288,15 @@ app.MapPost("/api/pc-onboarding/register", async (
     {
         if (current.LastJob is null)
             throw new InvalidOperationException("This Job Configurator has no active job to join.");
-        var endpoints = (current.RemoteWindowsPcs ?? [])
+        var endpoints = (current.WindowsPcs ?? [])
             .Where(item => !string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase))
             .ToList();
-        var existing = (current.RemoteWindowsPcs ?? []).FirstOrDefault(item =>
+        var existing = (current.WindowsPcs ?? []).FirstOrDefault(item =>
             string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase));
+        if (existing?.IsServerPc == true)
+            throw new InvalidOperationException("Remote registration cannot replace this server PC's local onboarding record.");
         endpoints.Add(endpoint with { RegisteredUtc = existing?.RegisteredUtc ?? now });
-        return current with { RemoteWindowsPcs = endpoints.OrderBy(item => item.Hostname, StringComparer.OrdinalIgnoreCase).ToArray() };
+        return current with { WindowsPcs = endpoints.OrderBy(item => item.Hostname, StringComparer.OrdinalIgnoreCase).ToArray() };
     });
     remoteOnboarding.RecordRegistration(endpoint);
     return Results.Ok(new
@@ -307,10 +313,10 @@ app.MapDelete("/api/pc-onboarding/{endpointId}", async (
     if (!Guid.TryParse(endpointId, out _))
         return Results.BadRequest(new { error = "The Windows PC endpoint identifier is invalid." });
 
-    RemoteWindowsPcEndpoint? removed = null;
+    WindowsPcEndpoint? removed = null;
     var state = await store.UpdateAsync(current =>
     {
-        var endpoints = current.RemoteWindowsPcs ?? [];
+        var endpoints = current.WindowsPcs ?? [];
         removed = endpoints.FirstOrDefault(item =>
             string.Equals(item.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase));
         if (removed is null) return current;
@@ -322,7 +328,7 @@ app.MapDelete("/api/pc-onboarding/{endpointId}", async (
             .ToArray();
         return current with
         {
-            RemoteWindowsPcs = endpoints
+            WindowsPcs = endpoints
                 .Where(item => !string.Equals(item.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
                 .ToArray(),
             Multicast = current.Multicast is null
@@ -342,7 +348,7 @@ app.MapDelete("/api/pc-onboarding/{endpointId}", async (
         status = "removed",
         endpointId = removed.EndpointId,
         hostname = removed.Hostname,
-        remaining = state.RemoteWindowsPcs?.Count ?? 0
+        remaining = state.WindowsPcs?.Count ?? 0
     });
 });
 app.MapGet("/api/pc-agents", (WindowsPcAgentService agents, AppStateStore store, WindowsPcRemoteOnboardingService remoteOnboarding) =>
@@ -352,7 +358,7 @@ app.MapGet("/api/pc-agents", (WindowsPcAgentService agents, AppStateStore store,
     async Task<IResult> ReadAgentsAsync()
     {
         var state = await store.ReadAsync();
-        var registered = (state.RemoteWindowsPcs ?? [])
+        var registered = (state.WindowsPcs ?? [])
             .Select(endpoint => endpoint.EndpointId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         return Results.Ok(agents.Snapshot().Select(agent => new
@@ -502,67 +508,28 @@ app.MapGet("/api/network/subnets", async (AppStateStore store) =>
     return Results.Ok(selected is null ? [] : new[] { NetworkAddressing.GetScanCidr(selected) });
 });
 app.MapGet("/api/network/interfaces", () => Results.Ok(NetworkAddressing.GetLocalInterfaces()));
-app.MapGet("/api/ndi/preflight", (NdiAccessManagerService accessManager) =>
-    Results.Ok(accessManager.GetApplicationPreflight()));
-app.MapPut("/api/network/selection", async (
-    NetworkAdapterSelection selection,
-    AppStateStore store,
-    NdiAccessManagerService accessManager,
-    EncoderThumbnailService thumbnails,
-    CancellationToken ct) =>
+app.MapGet("/api/pc-onboarding/local", (ILocalPcOnboarding localPc) => Results.Ok(localPc.Status));
+app.MapPost("/api/pc-onboarding/local", async (OnboardingService onboarding, CancellationToken ct) =>
 {
-    var selected = NetworkAddressing.ResolveLocalInterface(selection.AdapterId, selection.Address);
-    if (selected is null)
-        return Results.BadRequest(new { error = "Select an active IPv4 network adapter." });
-
-    var preferredInterfaceConfigured = false;
-    string? localError = null;
     try
     {
-        var status = await accessManager.ReadPreferredInterfaceStatusAsync(selected.Address, ct);
-        if (!status.Configured)
-        {
-            status = await accessManager.ApplyPreferredInterfaceAsync(selected.Address, ct);
-            preferredInterfaceConfigured = status.Configured;
-            try
-            {
-                await thumbnails.ReloadNdiConfigurationAsync(ct);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or IOException)
-            {
-                localError = $"The preferred NDI interface was applied, but the in-app preview receiver could not reload: {ex.Message}";
-            }
-        }
-        else preferredInterfaceConfigured = true;
+        var endpoint = await onboarding.ReapplyServerPcAsync(ct);
+        return Results.Ok(new { endpoint });
     }
-    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    catch (Exception ex) when (ex is InvalidOperationException or IOException or JsonException
+        or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
     {
-        throw;
+        return Results.Conflict(new { error = ex.Message });
     }
-    catch (Exception ex) when (ex is InvalidOperationException
-        or IOException
-        or UnauthorizedAccessException)
-    {
-        localError = ex.Message;
-    }
-
-    var localPc = new LocalPcEndpoint(
-        "local-pc",
-        Environment.MachineName,
-        selected.Id,
-        selected.Name,
-        selected.Address,
-        selected.PrefixLength,
-        preferredInterfaceConfigured,
-        preferredInterfaceConfigured ? "applied" : "error",
-        localError,
-        OperatingSystemVersion: System.Runtime.InteropServices.RuntimeInformation.OSDescription,
-        NdiToolsVersion: accessManager.RuntimeVersion);
+});
+app.MapPut("/api/network/selection", async (NetworkAdapterSelection selection, AppStateStore store) =>
+{
+    var selected = NetworkAddressing.ResolveLocalInterface(selection.AdapterId, selection.Address);
+    if (selected is null) return Results.BadRequest(new { error = "Select an active IPv4 network adapter." });
     await store.UpdateAsync(state => state with
     {
         SelectedNetworkAdapterId = selected.Id,
-        SelectedNetworkAddress = selected.Address,
-        LocalPc = localPc
+        SelectedNetworkAddress = selected.Address
     });
     return Results.Ok(new
     {
@@ -572,9 +539,7 @@ app.MapPut("/api/network/selection", async (
         selected.Address,
         selected.PrefixLength,
         selected.Type,
-        ScanCidr = NetworkAddressing.GetScanCidr(selected),
-        LocalPc = localPc,
-        NdiPreflight = accessManager.GetApplicationPreflight()
+        ScanCidr = NetworkAddressing.GetScanCidr(selected)
     });
 });
 app.MapGet("/api/state", async (AppStateStore store) => Results.Ok(await store.ReadAsync()));

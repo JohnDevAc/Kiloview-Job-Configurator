@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "server": { "path": ".", "repository": "JohnDevAc/Kiloview-Job-Configurator", "developmentBranch": "development" },
+  "pcOnboarding": { "path": "../Kiloview PC Onboarding", "repository": "JohnDevAc/Kiloview-PC-Onboarding", "developmentBranch": "dev", "minimumVersion": "0.7.0", "localCommandSchema": 1 }
+}

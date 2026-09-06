@@ -51,7 +51,6 @@ public sealed class WindowsPcAgentService(
                 NetworkAddressing.ToUInt(IPAddress.Parse(network.Address)) &
                 (uint.MaxValue << (32 - network.PrefixLength)));
             var candidates = NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(network))
-                .Where(address => !string.Equals(address.ToString(), network.Address, StringComparison.Ordinal))
                 .Take(8192)
                 .ToArray();
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Parse(network.Address), 0));

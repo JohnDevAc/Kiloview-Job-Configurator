@@ -109,8 +109,8 @@ public sealed class AppStateStore
         {
             Assignments = Array.AsReadOnly(state.Multicast.Assignments.ToArray())
         },
-        RemoteWindowsPcs = state.RemoteWindowsPcs is null ? null : Array.AsReadOnly(
-            state.RemoteWindowsPcs.Select(endpoint => endpoint with
+        WindowsPcs = state.WindowsPcs is null ? null : Array.AsReadOnly(
+            state.WindowsPcs.Select(endpoint => endpoint with
             {
                 AgentCapabilities = endpoint.AgentCapabilities is null
                     ? null : Array.AsReadOnly(endpoint.AgentCapabilities.ToArray())

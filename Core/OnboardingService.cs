@@ -12,7 +12,7 @@ public sealed class OnboardingService(
     KiloLinkCredentialStore credentialStore,
     KiloLinkServerClient kiloLink,
     NdiTitleCardService titleCards,
-    NdiAccessManagerService accessManager,
+    ILocalPcOnboarding localPc,
     EncoderThumbnailService thumbnails,
     ILogger<OnboardingService> logger)
 {
@@ -31,12 +31,44 @@ public sealed class OnboardingService(
     private Task? _run;
     public OnboardingProgress Progress { get { lock (_progressGate) return _progress; } }
 
+    public async Task<WindowsPcEndpoint> ReapplyServerPcAsync(CancellationToken ct)
+    {
+        await _startGate.WaitAsync(ct);
+        try
+        {
+            if (_run is { IsCompleted: false })
+                throw new InvalidOperationException("Wait for the current onboarding run to finish before reapplying this PC.");
+            var state = await store.ReadAsync();
+            var network = NetworkAddressing.ResolveLocalInterface(state.SelectedNetworkAdapterId, state.SelectedNetworkAddress);
+            if (network is null || state.LastJob is null)
+                throw new InvalidOperationException("Select an active network adapter and create a job first.");
+            var endpoint = await localPc.OnboardAsync(network, state.LastJob.JobName, state.LastJob.NdiDiscoveryServerIp, ct);
+            await store.UpdateAsync(current =>
+            {
+                if (current.LastJob != state.LastJob || current.SelectedNetworkAdapterId != state.SelectedNetworkAdapterId
+                    || current.SelectedNetworkAddress != state.SelectedNetworkAddress)
+                    throw new InvalidOperationException("The job or selected adapter changed while this PC was being configured. Reapply its onboarding.");
+                var existing = current.WindowsPcs?.FirstOrDefault(pc => pc.EndpointId.Equals(endpoint.EndpointId, StringComparison.OrdinalIgnoreCase));
+                return current with
+                {
+                    WindowsPcs = (current.WindowsPcs ?? []).Where(pc => !pc.IsServerPc
+                        && !pc.EndpointId.Equals(endpoint.EndpointId, StringComparison.OrdinalIgnoreCase))
+                        .Append(endpoint with { RegisteredUtc = existing?.RegisteredUtc ?? endpoint.RegisteredUtc }).ToArray()
+                };
+            });
+            await thumbnails.ReloadNdiConfigurationAsync(ct);
+            return endpoint;
+        }
+        finally { _startGate.Release(); }
+    }
+
     public async Task<OnboardingPlan> BuildPlanAsync(OnboardingRequest request, CancellationToken ct)
     {
         var state = await store.ReadAsync();
         var selected = request.DeviceIds.Distinct().Select(id => state.Devices.FirstOrDefault(d => d.Id == id)
             ?? throw new ArgumentException($"Selected device '{id}' is no longer in the discovery list.")).ToArray();
-        if (selected.Length == 0) throw new ArgumentException("Select at least one device to onboard.");
+        if (selected.Length == 0 && !request.IncludeServerPc) throw new ArgumentException("Select a device or this server PC to onboard.");
+        if (request.IncludeServerPc && !localPc.Status.Compatible) throw new InvalidOperationException(localPc.Status.Error);
         if (selected.Any(d => !d.CanOnboard))
             throw new ArgumentException(selected.First(d => !d.CanOnboard).ManagementMessage ?? "One or more selected devices cannot be onboarded.");
         var requiresKiloLink = selected.Any(d => d.IsKiloview() && !d.IsSimulation());
@@ -110,12 +142,8 @@ public sealed class OnboardingService(
             warnings.Add($"TeleTools will remain encoders and receive hostnames, NDI channel names, Discovery Server {request.NdiDiscoveryServerIp}, and NDI group '{request.JobName}' from the TeleTool Dev API.");
             warnings.Add("TeleTools already adopted by another Fleet Manager or managing their own fleet cannot be selected.");
         }
-        var previousLocalGroup = state.ManagedLocalNdiGroup ?? state.LastJob?.JobName;
-        warnings.Add(string.IsNullOrWhiteSpace(previousLocalGroup)
-            ? $"The local PC will use '{request.JobName}' as its NDI send and receive group."
-            : string.Equals(previousLocalGroup, request.JobName, StringComparison.OrdinalIgnoreCase)
-                ? $"The local PC NDI send and receive group will remain '{request.JobName}'."
-                : $"The local PC NDI group '{previousLocalGroup}' will be replaced by '{request.JobName}' in send and receive, while unrelated groups are preserved.");
+        if (request.IncludeServerPc)
+            warnings.Add("This server PC will be onboarded by the installed PC Agent Setup using the selected adapter. No additional local confirmation is required.");
         var plan = new OnboardingPlan(
             Guid.NewGuid(),
             request,
@@ -148,12 +176,22 @@ public sealed class OnboardingService(
                 throw new InvalidOperationException("This onboarding plan expired. Generate a new plan.");
             await ValidatePlanAsync(plan, ct);
             await ValidateFirmwareCoverageAsync(plan);
-            // Validate and verify local settings while the previous job and its
-            // managed group are still available. A readiness failure must not
-            // delete the existing local or KiloLink inventory.
-            await ApplyLocalNdiJobAsync(plan.Settings, ct);
-            if (plan.Settings.CleanOnboarding)
-                await PrepareCleanOnboardingAsync(plan, ct);
+            var currentState = await store.ReadAsync();
+            var selectedNetwork = NetworkAddressing.ResolveLocalInterface(
+                currentState.SelectedNetworkAdapterId, currentState.SelectedNetworkAddress)
+                ?? throw new InvalidOperationException("The selected onboarding network adapter is no longer active.");
+            // Complete local application checks before a clean run deletes inventory.
+            var serverEndpoint = plan.Settings.IncludeServerPc
+                ? await localPc.OnboardAsync(selectedNetwork, plan.Settings.JobName, plan.Settings.NdiDiscoveryServerIp, ct) : null;
+            if (serverEndpoint is not null) await thumbnails.ReloadNdiConfigurationAsync(ct);
+            if (plan.Settings.CleanOnboarding) await PrepareCleanOnboardingAsync(plan, ct);
+            if (serverEndpoint is not null)
+                await store.UpdateAsync(current => current with
+                {
+                    WindowsPcs = (current.WindowsPcs ?? []).Where(pc => !pc.IsServerPc
+                        && !pc.EndpointId.Equals(serverEndpoint.EndpointId, StringComparison.OrdinalIgnoreCase))
+                        .Append(serverEndpoint).ToArray()
+                });
             await store.UpdateAsync(state => state.FirmwareJob is null ? state : state with
             {
                 FirmwareJob = state.FirmwareJob with { Status = "running", FinishedUtc = null, Message = "Applying model firmware before network and KiloLink configuration." }
@@ -172,43 +210,6 @@ public sealed class OnboardingService(
         {
             _startGate.Release();
         }
-    }
-
-    private async Task ApplyLocalNdiJobAsync(OnboardingRequest settings, CancellationToken ct)
-    {
-        var state = await store.ReadAsync();
-        var selected = NetworkAddressing.ResolveLocalInterface(
-            state.SelectedNetworkAdapterId,
-            state.SelectedNetworkAddress)
-            ?? throw new InvalidOperationException(
-                "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.");
-        var previousGroup = state.ManagedLocalNdiGroup ?? state.LastJob?.JobName;
-        await accessManager.ApplyJobGroupAsync(
-            settings.JobName,
-            previousGroup,
-            settings.NdiDiscoveryServerIp,
-            selected.Address,
-            ct);
-        try
-        {
-            await thumbnails.ReloadNdiConfigurationAsync(ct);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException)
-        {
-            logger.LogWarning(ex, "The local NDI job group was applied, but the preview receiver could not reload");
-        }
-
-        await store.UpdateAsync(current => current with
-        {
-            ManagedLocalNdiGroup = settings.JobName,
-            LocalPc = current.LocalPc is null
-                ? null
-                : current.LocalPc with
-                {
-                    Status = "applied",
-                    Error = null
-                }
-        });
     }
 
     private async Task ValidatePlanAsync(OnboardingPlan plan, CancellationToken ct)
@@ -662,7 +663,7 @@ public sealed class OnboardingService(
             LastJob = null,
             Multicast = null,
             TeleToolManagerId = null,
-            RemoteWindowsPcs = null
+            WindowsPcs = null
         });
     }
 

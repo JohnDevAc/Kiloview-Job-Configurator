@@ -1,0 +1,10 @@
+{
+  "folders": [
+    { "name": "Server", "path": "." },
+    { "name": "PC Onboarding", "path": "../Kiloview PC Onboarding" }
+  ],
+  "settings": {
+    "files.exclude": { "**/bin": true, "**/obj": true },
+    "search.exclude": { "**/artifacts": true, "**/bin": true, "**/obj": true }
+  }
+}
