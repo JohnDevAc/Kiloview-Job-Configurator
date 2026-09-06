@@ -67,6 +67,22 @@ dotnet run --project .\NDI.Job.Configurator.csproj
 
 Open `http://localhost:8091`. Use **Simulation mode** for the first acceptance run.
 
+## Regression checks
+
+Run on Windows with the .NET 8 SDK and Node.js:
+
+```powershell
+dotnet run --project .\tests\Regression\Regression.csproj --configuration Release
+node --test .\tests\frontend.test.mjs
+```
+
+The backend suite creates its own temporary state and NDI configuration paths,
+uses simulated devices and local mock HTTP servers, and leaves live hardware and
+installed settings untouched. It covers onboarding safety, monitoring races,
+unique names, multicast reversions, state recovery, preview caching, and gateway
+routing. The frontend suite checks stable card rendering, live metrics, and
+visible preview scheduling without extra packages.
+
 ## Windows PC onboarding companion
 
 The Windows PC Onboarding Utility and per-user NDI Configurator PC Agent are maintained

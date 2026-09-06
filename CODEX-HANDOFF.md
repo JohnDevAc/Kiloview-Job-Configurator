@@ -2,31 +2,102 @@
 
 Read this file before changing or publishing NDI Job Configurator.
 
-Last updated: 15 August 2026
+Last updated: 6 September 2026
 
 ## Current baseline
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active stable branch: `main`
-- Latest implementation: NDI Configurator PC Agent branding compatibility
-- Current version: `0.8.5`
+- Development source baseline: `cbbf2ba` (released code `15e122f`, dev.99)
+- Latest implementation: firmware upload compatibility and reconnect metadata fixes
+- Current version: `0.8.7`
 - Release channel: `Main`
-- Latest published release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.5>
-- Development baseline: `v0.8.0-dev.96`
-- Next target release: to be assigned after `v0.8.5`
-- Current active work: none.
+- Latest published Main release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.6>
+- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.99>
+- Current active work: the user requested bringing `main` up to date with
+  `development` and deploying as needed. Preparing stable v0.8.7 from the merged
+  dev.99 implementation; `development` retains its Development release metadata.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
   (private, default branch `main`, initial commit `f8f56c3`).
 
-All requested application work through `v0.8.0-dev.96` has been promoted to stable `v0.8.5`.
+## Stable 0.8.7 promotion
 
-## Stable 0.8.5 promotion
+- The merge includes all development work through `cbbf2ba` and retains main's
+  existing history. Application code matches dev.99; only release metadata and
+  this handoff differ between branch tips.
+- Stable version `0.8.7` uses the `Main` update channel. All 14 backend and five
+  frontend regression checks, formatting, frontend syntax, release metadata, and
+  Git whitespace checks pass. Package verification must complete before publishing.
+- The installed app reported `0.8.0-dev.99` on the Development channel on
+  6 September. Publication is separate from installing or selecting a channel.
 
-- `main` includes the fully validated `v0.8.0-dev.96` implementation.
-- Shared release metadata uses stable version `0.8.5` and the `Main` update channel.
-- The corresponding Development prerelease remains available as `v0.8.0-dev.96`.
+## September factory-reset hardware test
+
+- The user installed dev.98 and authorized onboarding two reset N60s and one N6
+  into `.90–.99`, using the firmware in Downloads.
+- Final devices: N6 `2007140023DC5` at `192.168.0.90`, N60 `320113001F0A8` at
+  `.91`, and N60 `320113001F0AA` at `.92`. All are online decoders in `LivewireTest`.
+- Both N60s were already on `2.45.0014.0170`. The N6 was upgraded from
+  `2.00.0009.0134` to `2.10.0011.0885` after diagnosing a multipart-header-order
+  incompatibility in the dev.98 uploader, then completed a normal onboarding retry.
+- Device identification and the final blank-preset completion checks passed for
+  all three. Physical displays were not visually verified.
+- Dev.99 changes in `Devices/DeviceApi.cs`, both Kiloview uploaders, and
+  `Core/OnboardingService.cs` address multipart formatting, duplicate error-message
+  fields, and reconnect metadata. The project also excludes scratch artifact C#.
+- All 14 backend and five frontend checks pass. Application and installer Release
+  builds pass with zero warnings/errors; formatting and release metadata checks pass.
+- Release `v0.8.0-dev.99` was published on 5 September 2026 from `15e122f`.
+  Application and installer version stamps include that commit. The installer's
+  embedded ZIP matches the standalone package; all four GitHub asset sizes and
+  SHA-256 digests match the local installer, ZIP, legacy alias, and checksums.
+- The actual installed dev.98 updater offers dev.99 on the Development channel.
+  Its installer size (147,402,178 bytes) and SHA-256 match the published package.
+  At that verification, the running app was still dev.98. By 6 September the user
+  had installed dev.99.
+- See `E2E-ONBOARDING-TEST-2026-09-05.md` for full results and limitations. The live
+  app was dev.98 during the test; publication of dev.99 does not itself upgrade it.
+
+## September review fixes
+
+- Local NDI readiness/application verification now precedes clean onboarding's
+  inventory deletion. Incremental plans reserve existing hostnames for both
+  device families and revalidate collisions before starting.
+- Windows monitor snapshots compare capability contents, so successful and
+  failed polls persist across deserialization. Device polls reject stale
+  snapshots and retain saved credentials, license acceptance, and adoption state.
+- Monitoring preserves running/reverting multicast operations and successful
+  unicast reversions, while completed multicast plans still detect drift.
+- Device UI sessions use random `kv-<token>.localhost` origins that work with
+  the default `127.0.0.1` listener and retain loopback-only access.
+- Windows telemetry updates existing card elements. State reads reuse immutable
+  snapshots, automatically reload changed file metadata, and retain atomic writes
+  and backup recovery. `AppStateStore.ReloadAsync` forces a reload when an external
+  edit intentionally preserves metadata.
+- Preview capture caches source discovery for 30 seconds, backs off repeated
+  failures to at most 30 seconds, and invalidates frames when device settings
+  change. The browser refreshes visible previews and schedules healthy ones first.
+- Regression commands and isolation details are in `README.md`; implementation
+  coverage and limitations are recorded in `PROJECT-REVIEW-2026-09-05.md`.
+- Existing untracked August E2E reports and `tmp/` belong to prior work and were
+  preserved and are excluded from this release commit.
+- All 13 backend and five frontend regression checks pass. Application and
+  installer Release builds pass with zero warnings/errors; formatting, JavaScript
+  syntax, release metadata, and Git whitespace checks pass. The generated gateway
+  also opened successfully in the browser against a local mock device.
+- Release `v0.8.0-dev.98` was published on 5 September 2026 from `57a1fdb`.
+  The application and installer version stamps include that commit. The installer's
+  embedded ZIP matches the separately published package; GitHub's sizes and SHA-256
+  digests match all four uploaded assets (installer, ZIP, legacy alias, checksums).
+- The isolated application served the packaged frontend and resolved the published
+  Development feed with the expected version, installer size, and SHA-256 digest.
+  The production updater source is unchanged from the installed `0.8.6` revision;
+  a separate harness using that installed identity confirmed the Development
+  channel switch offers `0.8.0-dev.98`.
+- The machine's existing `0.8.6` installation was not started or upgraded. Updater
+  checks used isolated state; physical devices and live NDI settings were untouched.
 
 ## Dev.96 NDI Configurator PC Agent compatibility
 
@@ -38,18 +109,6 @@ All requested application work through `v0.8.0-dev.96` has been promoted to stab
   `endpointId`; product text is not used as identity.
 - Server API responses and every operator-facing label display only the new
   NDI Configurator PC Agent name.
-
-## Stable 0.8.4 promotion
-
-- `main` includes the fully validated `v0.8.0-dev.95` implementation.
-- Shared release metadata uses stable version `0.8.4` and the `Main` update channel.
-- The corresponding Development prerelease remains available as `v0.8.0-dev.95`.
-
-## Stable 0.8.1 promotion
-
-- `main` includes the fully validated `v0.8.0-dev.53` implementation.
-- Shared release metadata uses stable version `0.8.1` and the `Main` update channel.
-- The Development prerelease remains available as `v0.8.0-dev.53`.
 
 ## Dev.34 uniform Windows endpoint cards
 

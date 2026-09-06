@@ -106,11 +106,7 @@ internal sealed class N60DeviceApi(
     {
         using var client = await AuthorizedAsync(ct, TimeSpan.FromMinutes(20));
         await using var file = new FileStream(package.LocalPath, FileMode.Open, FileAccess.Read, FileShare.Read, 128 * 1024, true);
-        using var form = new MultipartFormDataContent();
-        using var content = new StreamContent(file);
-        content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-        form.Add(content, "file", package.FileName);
-        form.Add(new StringContent(package.FileName), "path");
+        using var form = FirmwareUpload(file, package.FileName, "file");
         ApplyCookies(client);
         using var response = await client.PostAsync("/api/systemctrl/system/upload", form, ct);
         using var accepted = await ReadJsonAsync(response, "upload N60 firmware", ct);

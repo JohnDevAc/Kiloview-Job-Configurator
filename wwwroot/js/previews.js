@@ -17,7 +17,7 @@ export function createPreviewController({ state, $, $$, esc, isTeleTool }) {
     const alert = teleTool
       ? `<div class="preview-alert ${latched ? '' : 'hidden'}" data-preview-alert><strong>NDI PREVIEW WARNING</strong><span>No video after two attempts · Check NDI output, group and Discovery Server.</span></div>`
       : '';
-    return `<div class="encoder-preview${latched ? ' warning' : ''}" data-teletool="${teleTool}" data-stream-active="${teleTool && device.streamRunning}" data-failures="${latched?.failures || 0}"><img data-device-id="${esc(device.id)}" src="${esc(source)}"${objectUrl} alt="${label.toLowerCase()} for ${esc(device.hostname)}"><span>${label} · 5s</span>${alert}</div>`;
+    return `<div class="encoder-preview${latched ? ' warning' : ''}" data-teletool="${teleTool}" data-stream-active="${teleTool && device.streamRunning}" data-failures="${latched?.failures || 0}"><img loading="lazy" data-device-id="${esc(device.id)}" src="${esc(source)}"${objectUrl} alt="${label.toLowerCase()} for ${esc(device.hostname)}"><span>${label} · 5s</span>${alert}</div>`;
   }
 
   function setPreviewStatus(image, status, failures = 0) {
@@ -33,6 +33,7 @@ export function createPreviewController({ state, $, $$, esc, isTeleTool }) {
     card?.classList.toggle('preview-error', warning);
     alert?.classList.toggle('hidden', !warning);
     if (preview) preview.dataset.failures = String(failures);
+    image.dataset.previewStatus = status;
   }
 
   function releasePreviewObjectUrls(root) {
@@ -60,6 +61,7 @@ export function createPreviewController({ state, $, $$, esc, isTeleTool }) {
       const status = response.headers.get('X-Kiloview-Preview') || 'unavailable';
       const failures = Number(response.headers.get('X-Kiloview-Preview-Failures') || 0);
       const blob = await response.blob();
+      if (!image.isConnected) return;
       const latched = state.previewWarnings.get(id);
       const streamActive = preview?.dataset.streamActive === 'true';
       if (status === 'live') {
@@ -98,9 +100,16 @@ export function createPreviewController({ state, $, $$, esc, isTeleTool }) {
   }
 
   function refreshEncoderPreviews() {
-    if ($('#decoderView').classList.contains('hidden')
-        && $('#monitorView').classList.contains('hidden')) return;
-    $$('.encoder-preview img').forEach(refreshEncoderPreview);
+    if (document.hidden || ($('#decoderView').classList.contains('hidden')
+        && $('#monitorView').classList.contains('hidden'))) return;
+    $$('.encoder-preview img')
+      .filter(image => {
+        if (!image.isConnected || !image.getClientRects().length) return false;
+        const bounds = image.getBoundingClientRect();
+        return bounds.bottom > 0 && bounds.top < window.innerHeight;
+      })
+      .sort((left, right) => Number(right.dataset.previewStatus === 'live') - Number(left.dataset.previewStatus === 'live'))
+      .forEach(refreshEncoderPreview);
   }
 
   return {

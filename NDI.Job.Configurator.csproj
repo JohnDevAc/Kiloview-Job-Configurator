@@ -15,9 +15,9 @@
   </PropertyGroup>
   <ItemGroup>
     <AssemblyMetadata Include="ReleaseChannel" Value="$(ReleaseChannel)" />
-    <Compile Remove="installer\**\*.cs" />
-    <Content Remove="artifacts\**\*;installer\**\*" />
-    <None Remove="artifacts\**\*;installer\**\*" />
+    <Compile Remove="artifacts\**\*.cs;installer\**\*.cs;tests\**\*.cs" />
+    <Content Remove="artifacts\**\*;installer\**\*;tests\**\*" />
+    <None Remove="artifacts\**\*;installer\**\*;tests\**\*" />
     <Content Include="LICENSE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="THIRD-PARTY-NOTICES\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

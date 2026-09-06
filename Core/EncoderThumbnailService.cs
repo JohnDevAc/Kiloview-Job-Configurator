@@ -17,8 +17,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
     // The browser requests a new preview every five seconds. Keep the cache just
     // below that interval so each scheduled request can capture a newer frame.
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromSeconds(4);
-    private readonly ConcurrentDictionary<string, EncoderThumbnail> _cache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, int> _failures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, CachedPreview> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _deviceLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _captureLimit = new(4, 4);
     private readonly SemaphoreSlim _runtimeAccess = new(4, 4);
@@ -27,67 +26,45 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
 
     public async Task<EncoderThumbnail> GetAsync(string id, CancellationToken ct)
     {
-        var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == id)
-            ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
-        if (!device.IsOnboarded || device.Role != DeviceRole.Encoder)
-            throw new InvalidOperationException("HDMI input previews are available only for onboarded encoders.");
-
-        var activeTeleToolStream = device.IsTeleTool() && device.StreamRunning == true;
-        if (!activeTeleToolStream)
-        {
-            _failures.TryRemove(id, out _);
-            if (_cache.TryGetValue(id, out var stoppedStreamPreview) && stoppedStreamPreview.Warning)
-                _cache.TryRemove(id, out _);
-        }
-        else if (_cache.TryGetValue(id, out var stoppedStreamPreview) &&
-                 !stoppedStreamPreview.Live &&
-                 stoppedStreamPreview.ConsecutiveFailures == 0)
-        {
-            _cache.TryRemove(id, out _);
-        }
-
-        if (_cache.TryGetValue(id, out var cached) && DateTimeOffset.UtcNow - cached.CapturedUtc < CacheLifetime) return cached;
+        var device = await PreviewDeviceAsync(id);
+        var key = PreviewKey.From(device);
+        if (TryCached(id, key, out var cached)) return cached!;
         var deviceLock = _deviceLocks.GetOrAdd(id, _ => new SemaphoreSlim(1, 1));
         await deviceLock.WaitAsync(ct);
         try
         {
-            if (_cache.TryGetValue(id, out cached) && DateTimeOffset.UtcNow - cached.CapturedUtc < CacheLifetime) return cached;
+            device = await PreviewDeviceAsync(id);
+            key = PreviewKey.From(device);
+            if (TryCached(id, key, out cached)) return cached!;
+            if (device.Health != DeviceHealth.Online || device.IsTeleTool() && device.StreamRunning == false)
+            {
+                var unavailable = new EncoderThumbnail(ThumbnailBitmap.Unavailable(id), false, DateTimeOffset.UtcNow);
+                _cache[id] = new(key, unavailable, 0);
+                return unavailable;
+            }
             await _captureLimit.WaitAsync(ct);
             try
             {
-                EncoderThumbnail thumbnail;
-                if (device.IsSimulation())
-                {
-                    _failures.TryRemove(id, out _);
-                    thumbnail = new(ThumbnailBitmap.Pattern(device.Id), true, DateTimeOffset.UtcNow);
-                }
+                byte[]? frame;
+                if (device.IsSimulation()) frame = ThumbnailBitmap.Pattern(id);
                 else
                 {
-                    byte[]? frame = null;
+                    frame = null;
                     await _runtimeAccess.WaitAsync(ct);
                     try { frame = await Runtime().CaptureAsync(device, ct); }
-                    catch (Exception ex) { logger.LogWarning(ex, "Could not capture NDI preview for encoder {Device}", device.Id); }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch (Exception ex) { logger.LogWarning(ex, "Could not capture NDI preview for encoder {Device}", id); }
                     finally { _runtimeAccess.Release(); }
-                    if (frame is not null)
-                    {
-                        _failures.TryRemove(id, out _);
-                        thumbnail = new(frame, true, DateTimeOffset.UtcNow);
-                    }
-                    else
-                    {
-                        var failures = activeTeleToolStream
-                            ? _failures.AddOrUpdate(id, 1, static (_, current) => current + 1)
-                            : 0;
-                        var warning = activeTeleToolStream && failures >= 2;
-                        thumbnail = new(
-                            warning ? ThumbnailBitmap.Warning(device.Id) : ThumbnailBitmap.Unavailable(device.Id),
-                            false,
-                            DateTimeOffset.UtcNow,
-                            warning,
-                            failures);
-                    }
                 }
-                _cache[id] = thumbnail;
+                var failures = frame is not null ? 0
+                    : _cache.TryGetValue(id, out var previous) && previous.Key == key
+                        ? Math.Min(previous.Failures + 1, 8) : 1;
+                var activeTeleTool = device.IsTeleTool() && device.StreamRunning == true;
+                var warning = activeTeleTool && failures >= 2;
+                var thumbnail = new EncoderThumbnail(
+                    frame ?? (warning ? ThumbnailBitmap.Warning(id) : ThumbnailBitmap.Unavailable(id)),
+                    frame is not null, DateTimeOffset.UtcNow, warning, activeTeleTool ? failures : 0);
+                _cache[id] = new(key, thumbnail, failures);
                 return thumbnail;
             }
             finally { _captureLimit.Release(); }
@@ -95,18 +72,45 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
         finally { deviceLock.Release(); }
     }
 
+    private async Task<ManagedDevice> PreviewDeviceAsync(string id)
+    {
+        var device = (await store.ReadAsync()).Devices.FirstOrDefault(d => d.Id == id)
+            ?? throw new KeyNotFoundException($"Device '{id}' was not found.");
+        if (!device.IsOnboarded || device.Role != DeviceRole.Encoder)
+            throw new InvalidOperationException("HDMI input previews are available only for onboarded encoders.");
+        return device;
+    }
+
+    private bool TryCached(string id, PreviewKey key, out EncoderThumbnail? thumbnail)
+    {
+        thumbnail = null;
+        if (!_cache.TryGetValue(id, out var entry) || entry.Key != key) return false;
+        var lifetime = entry.Failures < 2 ? CacheLifetime
+            : TimeSpan.FromSeconds(Math.Min(30, 5 * (1 << Math.Min(entry.Failures - 1, 3))));
+        if (DateTimeOffset.UtcNow - entry.Thumbnail.CapturedUtc >= lifetime) return false;
+        thumbnail = entry.Thumbnail;
+        return true;
+    }
+
+    private sealed record CachedPreview(PreviewKey Key, EncoderThumbnail Thumbnail, int Failures);
+    private sealed record PreviewKey(string Address, string Hostname, string Group, string Channel,
+        DeviceHealth Health, bool? StreamRunning, bool Multicast, string? MulticastPrefix)
+    {
+        public static PreviewKey From(ManagedDevice device) => new(device.IpAddress, device.Hostname,
+            device.NdiGroup, device.NdiChannelName, device.Health, device.StreamRunning,
+            device.MulticastConfigured, device.MulticastNetPrefix);
+    }
+
     public void Forget(string id)
     {
         _cache.TryRemove(id, out _);
-        _failures.TryRemove(id, out _);
-        _deviceLocks.TryRemove(id, out _);
+        lock (_runtimeGate) _runtime?.Forget(id);
     }
 
     public void ForgetAll()
     {
         _cache.Clear();
-        _failures.Clear();
-        _deviceLocks.Clear();
+        lock (_runtimeGate) _runtime?.ForgetAll();
     }
 
     /// <summary>
@@ -126,7 +130,6 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                 _runtime = null;
             }
             _cache.Clear();
-            _failures.Clear();
             logger.LogInformation("Reloaded the NDI encoder preview runtime after Access Manager configuration changed");
         }
         finally
@@ -169,7 +172,14 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
         private readonly RecvDestroyDelegate _recvDestroy;
         private readonly RecvCaptureDelegate _recvCapture;
         private readonly RecvFreeVideoDelegate _recvFreeVideo;
+        private readonly ConcurrentDictionary<string, CachedSource> _sources = new(StringComparer.OrdinalIgnoreCase);
         private bool _disposed;
+
+        private sealed record CachedSource(string Address, string Hostname, string Group, string Channel,
+            (string Name, string Url) Source, DateTimeOffset ExpiresUtc);
+
+        public void Forget(string id) => _sources.TryRemove(id, out _);
+        public void ForgetAll() => _sources.Clear();
 
         public NdiReceiveRuntime()
         {
@@ -190,6 +200,15 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
 
         private byte[]? Capture(ManagedDevice device, CancellationToken ct)
         {
+            if (_sources.TryGetValue(device.Id, out var cached)
+                && cached.ExpiresUtc > DateTimeOffset.UtcNow
+                && cached.Address == device.IpAddress && cached.Hostname == device.Hostname
+                && cached.Group == device.NdiGroup && cached.Channel == device.NdiChannelName)
+            {
+                var frame = Receive(cached.Source, device, ct);
+                if (frame is null) _sources.TryRemove(device.Id, out _);
+                return frame;
+            }
             var groupPtr = Marshal.StringToCoTaskMemUTF8(string.IsNullOrWhiteSpace(device.NdiGroup) ? "public" : device.NdiGroup);
             var ipPtr = Marshal.StringToCoTaskMemUTF8(device.IpAddress);
             IntPtr finder = IntPtr.Zero;
@@ -206,7 +225,14 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                     _findWait(finder, 500);
                     var sourcesPtr = _findSources(finder, out var count);
                     var source = FindSource(sourcesPtr, count, device);
-                    if (source is not null) return Receive(source.Value, device, ct);
+                    if (source is not null)
+                    {
+                        var frame = Receive(source.Value, device, ct);
+                        if (frame is not null)
+                            _sources[device.Id] = new(device.IpAddress, device.Hostname, device.NdiGroup,
+                                device.NdiChannelName, source.Value, DateTimeOffset.UtcNow.AddSeconds(30));
+                        return frame;
+                    }
                 }
                 return null;
             }
