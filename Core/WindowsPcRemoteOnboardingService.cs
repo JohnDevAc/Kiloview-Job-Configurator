@@ -37,6 +37,8 @@ public sealed class WindowsPcRemoteOnboardingService(
             string.Equals(candidate.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
             ?? throw new KeyNotFoundException("The NDI Configurator PC Agent is no longer discoverable on the selected subnet.");
         RequireRemoteCapabilities(agent);
+        if (string.Equals(agent.Address, network.Address, StringComparison.Ordinal))
+            throw new InvalidOperationException("Use server PC onboarding for this local endpoint. Its network address is retained.");
         if (!Contains(network, agent.Address))
             throw new UnauthorizedAccessException("The NDI Configurator PC Agent is outside the selected production subnet.");
 
@@ -207,7 +209,7 @@ public sealed class WindowsPcRemoteOnboardingService(
         logger.LogWarning("Remote Windows onboarding failed for endpoint {EndpointId}: {Message}", endpointId, message);
     }
 
-    public void RecordRegistration(RemoteWindowsPcEndpoint endpoint)
+    public void RecordRegistration(WindowsPcEndpoint endpoint)
     {
         if (!_pending.TryRemove(endpoint.EndpointId, out var pending)) return;
         var now = DateTimeOffset.UtcNow;

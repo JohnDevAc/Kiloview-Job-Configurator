@@ -4,23 +4,33 @@ Read this file before changing or publishing NDI Job Configurator.
 
 Last updated: 6 September 2026
 
-## Current baseline
+## Current baseline: shared suite, separate deployments
 
-- Repository: `JohnDevAc/Kiloview-Job-Configurator`
-- Active stable branch: `main`
-- Released stable source commit: `b50f0d2`
-- Development source baseline: `cbbf2ba` (released code `15e122f`, dev.99)
-- Latest implementation: firmware upload compatibility and reconnect metadata fixes
-- Current version: `0.8.7`
-- Release channel: `Main`
-- Latest published Main release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.7>
-- Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.99>
-- Current active work: none. Development was merged into `main`, pushed, and
-  published as stable v0.8.7. `development` retains its Development release metadata.
-- The companion source and packages were moved to the sibling
-  `Kiloview PC Onboarding` project. Do not copy them back into this repository.
-- Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
-  (private, default branch `main`, initial commit `f8f56c3`).
+- Release targets are server Main `0.8.8` / Development `0.8.8-dev.1` and
+  companion Main `0.7.0` / Development `0.7.0-dev.2`. Each repository's branches
+  share the same implementation; only `Directory.Build.props` differs.
+- The user explicitly requested both products on Main and all channels aligned.
+  Preserve both Git histories and publish matching companion/server channels.
+- The suite workspace owns both repositories. Open `NDI-Configurator.code-workspace`
+  and read `AGENTS.md`, `suite.json`, and `PC-ONBOARDING-CONTRACT.md`.
+- Local PC NDI writes belong to the installed companion. The server delegates
+  through the installed process contract without another local confirmation.
+  Remote Yes/No and UAC remain. All Windows PCs use agent GUIDs, common monitoring,
+  live NDI drift checks, and managed multicast. Old Windows registrations need
+  re-onboarding after this upgrade.
+- The installer offers the complete independently built PC Agent as a checked
+  optional component, includes its license, records its clean source revision
+  and file hashes, and retains newer installed versions. Setup/tray use blue icons.
+- `scripts/Publish.ps1 -SetupExe` requires the separate companion checkout, default
+  sibling `Kiloview PC Onboarding` (override `-CompanionRoot`). Build Main with
+  the released Main companion and Development with the released dev companion.
+- Initial integration validation is in `SUITE-INTEGRATION-VALIDATION.md`. The
+  promotion's release commits, package hashes, branch parity and update-feed
+  verification are recorded in `CHANNEL-ALIGNMENT-2026-09-06.md`.
+- Publishing releases does not install them locally. This PC was running Main
+  `0.8.7` before promotion. No device or NDI settings are changed by packaging.
+
+The entries below describe earlier released work, not the current installation.
 
 ## Stable 0.8.7 promotion
 

@@ -29,7 +29,7 @@ internal static class BootstrapperProgram
         try
         {
             Log($"Installer {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)} started from {Environment.ProcessPath}.");
-            if (!ShowLicenseAgreement(ReadEmbeddedText(LicenseResource)))
+            if (!ShowLicenseAgreement(ReadEmbeddedText(LicenseResource), out var installPcAgent))
             {
                 Log("License agreement declined; installation cancelled.");
                 return 2;
@@ -73,6 +73,8 @@ internal static class BootstrapperProgram
             startInfo.ArgumentList.Add(installerScript);
             startInfo.ArgumentList.Add("-Source");
             startInfo.ArgumentList.Add(extractRoot);
+            startInfo.ArgumentList.Add("-LicenseAccepted");
+            if (!installPcAgent) startInfo.ArgumentList.Add("-SkipPcAgent");
 
             using var installer = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Windows PowerShell could not be started.");
@@ -134,7 +136,7 @@ internal static class BootstrapperProgram
         return reader.ReadToEnd();
     }
 
-    private static bool ShowLicenseAgreement(string licenseText)
+    private static bool ShowLicenseAgreement(string licenseText, out bool installPcAgent)
     {
         using var applicationIcon = LoadBrandIcon();
         using var logo = applicationIcon.ToBitmap();
@@ -228,13 +230,14 @@ internal static class BootstrapperProgram
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Margin = Padding.Empty,
             Padding = new Padding(22, 14, 22, 12)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
 
@@ -269,6 +272,24 @@ internal static class BootstrapperProgram
             AutoEllipsis = true,
             Margin = new Padding(2, 7, 2, 5)
         };
+
+        var pcAgent = new CheckBox
+        {
+            Dock = DockStyle.Fill,
+            Checked = true,
+            AutoSize = false,
+            Text = "Install PC Onboarding / PC Agent (recommended)\nAllows this server PC to join jobs without another confirmation.",
+            Margin = new Padding(2, 6, 2, 4)
+        };
+        var companionLicense = ReadEmbeddedText("NDIJobConfigurator.PcAgentLicense.md");
+        void RefreshLicense()
+        {
+            license.Text = licenseText + (pcAgent.Checked
+                ? "\n\nPC ONBOARDING / PC AGENT LICENSE\n\n" + companionLicense : "");
+            acceptance.Checked = false;
+        }
+        pcAgent.CheckedChanged += (_, _) => RefreshLicense();
+        RefreshLicense();
 
         var actions = new FlowLayoutPanel
         {
@@ -314,15 +335,18 @@ internal static class BootstrapperProgram
         actions.Controls.AddRange([install, cancel]);
         content.Controls.Add(heading, 0, 0);
         content.Controls.Add(license, 0, 1);
-        content.Controls.Add(acceptance, 0, 2);
-        content.Controls.Add(actions, 0, 3);
+        content.Controls.Add(pcAgent, 0, 2);
+        content.Controls.Add(acceptance, 0, 3);
+        content.Controls.Add(actions, 0, 4);
         layout.Controls.Add(header, 0, 0);
         layout.Controls.Add(content, 0, 1);
         dialog.Controls.Add(layout);
         dialog.AcceptButton = install;
         dialog.CancelButton = cancel;
 
-        return dialog.ShowDialog() == DialogResult.OK && acceptance.Checked;
+        var accepted = dialog.ShowDialog() == DialogResult.OK && acceptance.Checked;
+        installPcAgent = accepted && pcAgent.Checked;
+        return accepted;
     }
 
     private static void FitToWorkingArea(Form dialog)

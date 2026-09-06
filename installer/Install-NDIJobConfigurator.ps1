@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Source = $PSScriptRoot)
+param([string]$Source = $PSScriptRoot, [switch]$SkipPcAgent, [switch]$LicenseAccepted)
 
 $ErrorActionPreference = 'Stop'
 function Test-Administrator {
@@ -11,8 +11,15 @@ function Test-Administrator {
 if (-not (Test-Administrator)) {
     $resolvedSource = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $elevationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Source `"$resolvedSource`""
+    if ($SkipPcAgent) { $elevationArguments += ' -SkipPcAgent' }
+    if ($LicenseAccepted) { $elevationArguments += ' -LicenseAccepted' }
     $elevatedInstaller = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $elevationArguments -Wait -PassThru
     exit $elevatedInstaller.ExitCode
+}
+
+if (-not $LicenseAccepted) {
+    . (Join-Path $Source 'Select-InstallOptions.ps1')
+    $SkipPcAgent = -not (Select-InstallOptions -PackageRoot $Source -IncludePcAgent (-not $SkipPcAgent))
 }
 
 $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
@@ -43,6 +50,40 @@ if (Test-Path $runtimeConfig) {
         if (-not ($runtimes -match 'Microsoft\.AspNetCore\.App 8\.')) {
             throw 'The .NET 8 ASP.NET Core Runtime is required. Use NDI-Job-Configurator.exe or install the .NET 8 ASP.NET Core Runtime.'
         }
+    }
+}
+
+if (-not $SkipPcAgent) {
+    $componentRoot = [IO.Path]::GetFullPath((Join-Path $Source 'pc-onboarding'))
+    . (Join-Path $Source 'PcAgentPackage.ps1')
+    $manifest = Test-PcAgentPackage -PackageRoot $Source
+    $setupPath = Join-Path $componentRoot 'NDI Configurator PC Agent Setup.exe'
+    $bundledVersion = (Get-Item -LiteralPath $setupPath).VersionInfo.ProductVersion
+    if ((Compare-PcAgentVersion $bundledVersion $manifest.version) -ne 0) { throw 'PC Agent binary version differs from its manifest.' }
+    $installedAgent = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'NDI Configurator\PC Agent\NDI Configurator PC Agent.exe'
+    $installedSetup = Join-Path (Split-Path -Parent $installedAgent) 'NDI Configurator PC Agent Setup.exe'
+    $retainNewerAgent = (Test-Path -LiteralPath $installedAgent) -and (Test-Path -LiteralPath $installedSetup) -and
+        ((Compare-PcAgentVersion (Get-Item -LiteralPath $installedAgent).VersionInfo.ProductVersion $bundledVersion) -gt 0) -and
+        ((Compare-PcAgentVersion (Get-Item -LiteralPath $installedSetup).VersionInfo.ProductVersion $bundledVersion) -gt 0)
+    if ($retainNewerAgent) {
+        Write-Host 'A newer independently updated PC Agent is installed; retaining it.'
+    } else {
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = $setupPath; $start.Arguments = '--server-command'; $start.WorkingDirectory = $componentRoot
+        $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+        $componentProcess = [Diagnostics.Process]::Start($start)
+        try {
+            $output = $componentProcess.StandardOutput.ReadToEndAsync()
+            $errors = $componentProcess.StandardError.ReadToEndAsync()
+            $componentProcess.StandardInput.Write('{"schemaVersion":1,"operation":"install","acceptLicense":true}')
+            $componentProcess.StandardInput.Close()
+            if (-not $componentProcess.WaitForExit(180000)) { $componentProcess.Kill(); throw 'PC Agent installation timed out.' }
+            $response = $output.GetAwaiter().GetResult() | ConvertFrom-Json
+            [void]$errors.GetAwaiter().GetResult()
+            if ($componentProcess.ExitCode -ne 0 -or $response.schemaVersion -ne 1 -or -not $response.success) { throw "PC Agent installation failed: $($response.error)" }
+            Write-Host "PC Agent $($response.version) installed. Its network adapter will be selected during server onboarding."
+        } finally { $componentProcess.Dispose() }
     }
 }
 

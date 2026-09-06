@@ -12,8 +12,12 @@
     <ApplicationIcon>wwwroot\NDIJobConfigurator.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableDefaultContentItems>false</EnableDefaultContentItems>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Program.cs;Core\**\*.cs;Devices\**\*.cs" />
+    <Content Include="wwwroot\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <AssemblyMetadata Include="ReleaseChannel" Value="$(ReleaseChannel)" />
     <Compile Remove="artifacts\**\*.cs;installer\**\*.cs;tests\**\*.cs" />
     <Content Remove="artifacts\**\*;installer\**\*;tests\**\*" />

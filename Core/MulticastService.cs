@@ -9,7 +9,6 @@ namespace NDIJobConfigurator.Core;
 public sealed class MulticastService(
     AppStateStore store,
     DeviceClientFactory factory,
-    NdiAccessManagerService accessManager,
     WindowsPcAgentService pcAgents,
     TeleToolFleetService teleTools,
     EncoderThumbnailService thumbnails,
@@ -27,26 +26,18 @@ public sealed class MulticastService(
         var state = await store.ReadAsync();
         var job = state.LastJob ?? throw new InvalidOperationException("Complete onboarding before configuring multicast.");
         var devices = state.Devices.Where(device => device.IsOnboarded).OrderBy(device => device.Id, StringComparer.Ordinal).ToArray();
-        var remoteWindowsPcs = (state.RemoteWindowsPcs ?? [])
+        var windowsPcs = (state.WindowsPcs ?? [])
             .OrderBy(endpoint => endpoint.EndpointId, StringComparer.Ordinal)
             .ToArray();
-        if (devices.Length == 0 && remoteWindowsPcs.Length == 0 && !request.IncludeLocalPc)
+        if (devices.Length == 0 && windowsPcs.Length == 0)
             throw new InvalidOperationException("There are no onboarded devices or Windows PC endpoints to configure.");
 
         var senders = devices.Where(device => device.Role == DeviceRole.Encoder).ToArray();
-        var slots = senders.Length + remoteWindowsPcs.Length + (request.IncludeLocalPc ? 1 : 0);
+        var slots = senders.Length + windowsPcs.Length;
         var poolPrefixLength = PoolPrefixLength(slots);
         var poolSize = 1u << (32 - poolPrefixLength);
         var poolStart = SelectPool(job.JobName, poolSize, request.Regenerate, state.Multicast);
         var poolMask = PrefixMask(poolPrefixLength);
-        var selectedNetwork = request.IncludeLocalPc
-            ? NetworkAddressing.ResolveLocalInterface(
-                state.SelectedNetworkAdapterId,
-                state.SelectedNetworkAddress)
-                ?? throw new InvalidOperationException(
-                    "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.")
-            : null;
-        var localAddress = selectedNetwork?.Address ?? "127.0.0.1";
         var assignments = new List<MulticastAssignment>();
         var slot = 0u;
 
@@ -67,7 +58,7 @@ public sealed class MulticastService(
                 request.Ttl));
         }
 
-        foreach (var endpoint in remoteWindowsPcs)
+        foreach (var endpoint in windowsPcs)
         {
             assignments.Add(new(
                 endpoint.EndpointId,
@@ -82,21 +73,6 @@ public sealed class MulticastService(
                 request.Ttl));
         }
 
-        if (request.IncludeLocalPc)
-        {
-            assignments.Add(new(
-                "local-pc",
-                Environment.MachineName,
-                localAddress,
-                "WindowsPC",
-                DeviceRole.Encoder,
-                true,
-                true,
-                SenderPrefix(poolStart, slot),
-                AllocationNetmask,
-                request.Ttl));
-        }
-
         ValidateAssignments(poolStart, poolSize, assignments);
         return new(
             Guid.NewGuid(),
@@ -106,12 +82,9 @@ public sealed class MulticastService(
             NetworkAddressing.FromUInt(poolStart + poolSize - 1).ToString(),
             AllocationNetmask,
             request.Ttl,
-            request.IncludeLocalPc,
-            accessManager.Detected,
             assignments,
             "planned",
-            DateTimeOffset.UtcNow,
-            AccessManagerRunning: accessManager.IsRunning);
+            DateTimeOffset.UtcNow);
     }
 
     public async Task<MulticastApplyResult> ApplyAsync(MulticastConfiguration plan, CancellationToken ct)
@@ -123,22 +96,19 @@ public sealed class MulticastService(
         if (plan.Ttl is < 1 or > 255) throw new ArgumentException("Multicast TTL must be between 1 and 255.");
 
         var devices = state.Devices.Where(device => device.IsOnboarded).ToDictionary(device => device.Id, StringComparer.Ordinal);
-        var remoteWindowsPcs = (state.RemoteWindowsPcs ?? [])
+        var windowsPcs = (state.WindowsPcs ?? [])
             .ToDictionary(endpoint => endpoint.EndpointId, StringComparer.OrdinalIgnoreCase);
-        var remoteEndpointIds = remoteWindowsPcs.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remoteEndpointIds = windowsPcs.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var plannedDeviceIds = plan.Assignments
-            .Where(assignment => assignment.EndpointId != "local-pc"
-                && !remoteEndpointIds.Contains(assignment.EndpointId))
+            .Where(assignment => !remoteEndpointIds.Contains(assignment.EndpointId))
             .Select(assignment => assignment.EndpointId)
             .ToHashSet(StringComparer.Ordinal);
         var deviceAssignments = plan.Assignments
-            .Where(assignment => assignment.EndpointId != "local-pc"
-                && !remoteEndpointIds.Contains(assignment.EndpointId))
+            .Where(assignment => !remoteEndpointIds.Contains(assignment.EndpointId))
             .ToArray();
         var remoteAssignments = plan.Assignments
             .Where(assignment => remoteEndpointIds.Contains(assignment.EndpointId))
             .ToArray();
-        var localAssignments = plan.Assignments.Where(assignment => assignment.EndpointId == "local-pc").ToArray();
         if (deviceAssignments.Length != plannedDeviceIds.Count || !plannedDeviceIds.SetEquals(devices.Keys))
             throw new InvalidOperationException("The onboarded fleet changed after this multicast plan was generated. Generate a new plan.");
         if (remoteAssignments.Length != remoteEndpointIds.Count
@@ -146,15 +116,6 @@ public sealed class MulticastService(
                 .ToHashSet(StringComparer.OrdinalIgnoreCase)
                 .SetEquals(remoteEndpointIds))
             throw new InvalidOperationException("The onboarded Windows endpoints changed after this multicast plan was generated. Generate a new plan.");
-        if (localAssignments.Length != (plan.IncludeLocalPc ? 1 : 0))
-            throw new InvalidOperationException("The local-PC selection changed after this multicast plan was generated. Generate a new plan.");
-        var selectedNetwork = plan.IncludeLocalPc
-            ? NetworkAddressing.ResolveLocalInterface(
-                state.SelectedNetworkAdapterId,
-                state.SelectedNetworkAddress)
-                ?? throw new InvalidOperationException(
-                    "The onboarding network adapter is no longer active. Return to New onboarding and select an active adapter.")
-            : null;
         foreach (var assignment in deviceAssignments)
         {
             var device = devices[assignment.EndpointId];
@@ -169,7 +130,7 @@ public sealed class MulticastService(
         }
         foreach (var assignment in remoteAssignments)
         {
-            var endpoint = remoteWindowsPcs[assignment.EndpointId];
+            var endpoint = windowsPcs[assignment.EndpointId];
             if (!string.Equals(assignment.Hostname, endpoint.Hostname, StringComparison.Ordinal)
                 || !string.Equals(assignment.Address, endpoint.Address, StringComparison.Ordinal)
                 || !string.Equals(assignment.Family, "WindowsPC", StringComparison.Ordinal)
@@ -179,14 +140,6 @@ public sealed class MulticastService(
                 || assignment.Ttl != plan.Ttl)
                 throw new InvalidOperationException($"The multicast plan for {endpoint.Hostname} no longer matches the onboarded Windows endpoint. Generate a new plan.");
         }
-        if (localAssignments is [{ } local]
-            && (!local.Sender
-                || !local.Receiver
-                || local.Role != DeviceRole.Encoder
-                || local.Ttl != plan.Ttl
-                || !string.Equals(local.Address, selectedNetwork?.Address, StringComparison.Ordinal)))
-            throw new InvalidOperationException("The local-PC multicast assignment is invalid. Generate a new plan.");
-
         var poolStart = NetworkAddressing.ToUInt(InputValidation.Ip(plan.PoolPrefix, "Multicast pool prefix"));
         var poolMask = NetworkAddressing.ToUInt(InputValidation.Ip(plan.PoolNetmask, "Multicast pool subnet mask"));
         var poolSize = (~poolMask) + 1;
@@ -195,15 +148,9 @@ public sealed class MulticastService(
         ValidateAssignments(poolStart, poolSize, plan.Assignments);
         await store.UpdateAsync(current => current with { Multicast = plan with { Status = "running" } });
 
-        var senderAddresses = plan.Assignments
-            .Where(assignment => assignment.Sender)
-            .Select(assignment => assignment.Address)
-            .Where(address => IPAddress.TryParse(address, out _))
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
-        var localReceiveSubnets = selectedNetwork is null
-            ? []
-            : NetworkAddressing.GetSenderSubnets(senderAddresses, selectedNetwork);
+        var senderAddresses = plan.Assignments.Where(assignment => assignment.Sender)
+            .Select(assignment => assignment.Address).Where(address => IPAddress.TryParse(address, out _))
+            .Distinct(StringComparer.Ordinal).ToArray();
         var results = new ConcurrentDictionary<string, MulticastAssignment>(StringComparer.Ordinal);
 
         async Task ApplyAssignmentAsync(MulticastAssignment assignment, CancellationToken token)
@@ -211,20 +158,7 @@ public sealed class MulticastService(
             try
             {
                 bool inUse;
-                if (assignment.EndpointId == "local-pc")
-                {
-                    var local = await accessManager.ApplyAsync(
-                        assignment.NetPrefix ?? throw new InvalidOperationException("The local PC multicast allocation is missing."),
-                        assignment.Netmask ?? throw new InvalidOperationException("The local PC multicast subnet mask is missing."),
-                        assignment.Ttl,
-                        plan.JobName,
-                        job.NdiDiscoveryServerIp,
-                        assignment.Address,
-                        localReceiveSubnets,
-                        token);
-                    inUse = local.InUse;
-                }
-                else if (remoteEndpointIds.Contains(assignment.EndpointId))
+                if (remoteEndpointIds.Contains(assignment.EndpointId))
                 {
                     var agent = pcAgents.Snapshot().FirstOrDefault(candidate =>
                         string.Equals(candidate.EndpointId, assignment.EndpointId, StringComparison.OrdinalIgnoreCase));
@@ -419,7 +353,8 @@ public sealed class MulticastService(
             );
         }
 
-        if (results.TryGetValue("local-pc", out var localResult) && localResult.Status == "applied")
+        var serverPc = windowsPcs.Values.FirstOrDefault(pc => pc.IsServerPc);
+        if (serverPc is not null && results.TryGetValue(serverPc.EndpointId, out var localResult) && localResult.Status == "applied")
         {
             try
             {
@@ -428,7 +363,7 @@ public sealed class MulticastService(
             catch (Exception ex) when (ex is InvalidOperationException or IOException or TaskCanceledException)
             {
                 logger.LogWarning(ex, "The local multicast configuration was applied, but the encoder preview runtime could not be reloaded");
-                results["local-pc"] = localResult with
+                results[serverPc.EndpointId] = localResult with
                 {
                     Status = "error",
                     InUse = false,
@@ -479,15 +414,13 @@ public sealed class MulticastService(
         var devices = state.Devices
             .Where(device => device.IsOnboarded)
             .ToDictionary(device => device.Id, StringComparer.Ordinal);
-        var includeLocalPc = current.IncludeLocalPc
-            || current.Assignments.Any(assignment => assignment.EndpointId == "local-pc");
-        var remoteWindowsPcs = (state.RemoteWindowsPcs ?? [])
+        var windowsPcs = (state.WindowsPcs ?? [])
             .ToDictionary(endpoint => endpoint.EndpointId, StringComparer.OrdinalIgnoreCase);
-        var remoteEndpointIds = remoteWindowsPcs.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var remoteEndpointIds = windowsPcs.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var remoteAssignments = current.Assignments
             .Where(assignment => remoteEndpointIds.Contains(assignment.EndpointId))
             .ToArray();
-        if (devices.Count == 0 && remoteAssignments.Length == 0 && !includeLocalPc)
+        if (devices.Count == 0 && remoteAssignments.Length == 0)
             throw new InvalidOperationException("There are no multicast endpoints to revert.");
 
         await store.UpdateAsync(app => app with
@@ -553,22 +486,12 @@ public sealed class MulticastService(
                 }
             });
 
-        if (includeLocalPc)
+        var serverPc = windowsPcs.Values.FirstOrDefault(pc => pc.IsServerPc);
+        if (serverPc is not null && results.TryGetValue(serverPc.EndpointId, out var serverError) && serverError is null)
         {
-            try
-            {
-                await accessManager.DisableMulticastAsync(ct);
-                await thumbnails.ReloadNdiConfigurationAsync(ct);
-                results["local-pc"] = null;
-            }
-            catch (Exception ex) when (ex is InvalidOperationException
-                or IOException
-                or TaskCanceledException
-                or UnauthorizedAccessException)
-            {
-                logger.LogWarning(ex, "Reverting local NDI Access Manager multicast settings failed");
-                results["local-pc"] = ex.Message;
-            }
+            try { await thumbnails.ReloadNdiConfigurationAsync(ct); }
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or TaskCanceledException)
+            { results[serverPc.EndpointId] = "Unicast was applied, but preview reload failed: " + ex.Message; }
         }
 
         var failedResults = results
@@ -612,9 +535,8 @@ public sealed class MulticastService(
         });
         var errors = failedResults.Select(result =>
         {
-            var name = result.Key == "local-pc"
-                ? Environment.MachineName
-                : devices.TryGetValue(result.Key, out var device) ? device.Hostname : result.Key;
+            var name = devices.TryGetValue(result.Key, out var device) ? device.Hostname
+                : windowsPcs.TryGetValue(result.Key, out var pc) ? pc.Hostname : result.Key;
             return $"{name}: {result.Value}";
         }).ToArray();
         return new("partial", reverted, failed, partial, errors);

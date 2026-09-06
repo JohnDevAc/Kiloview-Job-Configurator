@@ -102,9 +102,7 @@ public sealed record AppState(
     MulticastConfiguration? Multicast = null,
     string? SelectedNetworkAdapterId = null,
     string? SelectedNetworkAddress = null,
-    LocalPcEndpoint? LocalPc = null,
-    string? ManagedLocalNdiGroup = null,
-    IReadOnlyList<RemoteWindowsPcEndpoint>? RemoteWindowsPcs = null)
+    IReadOnlyList<WindowsPcEndpoint>? WindowsPcs = null)
 {
     public static AppState Empty => new([]);
 }
@@ -132,7 +130,8 @@ public sealed record OnboardingRequest(
     int KiloLinkPort = 50000,
     int KiloLinkWebPort = 80,
     string Dns = "8.8.8.8",
-    bool CleanOnboarding = false);
+    bool CleanOnboarding = false,
+    bool IncludeServerPc = false);
 
 public sealed record DevicePlan(
     string DeviceId,
@@ -162,7 +161,6 @@ public sealed record HdmiInputProbeResult(bool SignalPresent, string? Resolution
 public sealed record HdmiProbeResult(bool Connected, string? NegotiatedResolution);
 public sealed record TitleCardSource(string Name, string Group, string LocalAddress);
 public sealed record MulticastSetupRequest(
-    bool IncludeLocalPc = true,
     int Ttl = 1,
     bool Regenerate = false);
 public sealed record NetworkAdapterSelection(string AdapterId, string Address);
@@ -173,19 +171,7 @@ public sealed record LocalNetworkInterface(
     string Address,
     int PrefixLength,
     string Type);
-public sealed record LocalPcEndpoint(
-    string EndpointId,
-    string Hostname,
-    string AdapterId,
-    string AdapterName,
-    string Address,
-    int PrefixLength,
-    bool PreferredInterfaceConfigured,
-    string Status,
-    string? Error = null,
-    string? OperatingSystemVersion = null,
-    string? NdiToolsVersion = null);
-public sealed record RemoteWindowsPcEndpoint(
+public sealed record WindowsPcEndpoint(
     string EndpointId,
     string Hostname,
     string Address,
@@ -212,7 +198,8 @@ public sealed record RemoteWindowsPcEndpoint(
     long? PhysicalMemoryAvailableBytes = null,
     long? SystemDriveTotalBytes = null,
     long? SystemDriveFreeBytes = null,
-    DateTimeOffset? AgentObservedUtc = null);
+    DateTimeOffset? AgentObservedUtc = null,
+    bool IsServerPc = false);
 public sealed record WindowsPcRegistration(
     string EndpointId,
     string Hostname,
@@ -293,7 +280,10 @@ public sealed record WindowsPcAgentStatus(
     IReadOnlyList<WindowsPcAgentMembership> Memberships,
     DateTimeOffset ObservedUtc,
     WindowsPcAgentNetworkConfiguration? NetworkConfiguration = null,
-    WindowsPcAgentMulticastConfiguration? MulticastConfiguration = null);
+    WindowsPcAgentMulticastConfiguration? MulticastConfiguration = null,
+    WindowsPcNdiConfiguration? NdiConfiguration = null);
+public sealed record WindowsPcNdiConfiguration(bool PreferredInterfaceConfigured,
+    IReadOnlyList<string> SendGroups, IReadOnlyList<string> ReceiveGroups, string DiscoveryServer);
 public sealed record WindowsPcAgentSnapshot(
     string EndpointId,
     string Hostname,
@@ -410,13 +400,10 @@ public sealed record MulticastConfiguration(
     string PoolLastAddress,
     string AllocationNetmask,
     int Ttl,
-    bool IncludeLocalPc,
-    bool AccessManagerDetected,
     IReadOnlyList<MulticastAssignment> Assignments,
     string Status,
     DateTimeOffset GeneratedUtc,
-    DateTimeOffset? AppliedUtc = null,
-    bool AccessManagerRunning = false);
+    DateTimeOffset? AppliedUtc = null);
 public sealed record MulticastApplyResult(
     string Status,
     int Applied,

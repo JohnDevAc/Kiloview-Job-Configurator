@@ -10,8 +10,8 @@ const { windowsCardState, createWindowsMonitor } = await loadModule('../wwwroot/
 const { createPreviewController } = await loadModule('../wwwroot/js/previews.js');
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
-const signatureExpression = appSource.split(/\r?\n/).find(line => line.includes('cardRemoteWindowsPcs='));
-const signature = new Function('app', 'devices', 'localPc', 'localAssignment', 'remoteWindowsPcs', 'pcAgents', 'windowsJobName', 'windowsCardState', `${signatureExpression}; return cardSignature;`);
+const signatureExpression = appSource.split(/\r?\n/).find(line => line.includes('cardWindowsPcs='));
+const signature = new Function('app', 'devices', 'localPc', 'localAssignment', 'windowsPcs', 'pcAgents', 'windowsJobName', 'windowsCardState', `${signatureExpression}; return cardSignature;`);
 const getSignature = (pcs, agents) => signature({}, [], null, null, pcs, agents, 'Job', windowsCardState);
 
 test('Routine Windows telemetry keeps the monitor grid signature stable', () => {

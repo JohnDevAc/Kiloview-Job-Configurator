@@ -2,11 +2,21 @@
 param(
     [switch]$SelfContained,
     [switch]$SetupExe,
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$CompanionRoot
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$suite = Get-Content -LiteralPath (Join-Path $root 'suite.json') -Raw | ConvertFrom-Json
+if (-not $CompanionRoot) { $CompanionRoot = Join-Path $root $suite.pcOnboarding.path }
+$CompanionRoot = (Resolve-Path -LiteralPath $CompanionRoot).Path
+if (-not (Test-Path -LiteralPath (Join-Path $CompanionRoot '.git'))) { throw 'The companion must be a separate Git checkout.' }
+[xml]$companionProps = Get-Content -LiteralPath (Join-Path $CompanionRoot 'Directory.Build.props') -Raw
+$companionVersion = [string]$companionProps.Project.PropertyGroup.Version
+if ([version]($companionVersion.Split('-')[0]) -lt [version]$suite.pcOnboarding.minimumVersion) {
+    throw "PC Agent $($suite.pcOnboarding.minimumVersion) or later is required for local server onboarding."
+}
 $artifactRoot = Join-Path $root 'artifacts'
 $publish = Join-Path $artifactRoot 'NDIJobConfigurator'
 $package = Join-Path $artifactRoot 'NDI-Job-Configurator-Windows.zip'
@@ -20,6 +30,14 @@ $legacySetups = @(
 if ($SetupExe) { $SelfContained = $true }
 
 & (Join-Path $PSScriptRoot 'Test-ReleaseMetadata.ps1') -Root $root
+
+foreach ($leaf in @('NDIJobConfigurator', 'bootstrapper')) {
+    $target = [IO.Path]::GetFullPath((Join-Path $artifactRoot $leaf))
+    if (-not $target.StartsWith([IO.Path]::GetFullPath($artifactRoot) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Unsafe publish cleanup path.'
+    }
+    if ((Test-Path -LiteralPath $target) -and (Get-Item -LiteralPath $target -Force).LinkType) { throw 'Publish output cannot be a filesystem link.' }
+}
 
 if (Test-Path $publish) { Remove-Item -LiteralPath $publish -Recurse -Force }
 New-Item -ItemType Directory -Path $publish -Force | Out-Null
@@ -46,6 +64,32 @@ Copy-Item -LiteralPath (Join-Path $root 'installer\Launch-NDIJobConfigurator.ps1
 Copy-Item -LiteralPath (Join-Path $root 'installer\Install.cmd') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'wwwroot\NDIJobConfigurator.ico') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $root 'PC-ONBOARDING-CONTRACT.md') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $root 'installer\Select-InstallOptions.ps1') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $root 'installer\PcAgentPackage.ps1') -Destination $publish
+
+# The companion remains an independently built and released application. Bundle
+# its complete package as an optional installer component, never compile its source.
+& (Join-Path $CompanionRoot 'scripts\Publish.ps1') -Configuration $Configuration
+if ($LASTEXITCODE -ne 0) { throw 'PC Agent package build failed.' }
+$companionPackage = Join-Path $CompanionRoot 'artifacts\NDI-Configurator-PC-Agent-win-x64.zip'
+$componentRoot = Join-Path $publish 'pc-onboarding'
+Expand-Archive -LiteralPath $companionPackage -DestinationPath $componentRoot
+$companionCommit = (& git -C $CompanionRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not determine the companion source revision.' }
+$companionDirty = [bool](& git -C $CompanionRoot status --porcelain --untracked-files=normal)
+if ($env:GITHUB_REF_TYPE -eq 'tag' -and $companionDirty) { throw 'Release builds require a clean companion checkout.' }
+@{
+    schemaVersion = 1
+    repository = $suite.pcOnboarding.repository
+    version = $companionVersion
+    commit = $companionCommit
+    workingTreeChanges = $companionDirty
+    localCommandSchema = $suite.pcOnboarding.localCommandSchema
+    files = @(Get-ChildItem -LiteralPath $componentRoot -Recurse -File | ForEach-Object {
+        @{ path = $_.FullName.Substring($componentRoot.TrimEnd([IO.Path]::DirectorySeparatorChar).Length + 1); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+    })
+} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $publish 'pc-onboarding-manifest.json') -Encoding UTF8
 
 if (Test-Path $package) { Remove-Item -LiteralPath $package -Force }
 Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $package -CompressionLevel Optimal
