@@ -1,5 +1,54 @@
 # Suite integration validation — 6 September 2026
 
+## Published deployment
+
+Both independent Development releases are published and their source commits are
+pushed. Production feeds and the installed Main server remain unchanged.
+
+| Product | Released source | Release |
+| --- | --- | --- |
+| Server | `82a0cf7887b611dbb39e7d78d6c33a08ceb2e2e2` on `development` | [v0.8.0-dev.100](https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.100) |
+| PC Agent | `7f7a8d9eb3d5ccbb75bf3f6d34fd6934f5dc6ba0` on `dev` | [v0.7.0-dev.1](https://github.com/JohnDevAc/Kiloview-PC-Onboarding/releases/tag/v0.7.0-dev.1) |
+
+The companion's [GitHub workflow](https://github.com/JohnDevAc/Kiloview-PC-Onboarding/actions/runs/34039621067)
+passed the build, 11 onboarding checks, 20 agent checks, both package publishes,
+and release publication. Its self-contained ZIP is 133089062 bytes and has
+SHA-256 `816486DE43D61D56CB9F1FCBB39DFFDF2903CDAFE0210A87A03CF35C5BCC32EB`.
+The framework-dependent ZIP is 886384 bytes, SHA-256
+`6738F5F5F8477BDDA064562373D3B92C7721F837189238D2BED9330A53BDB0FC`.
+Both published checksum manifests match their package and GitHub asset digests.
+
+The server was then rebuilt from its release source and the clean companion
+checkout. Its bundled companion is built locally by the companion's own script;
+the manifest records the released companion commit, `workingTreeChanges:false`,
+and all eleven payload hashes. The independent CI and local package archives
+have different build/archive bytes; their source revision and product version
+are the same. The server manifest identifies the exact bundled files.
+
+Server publication completed at 14:42:14 UTC. Every uploaded asset's size,
+SHA-256, and upload state matched the verified local release package before and
+after publication. The installer alias is byte-identical, and the embedded ZIP
+and companion license match their package/source files.
+
+| Server asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `NDI-Job-Configurator.exe` | 280541124 | `2F1E1078B0797E63157D544DC0EB705E5FF7131E78AC1B4A7A96BB0BCBF818BF` |
+| `NDI-Job-Configurator-Windows.zip` | 212331476 | `4971126224004504BD55D5D74FA0BF1175283A39847C57C4EAB0F3FE201A7312` |
+| `Kiloview-Job-Configurator.exe` | 280541124 | Same as the primary installer |
+
+The updater selected dev.100 as a channel switch from the installed Main 0.8.7
+identity, with the exact published installer size and hash, using a freshly
+retrieved authenticated GitHub release-feed snapshot. A direct unauthenticated
+request from this PC returned GitHub's 403 rate limit response (60/60 used), with
+reset at 15:04:55 UTC / 16:04:55 BST. No credentials were added to the product.
+
+The installed server health endpoint remained `ok`, version `0.8.7`, selected
+channel `Main`. Main remains server v0.8.7 and companion v0.6.1. No answer arrived
+to the optional local Development installation question during publication, so
+neither product was installed and this PC's channel was not changed.
+
+## Initial implementation validation
+
 Implemented on server `development` (`0.8.0-dev.100`, base `cbbf2ba`) and companion
 `dev` (`0.7.0-dev.1`, base `91513fd`). This section records the initial validation
 before publication. Its packages used the working trees and marked the companion

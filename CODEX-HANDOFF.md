@@ -4,14 +4,18 @@ Read this file before changing or publishing NDI Job Configurator.
 
 Last updated: 6 September 2026
 
-## Current work: shared suite, separate deployments
+## Current baseline: shared suite, separate deployments
 
-- Server work is on `development`, version `0.8.0-dev.100`, based on `cbbf2ba`.
+- Server source is `82a0cf7` on `development`, version `0.8.0-dev.100`.
 - Companion source is `7f7a8d9` on `dev`, version `0.7.0-dev.1`.
-- The user authorized pushing and deploying this integration. The companion
-  source is pushed; its independent Development workflow publishes first. Build
-  the server release against that clean checkout. Initial isolated validation
-  did not install either product or change live hardware/NDI configuration.
+- Both source commits and release tags are pushed. Companion Development
+  [v0.7.0-dev.1](https://github.com/JohnDevAc/Kiloview-PC-Onboarding/releases/tag/v0.7.0-dev.1)
+  passed its independent CI workflow, then server Development
+  [v0.8.0-dev.100](https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.100)
+  was rebuilt against that clean checkout and published on 6 September 2026.
+- All release asset sizes/hashes, embedded installer payload, companion license,
+  clean source manifest, release channels and tags were verified. No local
+  installation or real hardware/NDI change was performed during publication.
 - The preceding stable promotion published server `v0.8.7` from `b50f0d2` on
   `main`; Development `v0.8.0-dev.99` remains the previous Development release.
 - This workspace now owns both repositories. Open `NDI-Configurator.code-workspace`
@@ -29,8 +33,14 @@ Last updated: 6 September 2026
   and publish companion changes separately before producing a server release.
 - Validation commands are in both READMEs and the contract. See
   `SUITE-INTEGRATION-VALIDATION.md` for this change's final results and limits.
-- The installed server was Main `0.8.7` when deployment began. Publishing these
-  Development releases does not automatically change its installed channel.
+- The installed server remains healthy on Main `0.8.7`; both production feeds
+  remain unchanged. The optional question about installing Development locally
+  had no answer during publication, so this PC was not switched from Main.
+- The updater selects dev.100 with the correct installer size and SHA-256 from
+  authenticated live GitHub metadata. A direct unauthenticated check hit the
+  machine's shared GitHub rate limit; reset was reported as 6 September 2026,
+  15:04:55 UTC (16:04:55 BST). Do not mistake that temporary 403 for a missing
+  release. Publication and verification are complete.
 
 The entries below describe earlier released work, not the current installation.
 
