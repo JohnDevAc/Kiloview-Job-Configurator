@@ -67,7 +67,6 @@ public sealed class OnboardingService(
         var state = await store.ReadAsync();
         var selected = request.DeviceIds.Distinct().Select(id => state.Devices.FirstOrDefault(d => d.Id == id)
             ?? throw new ArgumentException($"Selected device '{id}' is no longer in the discovery list.")).ToArray();
-        if (selected.Length == 0 && !request.IncludeServerPc) throw new ArgumentException("Select a device or this server PC to onboard.");
         if (request.IncludeServerPc && !localPc.Status.Compatible) throw new InvalidOperationException(localPc.Status.Error);
         if (selected.Any(d => !d.CanOnboard))
             throw new ArgumentException(selected.First(d => !d.CanOnboard).ManagementMessage ?? "One or more selected devices cannot be onboarded.");
@@ -85,7 +84,7 @@ public sealed class OnboardingService(
         foreach (var device in state.Devices.Where(d => d.IsStatic || d.IsOnboarded))
             if (range.Contains(device.IpAddress)) occupied.TryAdd(device.IpAddress, 0);
 
-        await Parallel.ForEachAsync(range, new ParallelOptions
+        await Parallel.ForEachAsync(selected.Length == 0 ? [] : range, new ParallelOptions
         {
             MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(range.Length),
             CancellationToken = ct
@@ -127,6 +126,8 @@ public sealed class OnboardingService(
         }
 
         var warnings = new List<string>();
+        if (selected.Length == 0 && !request.IncludeServerPc)
+            warnings.Add("Create the job without configuring this server PC or any device. Remote Windows PCs can join afterwards.");
         if (selected.Any(d => d.IsKiloview()))
         {
             warnings.Add($"Confirming authorizes the application to accept the Kiloview EULA on each selected Kiloview and set its device login to admin / {request.JobName}.");
@@ -181,6 +182,23 @@ public sealed class OnboardingService(
                 currentState.SelectedNetworkAdapterId, currentState.SelectedNetworkAddress)
                 ?? throw new InvalidOperationException("The selected onboarding network adapter is no longer active.");
             // Complete local application checks before a clean run deletes inventory.
+            if (plan.Devices.Count == 0 && !plan.Settings.IncludeServerPc)
+            {
+                if (currentState.LastJob is not null && !plan.Settings.CleanOnboarding)
+                    throw new InvalidOperationException("A job already exists. Use its remote PC onboarding controls, or select clean onboarding to replace its local inventory.");
+                var started = DateTimeOffset.UtcNow;
+                await store.UpdateAsync(current => current with
+                {
+                    Devices = [], WindowsPcs = null, Multicast = null, FirmwareJob = null,
+                    LastJob = new(plan.Settings.JobName, plan.Settings.StaticStart, plan.Settings.StaticEnd, plan.Settings.NdiDiscoveryServerIp, started)
+                });
+                titleCards.StopAll();
+                lock (_progressGate)
+                {
+                    _progress = new(Guid.NewGuid(), "completed", 1, 1, [], started);
+                    return new { _progress.RunId, _progress.Status };
+                }
+            }
             var serverEndpoint = plan.Settings.IncludeServerPc
                 ? await localPc.OnboardAsync(selectedNetwork, plan.Settings.JobName, plan.Settings.NdiDiscoveryServerIp, ct) : null;
             if (serverEndpoint is not null) await thumbnails.ReloadNdiConfigurationAsync(ct);

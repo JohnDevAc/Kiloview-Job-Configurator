@@ -105,6 +105,10 @@ public sealed record AppState(
     IReadOnlyList<WindowsPcEndpoint>? WindowsPcs = null)
 {
     public static AppState Empty => new([]);
+    public Guid ServerId { get; init; }
+    public int IntegrationSchemaVersion => 1;
+    public string? JobId => IntegrationIdentity.JobId(this);
+    public string? JobRevision => IntegrationIdentity.Revision(this);
 }
 
 public sealed record DiscoveryRequest(
@@ -199,7 +203,10 @@ public sealed record WindowsPcEndpoint(
     long? SystemDriveTotalBytes = null,
     long? SystemDriveFreeBytes = null,
     DateTimeOffset? AgentObservedUtc = null,
-    bool IsServerPc = false);
+    bool IsServerPc = false,
+    string? RegistrationAttemptId = null,
+    string? RegistrationJobId = null,
+    string? RegistrationJobRevision = null);
 public sealed record WindowsPcRegistration(
     string EndpointId,
     string Hostname,
@@ -210,7 +217,10 @@ public sealed record WindowsPcRegistration(
     string NdiToolsVersion,
     string UtilityVersion,
     string EulaVersion,
-    string? OperatingSystemVersion = null);
+    string? OperatingSystemVersion = null,
+    string? AttemptId = null,
+    string? JobId = null,
+    string? JobRevision = null);
 public sealed record WindowsPcAgentHealth(string Status, string Product, string Version, int SchemaVersion);
 public static class WindowsPcAgentContract
 {
@@ -314,7 +324,8 @@ public sealed record WindowsPcAgentOpenRequest(
     string ServerName,
     string ServerAddress,
     string JobName,
-    string ConfiguratorUrl);
+    string ConfiguratorUrl,
+    string? AttemptId = null);
 public sealed record WindowsPcRemoteOnboardingRequest(
     WindowsPcRemoteNetworkRequest Network);
 public sealed record WindowsPcRemoteNetworkRequest(
@@ -337,7 +348,10 @@ public sealed record WindowsPcRemoteOnboardingConfiguration(
     string EndpointId,
     string JobName,
     string NdiDiscoveryServerIp,
-    WindowsPcRemoteNetworkConfiguration? Network);
+    WindowsPcRemoteNetworkConfiguration? Network,
+    string? AttemptId = null,
+    string? JobId = null,
+    string? JobRevision = null);
 public sealed record WindowsPcRemoteOnboardingState(
     string EndpointId,
     string Status,
@@ -346,7 +360,8 @@ public sealed record WindowsPcRemoteOnboardingState(
     DateTimeOffset? RegistrationDeadlineUtc,
     DateTimeOffset ExpiresUtc,
     string? RegisteredAddress = null,
-    DateTimeOffset? ConfigurationFetchedUtc = null);
+    DateTimeOffset? ConfigurationFetchedUtc = null,
+    string? AttemptId = null);
 public sealed record WindowsPcAgentMulticastRequest(
     int SchemaVersion,
     string EndpointId,

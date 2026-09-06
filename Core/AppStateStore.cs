@@ -8,6 +8,7 @@ public sealed class AppStateStore
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _file;
     private readonly string _backup;
+    private readonly Guid _serverId;
     private readonly ILogger<AppStateStore> _logger;
     private AppState? _cached;
     private (DateTime LastWriteUtc, long Length)? _cachedStamp;
@@ -22,6 +23,18 @@ public sealed class AppStateStore
         _logger = logger;
         var directory = AppDataPaths.ResolveDataDirectory(environment.ContentRootPath);
         Directory.CreateDirectory(directory);
+        var identityPath = Path.Combine(directory, "server-id.txt");
+        if (!File.Exists(identityPath))
+        {
+            try
+            {
+                using var identityFile = new FileStream(identityPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+                using var writer = new StreamWriter(identityFile);
+                writer.Write(Guid.NewGuid().ToString("D"));
+            }
+            catch (IOException) when (File.Exists(identityPath)) { }
+        }
+        _serverId = Guid.Parse(File.ReadAllText(identityPath));
         _file = Path.Combine(directory, "state.json");
         _backup = Path.Combine(directory, "state.json.bak");
     }
@@ -98,8 +111,9 @@ public sealed class AppStateStore
 
     // Records protect scalar values; copy and wrap their collections as well so
     // callers cannot mutate a cached snapshot without an atomic UpdateAsync.
-    private static AppState Freeze(AppState state) => state with
+    private AppState Freeze(AppState state) => state with
     {
+        ServerId = _serverId,
         Devices = Array.AsReadOnly(state.Devices.ToArray()),
         FirmwareJob = state.FirmwareJob is null ? null : state.FirmwareJob with
         {

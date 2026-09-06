@@ -41,10 +41,14 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
             .Distinct()
             .ToArray();
         var found = new ConcurrentDictionary<string, ManagedDevice>();
-
-        await Parallel.ForEachAsync(addresses, new ParallelOptions
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromMinutes(4));
+        var completed = 0;
+        try
         {
-            CancellationToken = ct,
+        await Parallel.ForEachAsync(addresses.OrderByDescending(ip => savedCredentialsByAddress.ContainsKey(ip.ToString())), new ParallelOptions
+        {
+            CancellationToken = budget.Token,
             MaxDegreeOfParallelism = NetworkAddressing.DiscoveryParallelism(addresses.Length)
         }, async (ip, token) =>
         {
@@ -62,7 +66,13 @@ public sealed class NetworkDiscovery(DeviceClientFactory factory, AppStateStore 
             var teleTool = await teleToolTask;
             if (kiloview is not null) found[kiloview.Id] = kiloview;
             if (teleTool is not null) found[teleTool.Id] = teleTool;
+            Interlocked.Increment(ref completed);
         });
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new InvalidOperationException($"Discovery coverage is incomplete: {completed}/{addresses.Length} addresses completed in {cidrs[0]} before the four-minute limit. Existing inventory was retained. Retry on a responsive network.");
+        }
 
         var devices = found.Values.OrderBy(d => NetworkAddressing.ToUInt(IPAddress.Parse(d.IpAddress))).ToArray();
         await MergeAsync(devices);

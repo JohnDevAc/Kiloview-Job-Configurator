@@ -1,5 +1,9 @@
 # Codex Project Handoff
 
+## Interoperability implementation — 6 September 2026
+
+Uncommitted five-repository changes and test evidence are recorded in [INTEROP-IMPLEMENTATION.md](INTEROP-IMPLEMENTATION.md). Read [INTEROPERABILITY.md](INTEROPERABILITY.md) for current identity/capability, topology, port, download and startup contracts. Server regression/frontend/installer, both companion validations, Environment/Toolkit/Resolume suites and an isolated server-to-Resolume HTTP fixture pass. No live installation/configuration, commit or release was performed. Historical baseline/version notes below describe the last committed release.
+
 Read this file before changing or publishing NDI Job Configurator.
 
 Last updated: 6 September 2026

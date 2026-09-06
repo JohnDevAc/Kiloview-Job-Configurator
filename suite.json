@@ -1,5 +1,15 @@
 {
   "schemaVersion": 1,
+  "contracts": {
+    "publicJobIdentity": 1,
+    "remoteOnboardingCapability": "onboarding-attempt-v1",
+    "componentReceipt": 1,
+    "selectedSubnetPrefixes": { "minimum": 20, "maximum": 30 },
+    "ports": { "jobHttp": 8091, "agentDiscoveryUdp": 8093, "agentHttp": 8094, "ndiDiscoveryTcp": 5959, "arenaHttp": 8080 }
+  },
   "server": { "path": ".", "repository": "JohnDevAc/Kiloview-Job-Configurator", "developmentBranch": "development" },
-  "pcOnboarding": { "path": "../Kiloview PC Onboarding", "repository": "JohnDevAc/Kiloview-PC-Onboarding", "developmentBranch": "dev", "minimumVersion": "0.7.0", "localCommandSchema": 1 }
+  "pcOnboarding": { "path": "../Kiloview PC Onboarding", "repository": "JohnDevAc/Kiloview-PC-Onboarding", "developmentBranch": "dev", "minimumVersion": "0.7.0", "localCommandSchema": 1 },
+  "environment": { "path": "../Kilolink Server Installer + NDI Discovery Server", "repository": "JohnDevAc/Kiloview-Environment-Setup", "roles": ["client", "server"] },
+  "toolkit": { "path": "../ChatGPT/Wrapper Application", "repository": "JohnDevAc/Production-Toolkit", "role": "launcher" },
+  "resolume": { "path": "../ChatGPT/Resolume Configurator", "repository": "JohnDevAc/Resolume-Configurator", "role": "arena-client" }
 }

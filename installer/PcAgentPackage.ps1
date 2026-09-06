@@ -1,7 +1,9 @@
 function Compare-PcAgentVersion([string]$Left, [string]$Right) {
     $leftParts = $Left.Split('+')[0].Split('-', 2)
     $rightParts = $Right.Split('+')[0].Split('-', 2)
-    $comparison = ([version]$leftParts[0]).CompareTo([version]$rightParts[0])
+    $leftCore = [version]$leftParts[0]; $rightCore = [version]$rightParts[0]
+    $comparison = ([version]::new($leftCore.Major, $leftCore.Minor, [Math]::Max(0, $leftCore.Build), [Math]::Max(0, $leftCore.Revision))).CompareTo(
+        [version]::new($rightCore.Major, $rightCore.Minor, [Math]::Max(0, $rightCore.Build), [Math]::Max(0, $rightCore.Revision)))
     if ($comparison) { return $comparison }
     if ($leftParts.Count -eq 1) { if ($rightParts.Count -eq 1) { return 0 }; return 1 }
     if ($rightParts.Count -eq 1) { return -1 }
@@ -19,6 +21,18 @@ function Compare-PcAgentVersion([string]$Left, [string]$Right) {
         if ($comparison) { return $comparison }
     }
     return 0
+}
+
+function Get-PcAgentInstallDecision([string]$AgentVersion, [string]$SetupVersion, [string]$BundledVersion) {
+    $agentNewer = $AgentVersion -and (Compare-PcAgentVersion $AgentVersion $BundledVersion) -gt 0
+    $setupNewer = $SetupVersion -and (Compare-PcAgentVersion $SetupVersion $BundledVersion) -gt 0
+    if ($agentNewer -or $setupNewer) {
+        if (-not $AgentVersion -or -not $SetupVersion -or (Compare-PcAgentVersion $AgentVersion $SetupVersion) -ne 0) {
+            throw 'A newer PC Agent installation is incomplete or has mixed versions. Repair it using its own matching or newer complete release package.'
+        }
+        return 'Retain'
+    }
+    return 'Install'
 }
 
 function Test-PcAgentPackage([string]$PackageRoot) {

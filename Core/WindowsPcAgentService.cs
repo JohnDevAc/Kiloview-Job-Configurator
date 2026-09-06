@@ -195,7 +195,7 @@ public sealed class WindowsPcAgentService(
             : null;
     }
 
-    public async Task<HttpStatusCode> OpenOnboardingAsync(string endpointId, CancellationToken ct)
+    public async Task<HttpStatusCode> OpenOnboardingAsync(string endpointId, CancellationToken ct, string? attemptId = null)
     {
         var state = await store.ReadAsync();
         var network = NetworkAddressing.ResolveLocalInterface(state.SelectedNetworkAdapterId, state.SelectedNetworkAddress)
@@ -218,7 +218,7 @@ public sealed class WindowsPcAgentService(
                     Environment.MachineName,
                     serverAddress,
                     state.LastJob.JobName,
-                    $"http://{serverAddress}:8091/"),
+                    $"http://{serverAddress}:8091/", attemptId),
                 options: AgentJson.Options)
         };
         using var response = await client.SendAsync(

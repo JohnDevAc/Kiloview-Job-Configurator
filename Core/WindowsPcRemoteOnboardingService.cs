@@ -15,12 +15,16 @@ public sealed class WindowsPcRemoteOnboardingService(
     private static readonly TimeSpan ResultLifetime = TimeSpan.FromMinutes(10);
     private readonly ConcurrentDictionary<string, PendingConfiguration> _pending = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, RecentResult> _results = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _stageGate = new(1, 1);
 
     public async Task<WindowsPcRemoteOnboardingState> StageAsync(
         string endpointId,
         WindowsPcRemoteOnboardingRequest request,
         string requestedBy)
     {
+        await _stageGate.WaitAsync();
+        try
+        {
         Cleanup();
         if (!Guid.TryParse(endpointId, out _))
             throw new ArgumentException("The Windows PC endpoint identifier is invalid.");
@@ -43,6 +47,14 @@ public sealed class WindowsPcRemoteOnboardingService(
             throw new UnauthorizedAccessException("The NDI Configurator PC Agent is outside the selected production subnet.");
 
         var desired = ValidateNetwork(request.Network, agent, network);
+        if (Status(endpointId) is { Status: "staged" or "awaiting-local-approval" or "awaiting-registration" })
+            throw new InvalidOperationException("An onboarding attempt is already active for this PC. Wait for completion or expiry before retrying.");
+        if (desired.Mode == "static" && desired.Address is { } target
+            && (state.Devices.Any(d => d.IpAddress == target)
+                || (state.WindowsPcs ?? []).Any(pc => pc.EndpointId != endpointId && pc.Address == target)
+                || agents.Snapshot().Any(pc => pc.EndpointId != endpointId && pc.Address == target)
+                || _pending.Values.Any(pc => pc.EndpointId != endpointId && pc.Network.Address == target && IsActive(pc))))
+            throw new InvalidOperationException("The requested static address is already occupied or reserved by another device/PC.");
         var now = DateTimeOffset.UtcNow;
         var pending = new PendingConfiguration(
             endpointId,
@@ -56,7 +68,8 @@ public sealed class WindowsPcRemoteOnboardingService(
             "staged",
             "Configuration staged; waiting for local approval.",
             null,
-            null);
+            null,
+            Guid.NewGuid().ToString("D"), state.JobId!, state.JobRevision!);
         _pending[endpointId] = pending;
         _results.TryRemove(endpointId, out _);
         logger.LogInformation(
@@ -76,11 +89,14 @@ public sealed class WindowsPcRemoteOnboardingService(
             desired.DnsServers is null ? "retain" : Join(desired.DnsServers),
             pending.ExpiresUtc);
         return ToState(pending);
+        }
+        finally { _stageGate.Release(); }
     }
 
     public async Task<WindowsPcRemoteOnboardingConfiguration> GetConfigurationAsync(
         string endpointId,
-        string requestAddress)
+        string requestAddress,
+        string? attemptId = null)
     {
         var started = Stopwatch.GetTimestamp();
         logger.LogInformation(
@@ -92,6 +108,8 @@ public sealed class WindowsPcRemoteOnboardingService(
         {
             if (!_pending.TryGetValue(endpointId, out var pending))
                 throw new KeyNotFoundException("No pending remote onboarding configuration exists for this endpoint.");
+            if (!string.Equals(attemptId, pending.AttemptId, StringComparison.Ordinal) || !IsActive(pending))
+                throw new InvalidOperationException("This onboarding attempt is missing or has been replaced. Request fresh local approval.");
             var state = await store.ReadAsync();
             var network = NetworkAddressing.ResolveLocalInterface(
                 state.SelectedNetworkAdapterId,
@@ -100,13 +118,14 @@ public sealed class WindowsPcRemoteOnboardingService(
             if (!string.Equals(requestAddress, pending.AgentAddress, StringComparison.Ordinal)
                 || !Contains(network, requestAddress))
                 throw new UnauthorizedAccessException("This client is not allowed to fetch the pending endpoint configuration.");
-            if (state.LastJob is null
-                || !string.Equals(state.LastJob.JobName, pending.JobName, StringComparison.Ordinal))
+            if (state.JobId != pending.JobId || state.JobRevision != pending.JobRevision)
                 throw new InvalidOperationException("The active job no longer matches the pending endpoint configuration.");
 
             var fetchedUtc = DateTimeOffset.UtcNow;
-            pending = pending with { ConfigurationFetchedUtc = fetchedUtc };
-            _pending[endpointId] = pending;
+            var fetched = pending with { ConfigurationFetchedUtc = fetchedUtc };
+            if (!_pending.TryUpdate(endpointId, fetched, pending))
+                throw new InvalidOperationException("The onboarding attempt changed during the fetch. Request fresh local approval.");
+            pending = fetched;
             logger.LogInformation(
                 "Remote Windows onboarding configuration fetch completed for endpoint {EndpointId} from {RequestAddress} in {ElapsedMilliseconds} ms",
                 endpointId,
@@ -118,7 +137,7 @@ public sealed class WindowsPcRemoteOnboardingService(
                 pending.EndpointId,
                 pending.JobName,
                 pending.NdiDiscoveryServerIp,
-                pending.Network);
+                pending.Network, pending.AttemptId, pending.JobId, pending.JobRevision);
         }
         catch (Exception ex)
         {
@@ -132,15 +151,15 @@ public sealed class WindowsPcRemoteOnboardingService(
         }
     }
 
-    public void RecordApprovalRequestStarted(string endpointId)
+    public void RecordApprovalRequestStarted(string endpointId, string? attemptId = null)
     {
-        if (!_pending.TryGetValue(endpointId, out var pending)) return;
-        _pending[endpointId] = pending with
+        if (!_pending.TryGetValue(endpointId, out var pending) || attemptId is not null && pending.AttemptId != attemptId) return;
+        _pending.TryUpdate(endpointId, pending with
         {
             Status = "awaiting-local-approval",
             Message = "Waiting for the endpoint user to approve onboarding locally.",
             RegistrationDeadlineUtc = null
-        };
+        }, pending);
     }
 
     public WindowsPcRemoteOnboardingState? Status(string endpointId)
@@ -150,6 +169,7 @@ public sealed class WindowsPcRemoteOnboardingService(
         {
             if (pending.RegistrationDeadlineUtc is { } deadline && DateTimeOffset.UtcNow > deadline)
             {
+                var original = pending;
                 pending = pending with
                 {
                     Status = "failed",
@@ -157,16 +177,17 @@ public sealed class WindowsPcRemoteOnboardingService(
                         ? "The PC approved onboarding but never fetched its staged configuration and did not register within 90 seconds. Check LAN/firewall access to TCP 8091, then retry."
                         : "The PC fetched its staged configuration but did not register within 90 seconds. Check the endpoint's elevated onboarding result, then retry."
                 };
-                _pending[endpointId] = pending;
+                if (!_pending.TryUpdate(endpointId, pending, original)) return Status(endpointId);
             }
             return ToState(pending);
         }
         return _results.TryGetValue(endpointId, out var result) ? result.State : null;
     }
 
-    public void RecordAgentResponse(string endpointId, HttpStatusCode statusCode)
+    public void RecordAgentResponse(string endpointId, HttpStatusCode statusCode, string? attemptId = null)
     {
-        if (!_pending.TryGetValue(endpointId, out var pending)) return;
+        if (!_pending.TryGetValue(endpointId, out var pending) || attemptId is not null && pending.AttemptId != attemptId) return;
+        var original = pending;
         var now = DateTimeOffset.UtcNow;
         pending = statusCode switch
         {
@@ -179,17 +200,17 @@ public sealed class WindowsPcRemoteOnboardingService(
             HttpStatusCode.Forbidden => pending with
             {
                 Status = "denied",
-                Message = "The endpoint user denied onboarding. The staged configuration remains available until it expires.",
+                Message = "The endpoint user denied onboarding. Request a new attempt for fresh local approval.",
                 RegistrationDeadlineUtc = null
             },
             _ => pending with
             {
                 Status = "failed",
-                Message = $"The NDI Configurator PC Agent returned HTTP {(int)statusCode}. The staged configuration remains available for a retry.",
+                Message = $"The NDI Configurator PC Agent returned HTTP {(int)statusCode}. Request a new onboarding attempt.",
                 RegistrationDeadlineUtc = null
             }
         };
-        _pending[endpointId] = pending;
+        if (!_pending.TryUpdate(endpointId, pending, original)) return;
         logger.LogInformation(
             "Remote Windows onboarding agent response for endpoint {EndpointId}: HTTP {StatusCode}; state {State}",
             endpointId,
@@ -197,21 +218,43 @@ public sealed class WindowsPcRemoteOnboardingService(
             pending.Status);
     }
 
-    public void RecordFailure(string endpointId, string message)
+    public void RecordFailure(string endpointId, string message, string? attemptId = null)
     {
-        if (!_pending.TryGetValue(endpointId, out var pending)) return;
-        _pending[endpointId] = pending with
+        if (!_pending.TryGetValue(endpointId, out var pending) || attemptId is not null && pending.AttemptId != attemptId) return;
+        _pending.TryUpdate(endpointId, pending with
         {
             Status = "failed",
             Message = message,
             RegistrationDeadlineUtc = null
-        };
+        }, pending);
         logger.LogWarning("Remote Windows onboarding failed for endpoint {EndpointId}: {Message}", endpointId, message);
     }
 
-    public void RecordRegistration(WindowsPcEndpoint endpoint)
+    public void ValidateRegistration(WindowsPcRegistration registration, AppState current)
     {
-        if (!_pending.TryRemove(endpoint.EndpointId, out var pending)) return;
+        // A lost HTTP acknowledgement can be retried, including after a server restart.
+        // Persisted membership, identity, address and current job must all match.
+        var existing = (current.WindowsPcs ?? []).FirstOrDefault(pc => pc.EndpointId == registration.EndpointId);
+        if (Guid.TryParse(registration.AttemptId, out _) && existing is { IsServerPc: false }
+            && existing.RegistrationAttemptId == registration.AttemptId && existing.Address == registration.Address
+            && existing.RegistrationJobId == registration.JobId && existing.RegistrationJobRevision == registration.JobRevision
+            && current.JobId == registration.JobId && current.JobRevision == registration.JobRevision
+            && (!_pending.TryGetValue(registration.EndpointId, out var active) || active.AttemptId == registration.AttemptId))
+            return;
+        if (!_pending.TryGetValue(registration.EndpointId, out var pending)
+            || !IsActive(pending) || pending.ConfigurationFetchedUtc is null
+            || registration.AttemptId != pending.AttemptId || registration.JobId != pending.JobId
+            || registration.JobRevision != pending.JobRevision
+            || current.JobId != pending.JobId || current.JobRevision != pending.JobRevision
+            || (pending.Network.Mode == "static" && registration.Address != pending.Network.Address)
+            || (pending.Network.Mode == "unchanged" && registration.Address != pending.AgentAddress))
+            throw new InvalidOperationException("Registration does not match the active approved onboarding attempt and job. Request fresh onboarding.");
+    }
+
+    public void RecordRegistration(WindowsPcEndpoint endpoint, string attemptId)
+    {
+        if (!_pending.TryGetValue(endpoint.EndpointId, out var pending) || pending.AttemptId != attemptId) return;
+        if (!((ICollection<KeyValuePair<string, PendingConfiguration>>)_pending).Remove(new(endpoint.EndpointId, pending))) return;
         var now = DateTimeOffset.UtcNow;
         var state = new WindowsPcRemoteOnboardingState(
             endpoint.EndpointId,
@@ -221,7 +264,8 @@ public sealed class WindowsPcRemoteOnboardingService(
             pending.RegistrationDeadlineUtc,
             now.Add(ResultLifetime),
             endpoint.Address,
-            pending.ConfigurationFetchedUtc);
+            pending.ConfigurationFetchedUtc,
+            pending.AttemptId);
         _results[endpoint.EndpointId] = new(state, now.Add(ResultLifetime));
         logger.LogInformation(
             "Remote Windows onboarding registration completed for endpoint {EndpointId}; previous address {BeforeAddress}; registered address {AfterAddress}; requested {RequestedUtc}; registered {RegisteredUtc}",
@@ -237,7 +281,8 @@ public sealed class WindowsPcRemoteOnboardingService(
         var now = DateTimeOffset.UtcNow;
         foreach (var item in _pending.Where(item => item.Value.ExpiresUtc <= now).ToArray())
         {
-            if (!_pending.TryRemove(item.Key, out var expired)) continue;
+            var expired = item.Value;
+            if (!((ICollection<KeyValuePair<string, PendingConfiguration>>)_pending).Remove(item)) continue;
             var state = new WindowsPcRemoteOnboardingState(
                 expired.EndpointId,
                 "expired",
@@ -250,7 +295,7 @@ public sealed class WindowsPcRemoteOnboardingService(
             logger.LogWarning("Remote Windows onboarding configuration expired for endpoint {EndpointId}", item.Key);
         }
         foreach (var item in _results.Where(item => item.Value.ExpiresUtc <= now).ToArray())
-            _results.TryRemove(item.Key, out _);
+            ((ICollection<KeyValuePair<string, RecentResult>>)_results).Remove(item);
     }
 
     private static WindowsPcRemoteNetworkConfiguration ValidateNetwork(
@@ -317,7 +362,8 @@ public sealed class WindowsPcRemoteOnboardingService(
 
     private static void RequireRemoteCapabilities(WindowsPcAgentSnapshot agent)
     {
-        if (!agent.Capabilities.Contains("remote-onboarding-v2", StringComparer.Ordinal)
+        if (!agent.Capabilities.Contains("onboarding-attempt-v1", StringComparer.Ordinal)
+            || !agent.Capabilities.Contains("remote-onboarding-v2", StringComparer.Ordinal)
             || !agent.Capabilities.Contains("network-config-v1", StringComparer.Ordinal))
             throw new NotSupportedException("NDI Configurator PC Agent update required for managed remote onboarding.");
     }
@@ -369,7 +415,13 @@ public sealed class WindowsPcRemoteOnboardingService(
         pending.RequestedUtc,
         pending.RegistrationDeadlineUtc,
         pending.ExpiresUtc,
-        ConfigurationFetchedUtc: pending.ConfigurationFetchedUtc);
+        ConfigurationFetchedUtc: pending.ConfigurationFetchedUtc,
+        AttemptId: pending.AttemptId);
+
+    private static bool IsActive(PendingConfiguration pending) =>
+        pending.Status is "staged" or "awaiting-local-approval" or "awaiting-registration"
+        && pending.ExpiresUtc > DateTimeOffset.UtcNow
+        && (pending.RegistrationDeadlineUtc is null || pending.RegistrationDeadlineUtc > DateTimeOffset.UtcNow);
 
     private sealed record PendingConfiguration(
         string EndpointId,
@@ -383,7 +435,8 @@ public sealed class WindowsPcRemoteOnboardingService(
         string Status,
         string Message,
         DateTimeOffset? RegistrationDeadlineUtc,
-        DateTimeOffset? ConfigurationFetchedUtc);
+        DateTimeOffset? ConfigurationFetchedUtc,
+        string AttemptId, string JobId, string JobRevision);
 
     private sealed record RecentResult(WindowsPcRemoteOnboardingState State, DateTimeOffset ExpiresUtc);
 }
