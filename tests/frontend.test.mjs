@@ -10,6 +10,36 @@ const { windowsCardState, createWindowsMonitor } = await loadModule('../wwwroot/
 const { createPreviewController } = await loadModule('../wwwroot/js/previews.js');
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
+test('Remote onboarding requires attempt and durable outcome support', () => {
+  const source = appSource.split(/\r?\n/).find(line => line.startsWith('function pcAgentSupportsRemoteOnboarding('));
+  const supports = new Function(`${source};return pcAgentSupportsRemoteOnboarding`)();
+  const capabilities = ['remote-onboarding-v2','network-config-v1','onboarding-attempt-v1','onboarding-outcome-v1'];
+  assert.equal(supports({capabilities}), true);
+  for(const missing of capabilities) assert.equal(supports({capabilities:capabilities.filter(value=>value!==missing)}), false);
+  assert.equal(supports({}), false);
+});
+test('A management-only host can create a remote-PC job without a local companion', () => {
+  const selectedFunction = appSource.split(/\r?\n/).find(line => line.startsWith('function updateSelected()'));
+  const elements = { '#selectedCount': {}, '#buildPlan': {} };
+  const state = { selected: new Set(), skipped: new Set(), includeServerPc: true, localPcComponent: null, networkReady: true };
+  const update = new Function('state', '$', selectedFunction + ';updateSelected();');
+  update(state, id => elements[id]);
+  assert.equal(elements['#buildPlan'].disabled, false);
+  assert.match(elements['#selectedCount'].textContent, /remote PCs/);
+  state.networkReady = false;
+  update(state, id => elements[id]);
+  assert.equal(elements['#buildPlan'].disabled, true);
+});
+test('An immediately completed metadata-only job stops progress polling', async () => {
+  const source = appSource.split(/\r?\n/).find(line => line.startsWith('async function pollProgress()'));
+  let scheduled = 0, displayed = 0;
+  const state = { poll: null };
+  const run = new Function('state', 'api', 'renderProgress', 'loadDecoderOrMonitor', 'toast', 'clearInterval', 'setInterval', source + ';return pollProgress();');
+  await run(state, async () => ({ status: 'completed' }), () => {}, async () => { displayed++; }, message => { throw Error(message); },
+    () => {}, () => { scheduled++; });
+  assert.equal(displayed, 1);
+  assert.equal(scheduled, 0);
+});
 const signatureExpression = appSource.split(/\r?\n/).find(line => line.includes('cardWindowsPcs='));
 const signature = new Function('app', 'devices', 'localPc', 'localAssignment', 'windowsPcs', 'pcAgents', 'windowsJobName', 'windowsCardState', `${signatureExpression}; return cardSignature;`);
 const getSignature = (pcs, agents) => signature({}, [], null, null, pcs, agents, 'Job', windowsCardState);

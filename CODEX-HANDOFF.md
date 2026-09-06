@@ -1,5 +1,17 @@
 # Codex Project Handoff
 
+## Further QA corrections — 6 September 2026
+
+The initial QA changes were committed at `a68f5e7`. The subsequent corrections and test evidence are recorded in the suite's QA-FOLLOWUP-2026-09-06.md. Read the current INTEROPERABILITY.md additions for retry fairness, strict persisted identity, deployment evidence and mutation authorization. Earlier implementation reports remain historical checkpoints.
+
+## QA follow-up — 6 September 2026
+
+The prior interoperability implementation was committed as `3dd2ccb61eb1cac21aced7554e5548a31da99b95` before QA corrections. The current follow-up implements the latest QA report; see INTEROPERABILITY.md and the suite's QA-FIX-IMPLEMENTATION-2026-09-06.md for the durable outcome protocol, package recovery, deployment boundaries and validation. Historical “uncommitted” and “no commit” notes below describe the earlier checkpoint. No application was installed or release published during this follow-up.
+
+## Interoperability implementation — 6 September 2026
+
+Uncommitted five-repository changes and test evidence are recorded in [INTEROP-IMPLEMENTATION.md](INTEROP-IMPLEMENTATION.md). Read [INTEROPERABILITY.md](INTEROPERABILITY.md) for current identity/capability, topology, port, download and startup contracts. Server regression/frontend/installer, both companion validations, Environment/Toolkit/Resolume suites and an isolated server-to-Resolume HTTP fixture pass. No live installation/configuration, commit or release was performed. Historical baseline/version notes below describe the last committed release.
+
 Read this file before changing or publishing NDI Job Configurator.
 
 Last updated: 6 September 2026

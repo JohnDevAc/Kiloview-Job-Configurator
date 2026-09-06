@@ -3,11 +3,17 @@ $ErrorActionPreference = 'Stop'
 foreach ($case in @(
     @('0.7.1', '0.7.0-dev.1', 1), @('0.7.0', '0.7.0-dev.9', 1),
     @('0.7.0-dev.10', '0.7.0-dev.9', 1), @('0.7.0-dev.1', '0.7.0-dev.2', -1),
-    @('0.7.0+abc', '0.7.0+def', 0)
+    @('0.7.0+abc', '0.7.0+def', 0), @('0.7.0.0', '0.7.0', 0)
 )) {
     if ([Math]::Sign((Compare-PcAgentVersion $case[0] $case[1])) -ne $case[2]) { throw "Version comparison failed: $case" }
 }
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('ndi-package-test-' + [Guid]::NewGuid().ToString('N'))
+foreach ($pair in @(@('0.8.0','0.7.0'), @('0.7.0','0.8.0'), @('0.8.0',''), @('','0.8.0'))) {
+    try { Get-PcAgentInstallDecision $pair[0] $pair[1] '0.7.0'; throw 'DOWNGRADE_ALLOWED' }
+    catch { if ($_.Exception.Message -eq 'DOWNGRADE_ALLOWED') { throw } }
+}
+if ((Get-PcAgentInstallDecision '0.8.0' '0.8.0' '0.7.0') -ne 'Retain') { throw 'Newer pair was not retained.' }
+if ((Get-PcAgentInstallDecision '0.6.0' '0.6.0' '0.7.0') -ne 'Install') { throw 'Upgrade was not allowed.' }
 $component = Join-Path $testRoot 'pc-onboarding'
 New-Item -ItemType Directory -Path (Join-Path $component 'Agent') -Force | Out-Null
 $files = foreach ($name in @('NDI Configurator PC Agent Setup.exe', 'Agent\NDI Configurator PC Agent.exe', 'LICENSE.md')) {

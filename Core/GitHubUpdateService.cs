@@ -109,6 +109,7 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
 
             try
             {
+                await NdiSuite.Installation.DownloadReadiness.CheckAsync(httpClient, downloadUri, cancellationToken);
                 using var download = await httpClient.GetAsync(
                     downloadUri,
                     HttpCompletionOption.ResponseHeadersRead,
@@ -117,8 +118,20 @@ public sealed class GitHubUpdateService(HttpClient httpClient, ILogger<GitHubUpd
                 if (download.Content.Headers.ContentLength is > MaximumInstallerBytes)
                     throw new InvalidOperationException("The GitHub installer exceeds the allowed download size.");
 
+                await using (var input = await download.Content.ReadAsStreamAsync(cancellationToken))
                 await using (var output = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
-                    await download.Content.CopyToAsync(output, cancellationToken);
+                {
+                    var buffer = new byte[81920];
+                    long total = 0;
+                    int read;
+                    while ((read = await NdiSuite.Installation.DownloadReadiness.ReadAsync(input, buffer, cancellationToken)) > 0)
+                    {
+                        total += read;
+                        if (total > resolved.Asset.Size || total > MaximumInstallerBytes)
+                            throw new IOException("The installer download exceeds its verified release size.");
+                        await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    }
+                }
 
                 var downloadedLength = new FileInfo(temporaryPath).Length;
                 if (downloadedLength != resolved.Asset.Size)

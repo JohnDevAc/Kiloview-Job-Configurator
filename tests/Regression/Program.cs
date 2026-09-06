@@ -33,6 +33,10 @@ await Run("Server companion failures preserve clean onboarding inventory", Serve
 await Run("Local-only plans require an available companion", LocalOnlyPlan);
 await Run("Server and remote PCs share multicast allocations", UnifiedWindowsMulticast);
 await Run("Windows NDI drift reports missing and changed configuration", WindowsNdiDrift);
+await Run("Selected-interface access, complete subnets and stable job revisions", IntegrationBoundaries);
+await Run("Remote attempts reserve addresses and reject stale approvals/jobs", RemoteAttemptBoundaries);
+await Run("Remote-only job execution makes no endpoint changes", RemoteOnlyJobExecution);
+await Run("Server identity publication recovers and migrates credential snapshots", IdentityMigration);
 Console.WriteLine($"PASS: {passed} regression checks. Isolated data: {root}");
 
 async Task Run(string name, Func<Task> test)
@@ -337,12 +341,90 @@ async Task ServerCompanionPreflight()
     Check(ReferenceEquals(before, await store.ReadAsync()), "A failed companion call cleared prior inventory.");
 }
 
+async Task IntegrationBoundaries()
+{
+    var subnet = new LocalNetworkInterface("fixture", "Fixture", "Fixture", "192.0.2.10", 23, "Ethernet");
+    Check(NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(subnet)).Count() == 510, "Discovery truncated a /23.");
+    Check(NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(subnet)).Any(ip => ip.ToString() == "192.0.3.20"), "Discovery omitted the other /24.");
+    Check(ManagementAccess.Allows(IPAddress.Loopback, IPAddress.Loopback, null), "Local initial setup was blocked.");
+    Check(ManagementAccess.Allows(IPAddress.Parse("192.0.3.20"), IPAddress.Parse(subnet.Address), subnet), "Selected subnet denied.");
+    Check(!ManagementAccess.Allows(IPAddress.Parse("198.51.100.5"), IPAddress.Parse(subnet.Address), subnet), "Off-subnet management allowed.");
+    Check(!ManagementAccess.Allows(IPAddress.Parse("192.0.3.20"), IPAddress.Parse("198.51.100.10"), subnet), "Wrong local interface allowed.");
+    await store.UpdateAsync(_ => new AppState([Device("identity", "192.0.2.20")], Job()));
+    var before = await store.ReadAsync();
+    var polled = before with { Devices = [before.Devices[0] with { Health = DeviceHealth.Offline, LastSeenUtc = now.AddMinutes(1) }] };
+    Check(before.JobRevision == polled.JobRevision, "Telemetry changed the configuration revision.");
+    Check(before.JobRevision != (before with { Devices = [before.Devices[0] with { Hostname = "changed" }] }).JobRevision, "Device changes did not change revision.");
+    Check(before.ServerId != Guid.Empty && before.ServerId == (await store.ReloadAsync()).ServerId, "Server identity was not persistent.");
+    Check(before.JobId != (before with { LastJob = before.LastJob! with { StartedUtc = now.AddSeconds(1) } }).JobId, "Same-name replacement reused job identity.");
+}
+
+async Task RemoteAttemptBoundaries()
+{
+    var network = NetworkAddressing.GetLocalInterfaces().First(n => n.PrefixLength is >= 20 and <= 30);
+    var pool = NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(network)).Select(ip => ip.ToString()).Where(ip => ip != network.Address).ToArray();
+    var endpoint1 = Guid.NewGuid().ToString(); var endpoint2 = Guid.NewGuid().ToString();
+    var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+    WindowsPcAgentSnapshot Agent(string id, string ip) => JsonSerializer.Deserialize<WindowsPcAgentSnapshot>(JsonSerializer.Serialize(new
+    {
+        endpointId = id, hostname = "Fixture", address = ip, prefixLength = network.PrefixLength, apiPort = 8094,
+        capabilities = new[] { "remote-onboarding-v2", "network-config-v1", "onboarding-attempt-v1", "onboarding-outcome-v1" }, adapterId = "fixture",
+        adapterName = "Fixture", memberships = Array.Empty<object>()
+    }), json)!;
+    var agents = new WindowsPcAgentService(store, null!, NullLogger<WindowsPcAgentService>.Instance);
+    var cache = (System.Collections.Concurrent.ConcurrentDictionary<string, WindowsPcAgentSnapshot>)typeof(WindowsPcAgentService)
+        .GetField("_agents", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(agents)!;
+    cache[endpoint1] = Agent(endpoint1, pool[0]); cache[endpoint2] = Agent(endpoint2, pool[1]);
+    await store.UpdateAsync(_ => new AppState([], new("Fixture", pool[0], pool[^1], pool[2], now),
+        SelectedNetworkAdapterId: network.Id, SelectedNetworkAddress: network.Address));
+    var service = new WindowsPcRemoteOnboardingService(store, agents, NullLogger<WindowsPcRemoteOnboardingService>.Instance);
+    var desired = new WindowsPcRemoteOnboardingRequest(new("static", "fixture", pool[^2], network.PrefixLength));
+    var staged = await service.StageAsync(endpoint1, desired, "127.0.0.1");
+    await Throws<InvalidOperationException>(() => service.StageAsync(endpoint2, desired, "127.0.0.1"));
+    await Throws<InvalidOperationException>(() => service.StageAsync(endpoint1, desired, "127.0.0.1"));
+    await Throws<InvalidOperationException>(() => service.GetConfigurationAsync(endpoint1, pool[0], Guid.NewGuid().ToString()));
+    var fetched = await service.GetConfigurationAsync(endpoint1, pool[0], staged.AttemptId);
+    var registration = new WindowsPcRegistration(endpoint1, "Fixture", pool[^2], "Fixture", network.PrefixLength, true, "6", "test", "1.0",
+        AttemptId: fetched.AttemptId, JobId: fetched.JobId, JobRevision: fetched.JobRevision);
+    service.ValidateRegistration(registration, await store.ReadAsync());
+    var registered = new WindowsPcEndpoint(endpoint1, "Fixture", registration.Address, "Fixture", network.PrefixLength, true, "6", "test", "1.0", now, now, "onboarded",
+        RegistrationAttemptId: registration.AttemptId, RegistrationJobId: registration.JobId, RegistrationJobRevision: registration.JobRevision);
+    await service.RegisterAsync(registration, registered);
+    Check((await store.ReadAsync()).WindowsPcs?.Count is null or 0, "Unconfirmed registration appeared as onboarded.");
+    service.RecordRegistration(registered, registration.AttemptId!);
+    service.ValidateRegistration(registration, await store.ReadAsync());
+    var restarted = new WindowsPcRemoteOnboardingService(store, agents, NullLogger<WindowsPcRemoteOnboardingService>.Instance);
+    restarted.ValidateRegistration(registration, await store.ReadAsync());
+    await restarted.ReportOutcomeAsync(new(endpoint1, registration.AttemptId!, registration.JobId!, registration.JobRevision!, "completed"), registration.Address);
+    Check((await store.ReadAsync()).WindowsPcs?.Count == 1, "Confirmed registration was not committed.");
+    await store.UpdateAsync(s => s with { LastJob = s.LastJob! with { StartedUtc = now.AddSeconds(1) } });
+    await Throws<InvalidOperationException>(async () => service.ValidateRegistration(registration, await store.ReadAsync()));
+    service.RecordFailure(endpoint1, "Test retry");
+    var retry = await service.StageAsync(endpoint1, desired, "127.0.0.1");
+    Check(retry.AttemptId != staged.AttemptId, "Retry reused old approval.");
+    await Throws<InvalidOperationException>(() => service.GetConfigurationAsync(endpoint1, pool[0], staged.AttemptId));
+    // Staging never contacts or changes an endpoint.
+}
+
+async Task RemoteOnlyJobExecution()
+{
+    var network = NetworkAddressing.GetLocalInterfaces().First();
+    await store.UpdateAsync(_ => new AppState([], SelectedNetworkAdapterId: network.Id, SelectedNetworkAddress: network.Address));
+    using var cards = new NdiTitleCardService(store, NullLogger<NdiTitleCardService>.Instance);
+    var companion = new FailingCompanion();
+    var onboarding = new OnboardingService(store, null!, null!, null!, cards, companion, null!, NullLogger<OnboardingService>.Instance);
+    var plan = await onboarding.BuildPlanAsync(Settings([]), CancellationToken.None);
+    await onboarding.StartAsync(plan.PlanId, CancellationToken.None);
+    Check((await store.ReadAsync()).LastJob?.JobName == "ReviewJob2" && companion.Attempts == 0, "Creating a job invoked a local companion.");
+}
+
 async Task LocalOnlyPlan()
 {
     await store.UpdateAsync(_ => AppState.Empty);
     using var cards = new NdiTitleCardService(store, NullLogger<NdiTitleCardService>.Instance);
     var onboarding = new OnboardingService(store, null!, null!, null!, cards, new FailingCompanion(), null!, NullLogger<OnboardingService>.Instance);
-    await Throws<ArgumentException>(() => onboarding.BuildPlanAsync(Settings([]), CancellationToken.None));
+    var remotePlan = await onboarding.BuildPlanAsync(Settings([]), CancellationToken.None);
+    Check(remotePlan.Devices.Count == 0 && !remotePlan.Settings.IncludeServerPc, "Remote-only job creation must not require a local companion.");
     var plan = await onboarding.BuildPlanAsync(Settings([]) with { IncludeServerPc = true }, CancellationToken.None);
     Check(plan.Devices.Count == 0 && plan.Settings.IncludeServerPc, "A server-only plan must be available.");
 }
@@ -409,6 +491,33 @@ static AppState Apply(AppState state, (ManagedDevice Original, ManagedDevice Upd
     var remoteArray = Array.CreateInstance(remoteType, remotes.Length);
     for (var i = 0; i < remotes.Length; i++) remoteArray.SetValue(Activator.CreateInstance(remoteType, remotes[i].Original, remotes[i].Updated, null), i);
     return (AppState)type.GetMethod("ApplyResults", BindingFlags.NonPublic | BindingFlags.Static)!.Invoke(null, [state, deviceArray, remoteArray])!;
+}
+
+async Task IdentityMigration()
+{
+    var isolated = Path.Combine(root, "identity-migration");
+    Directory.CreateDirectory(isolated);
+    Environment.SetEnvironmentVariable("NDI_JOB_CONFIGURATOR_DATA_DIR", isolated);
+    try
+    {
+        File.WriteAllText(Path.Combine(isolated, "server-id.txt.tmp-interrupted"), "partial");
+        File.WriteAllText(Path.Combine(isolated, "state.json"),
+            """{"devices":[],"lastJob":{"jobName":"Legacy","staticStart":"192.0.2.20","staticEnd":"192.0.2.30","ndiDiscoveryServerIp":"192.0.2.5","startedUtc":"2026-09-06T12:00:00Z"}}""");
+        var stores = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+            new AppStateStore(new TestEnvironment { ContentRootPath = isolated }, NullLogger<AppStateStore>.Instance))));
+        var first = await stores[0].ReadAsync();
+        foreach (var item in stores) Check((await item.ReadAsync()).ServerId == first.ServerId, "Concurrent identity creation produced different servers.");
+        using (var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(isolated, "state.json"))))
+        {
+            Check(document.RootElement.GetProperty("serverId").GetGuid() == first.ServerId, "Legacy local state did not receive the API identity.");
+            Check(document.RootElement.GetProperty("jobRevision").GetString() == first.JobRevision, "Local and API revisions differ after migration.");
+        }
+        File.WriteAllText(Path.Combine(isolated, "server-id.txt"), "interrupted old identity writer");
+        var recovered = new AppStateStore(new TestEnvironment { ContentRootPath = isolated }, NullLogger<AppStateStore>.Instance);
+        Check((await recovered.ReadAsync()).ServerId == first.ServerId, "Recovery changed a persisted server identity.");
+        Check(Directory.EnumerateFiles(isolated, "server-id.txt.invalid-*").Any(), "Corrupt identity was not preserved for diagnosis.");
+    }
+    finally { Environment.SetEnvironmentVariable("NDI_JOB_CONFIGURATOR_DATA_DIR", root); }
 }
 
 sealed class TestEnvironment : IWebHostEnvironment

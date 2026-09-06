@@ -2,6 +2,8 @@
 
 # NDI Job Configurator
 
+See [suite deployment and integration requirements](INTEROPERABILITY.md) for client-only, management-only and combined hosts, current port/identity contracts and installation readiness.
+
 > **Proprietary source-available software — not open source.** Free for non-commercial use in unmodified form only. Modification, derivative works, redistribution, and commercial use are prohibited. See [LICENSE.md](LICENSE.md).
 
 NDI Job Configurator is the Windows web application for discovering, onboarding, identifying, and monitoring Kiloview N6/N60 converters, TeleTool encoders, and Windows NDI endpoints. A development run listens on `http://localhost:8091`; the Windows installer enables private-LAN access on TCP `8091`, permits local-subnet UDP reception for embedded NDI multicast previews, and installs a desktop shortcut to the local address.

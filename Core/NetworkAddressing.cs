@@ -30,7 +30,9 @@ public static class NetworkAddressing
     public static string GetScanCidr(LocalNetworkInterface network)
     {
         var address = InputValidation.Ip(network.Address, "Network adapter address");
-        var prefix = Math.Clamp(network.PrefixLength, 24, 30);
+        var prefix = network.PrefixLength;
+        if (prefix is < 20 or > 30)
+            throw new ArgumentException("Automatic discovery supports the complete selected subnet from /20 to /30. Select an adapter in that range; larger networks must be segmented for bounded discovery.");
         var mask = uint.MaxValue << (32 - prefix);
         return $"{FromUInt(ToUInt(address) & mask)}/{prefix}";
     }

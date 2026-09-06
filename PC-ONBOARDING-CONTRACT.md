@@ -1,6 +1,6 @@
 # Server and PC Agent ownership
 
-The suite has two repositories and two independently installed products:
+This ownership contract covers two independently installed products within the five-repository suite:
 
 | Product | Source | Development branch | Installed location |
 | --- | --- | --- | --- |
@@ -8,9 +8,11 @@ The suite has two repositories and two independently installed products:
 | NDI Configurator PC Agent | `JohnDevAc/Kiloview-PC-Onboarding` | `dev` | `%ProgramFiles%\NDI Configurator\PC Agent` |
 
 `suite.json` resolves the companion checkout, minimum version, and protocol.
-`NDI-Configurator.code-workspace` opens both sibling roots. The server explicitly
+`NDI-Configurator.code-workspace` opens all five integration roots. The server explicitly
 includes only its own C# and web content in its project; companion source stays
 under its own Git and build scripts. Minimum companion version: `0.7.0`.
+
+Remote onboarding additionally requires `onboarding-attempt-v1` and `onboarding-outcome-v1`. Registration is provisional until the durable final outcome is confirmed. See [INTEROPERABILITY.md](INTEROPERABILITY.md) for attempt/job identity, reconciliation, topology, readiness and ports. The local process schema remains 1.
 
 ## Installation and independent updates
 

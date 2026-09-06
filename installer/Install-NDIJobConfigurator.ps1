@@ -22,6 +22,18 @@ if (-not $LicenseAccepted) {
     $SkipPcAgent = -not (Select-InstallOptions -PackageRoot $Source -IncludePcAgent (-not $SkipPcAgent))
 }
 
+# This per-user elevated server must run as its signed-in administrator owner.
+# Fail before installation rather than silently installing into a different UAC account.
+$installerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$installerSession = (Get-Process -Id $PID).SessionId
+$desktopOwners = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.SessionId -eq $installerSession } | ForEach-Object {
+    $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
+    if ($owner.ReturnValue -ne 0) { throw 'The signed-in desktop owner could not be verified.' }
+    $owner.Sid
+} | Select-Object -Unique)
+if ($desktopOwners.Count -gt 1 -or ($desktopOwners.Count -eq 1 -and $desktopOwners[0] -ne $installerSid)) {
+    throw 'NDI Job Configurator runs as a signed-in administrator. Sign in to that administrator account and run Setup there. Supplying another account at UAC cannot install this per-user server for the current desktop. Client PCs do not need this server installed locally.'
+}
 $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
 $installRoot = Join-Path $localAppData 'Programs\NDI Job Configurator'
 $legacyInstallRoot = Join-Path $localAppData 'Programs\Kiloview Setup'
@@ -62,9 +74,9 @@ if (-not $SkipPcAgent) {
     if ((Compare-PcAgentVersion $bundledVersion $manifest.version) -ne 0) { throw 'PC Agent binary version differs from its manifest.' }
     $installedAgent = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'NDI Configurator\PC Agent\NDI Configurator PC Agent.exe'
     $installedSetup = Join-Path (Split-Path -Parent $installedAgent) 'NDI Configurator PC Agent Setup.exe'
-    $retainNewerAgent = (Test-Path -LiteralPath $installedAgent) -and (Test-Path -LiteralPath $installedSetup) -and
-        ((Compare-PcAgentVersion (Get-Item -LiteralPath $installedAgent).VersionInfo.ProductVersion $bundledVersion) -gt 0) -and
-        ((Compare-PcAgentVersion (Get-Item -LiteralPath $installedSetup).VersionInfo.ProductVersion $bundledVersion) -gt 0)
+    $agentVersion = if (Test-Path -LiteralPath $installedAgent) { (Get-Item -LiteralPath $installedAgent).VersionInfo.ProductVersion } else { $null }
+    $setupVersion = if (Test-Path -LiteralPath $installedSetup) { (Get-Item -LiteralPath $installedSetup).VersionInfo.ProductVersion } else { $null }
+    $retainNewerAgent = (Get-PcAgentInstallDecision $agentVersion $setupVersion $bundledVersion) -eq 'Retain'
     if ($retainNewerAgent) {
         Write-Host 'A newer independently updated PC Agent is installed; retaining it.'
     } else {

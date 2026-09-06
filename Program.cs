@@ -19,6 +19,8 @@ var lanAccess = args.Contains("--lan", StringComparer.OrdinalIgnoreCase)
         "1",
         StringComparison.Ordinal);
 using var instanceSemaphore = new Semaphore(1, 1, $"Local\\NDIJobConfigurator-{servicePort}");
+if (lanAccess && servicePort != 8091)
+    throw new InvalidOperationException("Production LAN access requires TCP 8091. Nondefault service ports are supported only for isolated loopback testing.");
 var ownsInstanceSemaphore = instanceSemaphore.WaitOne(0);
 if (!ownsInstanceSemaphore)
 {
@@ -119,6 +121,26 @@ var app = builder.Build();
 WindowsInstallationRegistration.Ensure(app.Environment.ContentRootPath, app.Logger);
 app.Use(async (context, next) =>
 {
+    var state = await context.RequestServices.GetRequiredService<AppStateStore>().ReadAsync();
+    var network = NetworkAddressing.ResolveLocalInterface(state.SelectedNetworkAdapterId, state.SelectedNetworkAddress);
+    if (!ManagementAccess.Allows(context.Connection.RemoteIpAddress, context.Connection.LocalIpAddress, network))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { error = "Management access requires loopback or the selected production subnet and interface." });
+        return;
+    }
+    // Browser requests may not use another web origin to mutate a trusted LAN server.
+    if (context.Request.Headers.Origin.Count > 0
+        && (!Uri.TryCreate(context.Request.Headers.Origin.ToString(), UriKind.Absolute, out var origin)
+            || !string.Equals(origin.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase)))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    await next();
+});
+app.Use(async (context, next) =>
+{
     var gateway = context.RequestServices.GetRequiredService<DeviceUiGatewayService>();
     if (gateway.TryGetSession(context, out var session) && session is not null)
     {
@@ -165,7 +187,7 @@ app.MapGet("/api/pc-onboarding/configuration/{endpointId}", async (
             statusCode: StatusCodes.Status403Forbidden);
     try
     {
-        var configuration = await remoteOnboarding.GetConfigurationAsync(endpointId, remoteAddress.ToString());
+        var configuration = await remoteOnboarding.GetConfigurationAsync(endpointId, remoteAddress.ToString(), context.Request.Query["attemptId"].ToString());
         object? network = configuration.Network is null
             ? null
             : configuration.Network.Mode == "static"
@@ -190,6 +212,10 @@ app.MapGet("/api/pc-onboarding/configuration/{endpointId}", async (
             configuration.EndpointId,
             configuration.JobName,
             configuration.NdiDiscoveryServerIp,
+            configuration.AttemptId,
+            configuration.JobId,
+            configuration.JobRevision,
+            configuration.RequiresFinalConfirmation,
             network
         });
     }
@@ -283,28 +309,33 @@ app.MapPost("/api/pc-onboarding/register", async (
         PhysicalMemoryAvailableBytes: agent?.PhysicalMemoryAvailableBytes,
         SystemDriveTotalBytes: agent?.SystemDriveTotalBytes,
         SystemDriveFreeBytes: agent?.SystemDriveFreeBytes,
-        AgentObservedUtc: agent?.ObservedUtc);
-    var state = await store.UpdateAsync(current =>
+        AgentObservedUtc: agent?.ObservedUtc,
+        RegistrationAttemptId: registration.AttemptId,
+        RegistrationJobId: registration.JobId,
+        RegistrationJobRevision: registration.JobRevision);
+    AppState state;
+    try
     {
-        if (current.LastJob is null)
-            throw new InvalidOperationException("This Job Configurator has no active job to join.");
-        var endpoints = (current.WindowsPcs ?? [])
-            .Where(item => !string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        var existing = (current.WindowsPcs ?? []).FirstOrDefault(item =>
-            string.Equals(item.EndpointId, endpoint.EndpointId, StringComparison.OrdinalIgnoreCase));
-        if (existing?.IsServerPc == true)
-            throw new InvalidOperationException("Remote registration cannot replace this server PC's local onboarding record.");
-        endpoints.Add(endpoint with { RegisteredUtc = existing?.RegisteredUtc ?? now });
-        return current with { WindowsPcs = endpoints.OrderBy(item => item.Hostname, StringComparer.OrdinalIgnoreCase).ToArray() };
-    });
-    remoteOnboarding.RecordRegistration(endpoint);
+    state = await remoteOnboarding.RegisterAsync(registration, endpoint);
+    }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+    remoteOnboarding.RecordRegistration(endpoint, registration.AttemptId!);
     return Results.Ok(new
     {
-        status = "onboarded",
+        status = "awaiting-confirmation",
         endpoint,
         jobName = state.LastJob!.JobName
     });
+});
+app.MapPost("/api/pc-onboarding/outcome", async (
+    WindowsPcOnboardingOutcome outcome, HttpContext context, WindowsPcRemoteOnboardingService remoteOnboarding) =>
+{
+    var source = context.Connection.RemoteIpAddress;
+    if (source?.IsIPv4MappedToIPv6 == true) source = source.MapToIPv4();
+    if (source is null) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    try { return Results.Ok(await remoteOnboarding.ReportOutcomeAsync(outcome, source.ToString())); }
+    catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden); }
+    catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
 });
 app.MapDelete("/api/pc-onboarding/{endpointId}", async (
     string endpointId,
@@ -388,7 +419,7 @@ app.MapGet("/api/pc-agents", (WindowsPcAgentService agents, AppStateStore store,
             agent.Memberships,
             agent.ObservedUtc,
             agent.LastDiscoveredUtc,
-            remoteOnboarding = remoteOnboarding.Status(agent.EndpointId),
+            remoteOnboarding = remoteOnboarding.Status(agent.EndpointId, state),
             registered = registered.Contains(agent.EndpointId)
         }));
     }
@@ -398,13 +429,14 @@ app.MapPost("/api/pc-agents/discover", async (WindowsPcAgentService agents, Canc
     await agents.DiscoverAsync(ct);
     return Results.Ok(new { status = "completed", count = agents.Snapshot().Count });
 });
-app.MapGet("/api/pc-agents/{endpointId}/onboarding/status", (
+app.MapGet("/api/pc-agents/{endpointId}/onboarding/status", async (
     string endpointId,
-    WindowsPcRemoteOnboardingService remoteOnboarding) =>
+    WindowsPcRemoteOnboardingService remoteOnboarding,
+    AppStateStore store) =>
 {
     if (!Guid.TryParse(endpointId, out _))
         return Results.BadRequest(new { error = "The Windows PC endpoint identifier is invalid." });
-    var status = remoteOnboarding.Status(endpointId);
+    var status = remoteOnboarding.Status(endpointId, await store.ReadAsync());
     return status is null
         ? Results.NotFound(new { error = "No recent remote onboarding operation exists for this endpoint." })
         : Results.Ok(status);
@@ -424,16 +456,18 @@ app.MapPost("/api/pc-agents/{endpointId}/onboarding/open", async (
     if (requestedBy is not null && IPAddress.IsLoopback(requestedBy)) requestedBy = IPAddress.Loopback;
     if (requestedBy?.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
         return Results.Json(new { error = "Remote onboarding must be staged from IPv4 on the selected production network." }, statusCode: StatusCodes.Status403Forbidden);
+    string? attemptId = null;
     try
     {
-        await remoteOnboarding.StageAsync(endpointId, request, requestedBy.ToString());
-        remoteOnboarding.RecordApprovalRequestStarted(endpointId);
-        var status = await agents.OpenOnboardingAsync(endpointId, ct);
-        remoteOnboarding.RecordAgentResponse(endpointId, status);
+        var staged = await remoteOnboarding.StageAsync(endpointId, request, requestedBy.ToString());
+        attemptId = staged.AttemptId;
+        remoteOnboarding.RecordApprovalRequestStarted(endpointId, attemptId);
+        var status = await agents.OpenOnboardingAsync(endpointId, ct, staged.AttemptId);
+        remoteOnboarding.RecordAgentResponse(endpointId, status, attemptId);
         return status switch
         {
             System.Net.HttpStatusCode.Accepted => Results.Accepted(value: remoteOnboarding.Status(endpointId)),
-            System.Net.HttpStatusCode.Forbidden => Results.Json(new { error = "The endpoint user denied onboarding. The staged configuration remains available until it expires." }, statusCode: StatusCodes.Status403Forbidden),
+            System.Net.HttpStatusCode.Forbidden => Results.Json(new { error = "The endpoint user denied onboarding. Request a new attempt for fresh local approval." }, statusCode: StatusCodes.Status403Forbidden),
             System.Net.HttpStatusCode.BadRequest => Results.BadRequest(new { error = $"The {WindowsPcAgentService.ProductName} rejected the onboarding request." }),
             _ => Results.Problem($"{WindowsPcAgentService.ProductName} returned HTTP {(int)status}.", statusCode: StatusCodes.Status502BadGateway)
         };
@@ -445,12 +479,12 @@ app.MapPost("/api/pc-agents/{endpointId}/onboarding/open", async (
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     catch (TaskCanceledException) when (!ct.IsCancellationRequested)
     {
-        remoteOnboarding.RecordFailure(endpointId, "The endpoint did not answer the local onboarding confirmation within 60 seconds.");
+        remoteOnboarding.RecordFailure(endpointId, "The endpoint did not answer the local onboarding confirmation within 60 seconds.", attemptId);
         return Results.Problem("The endpoint did not answer the local onboarding confirmation within 60 seconds.", statusCode: StatusCodes.Status504GatewayTimeout);
     }
     catch (HttpRequestException ex)
     {
-        remoteOnboarding.RecordFailure(endpointId, $"The {WindowsPcAgentService.ProductName} could not be reached for local approval.");
+        remoteOnboarding.RecordFailure(endpointId, $"The {WindowsPcAgentService.ProductName} could not be reached for local approval.", attemptId);
         return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
     }
 });

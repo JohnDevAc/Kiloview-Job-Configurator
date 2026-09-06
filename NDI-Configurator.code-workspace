@@ -1,7 +1,10 @@
 {
   "folders": [
     { "name": "Server", "path": "." },
-    { "name": "PC Onboarding", "path": "../Kiloview PC Onboarding" }
+    { "name": "PC Onboarding", "path": "../Kiloview PC Onboarding" },
+    { "name": "Environment Setup", "path": "../Kilolink Server Installer + NDI Discovery Server" },
+    { "name": "Production Toolkit", "path": "../ChatGPT/Wrapper Application" },
+    { "name": "Resolume Configurator", "path": "../ChatGPT/Resolume Configurator" }
   ],
   "settings": {
     "files.exclude": { "**/bin": true, "**/obj": true },

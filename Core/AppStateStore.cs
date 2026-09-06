@@ -8,6 +8,7 @@ public sealed class AppStateStore
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _file;
     private readonly string _backup;
+    private readonly Guid _serverId;
     private readonly ILogger<AppStateStore> _logger;
     private AppState? _cached;
     private (DateTime LastWriteUtc, long Length)? _cachedStamp;
@@ -22,6 +23,7 @@ public sealed class AppStateStore
         _logger = logger;
         var directory = AppDataPaths.ResolveDataDirectory(environment.ContentRootPath);
         Directory.CreateDirectory(directory);
+        _serverId = ServerIdentityStore.LoadOrCreate(directory);
         _file = Path.Combine(directory, "state.json");
         _backup = Path.Combine(directory, "state.json.bak");
     }
@@ -46,23 +48,7 @@ public sealed class AppStateStore
             if (ReferenceEquals(updated, state)) return state;
             updated = Freeze(updated);
 
-            var temporary = _file + ".tmp";
-            try
-            {
-                await using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-                {
-                    await JsonSerializer.SerializeAsync(output, updated, _json);
-                    await output.FlushAsync();
-                    output.Flush(flushToDisk: true);
-                }
-                ReplaceStateFile(temporary);
-                _cached = updated;
-                _cachedStamp = StateStamp();
-            }
-            finally
-            {
-                if (File.Exists(temporary)) File.Delete(temporary);
-            }
+            await PersistStateUnsafeAsync(updated);
             return updated;
         }
         finally { _gate.Release(); }
@@ -72,10 +58,32 @@ public sealed class AppStateStore
     {
         var stamp = StateStamp();
         if (_cached is not null && stamp == _cachedStamp) return _cached;
-        var state = Freeze(await LoadStateUnsafeAsync());
+        var loaded = await LoadStateUnsafeAsync();
+        var state = Freeze(loaded);
+        // Publish the same identity into the credential-bearing snapshot before
+        // returning it over HTTP, including immediately after a legacy upgrade.
+        if (loaded.ServerId != _serverId) await PersistStateUnsafeAsync(state);
         _cached = state;
         _cachedStamp = StateStamp();
         return state;
+    }
+
+    private async Task PersistStateUnsafeAsync(AppState state)
+    {
+        var temporary = _file + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                await JsonSerializer.SerializeAsync(output, state, _json);
+                await output.FlushAsync();
+                output.Flush(true);
+            }
+            ReplaceStateFile(temporary);
+            _cached = state;
+            _cachedStamp = StateStamp();
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     /// <summary>Force a reload after an external edit that retained file metadata.</summary>
@@ -98,8 +106,16 @@ public sealed class AppStateStore
 
     // Records protect scalar values; copy and wrap their collections as well so
     // callers cannot mutate a cached snapshot without an atomic UpdateAsync.
-    private static AppState Freeze(AppState state) => state with
+    private AppState Freeze(AppState state) => state with
     {
+        ServerId = _serverId,
+        PcOnboardingReceipts = state.PcOnboardingReceipts is null ? null : Array.AsReadOnly(
+            state.PcOnboardingReceipts.Select(receipt => receipt with {
+                Network = receipt.Network with { DnsServers = receipt.Network.DnsServers is null ? null : Array.AsReadOnly(receipt.Network.DnsServers.ToArray()) },
+                Candidate = receipt.Candidate is null ? null : receipt.Candidate with {
+                    AgentCapabilities = receipt.Candidate.AgentCapabilities is null ? null : Array.AsReadOnly(receipt.Candidate.AgentCapabilities.ToArray())
+                }
+            }).ToArray()),
         Devices = Array.AsReadOnly(state.Devices.ToArray()),
         FirmwareJob = state.FirmwareJob is null ? null : state.FirmwareJob with
         {
