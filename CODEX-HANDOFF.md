@@ -8,15 +8,15 @@ Last updated: 6 September 2026
 
 - Repository: `JohnDevAc/Kiloview-Job-Configurator`
 - Active stable branch: `main`
+- Released stable source commit: `b50f0d2`
 - Development source baseline: `cbbf2ba` (released code `15e122f`, dev.99)
 - Latest implementation: firmware upload compatibility and reconnect metadata fixes
 - Current version: `0.8.7`
 - Release channel: `Main`
-- Latest published Main release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.6>
+- Latest published Main release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.7>
 - Latest published Development release: <https://github.com/JohnDevAc/Kiloview-Job-Configurator/releases/tag/v0.8.0-dev.99>
-- Current active work: the user requested bringing `main` up to date with
-  `development` and deploying as needed. Preparing stable v0.8.7 from the merged
-  dev.99 implementation; `development` retains its Development release metadata.
+- Current active work: none. Development was merged into `main`, pushed, and
+  published as stable v0.8.7. `development` retains its Development release metadata.
 - The companion source and packages were moved to the sibling
   `Kiloview PC Onboarding` project. Do not copy them back into this repository.
 - Companion repository: <https://github.com/JohnDevAc/Kiloview-PC-Onboarding>
@@ -29,9 +29,23 @@ Last updated: 6 September 2026
   this handoff differ between branch tips.
 - Stable version `0.8.7` uses the `Main` update channel. All 14 backend and five
   frontend regression checks, formatting, frontend syntax, release metadata, and
-  Git whitespace checks pass. Package verification must complete before publishing.
-- The installed app reported `0.8.0-dev.99` on the Development channel on
-  6 September. Publication is separate from installing or selecting a channel.
+  Git whitespace checks pass. Application and installer publish builds completed
+  without warnings or errors.
+- The release was published on 6 September 2026 from `b50f0d2` and marked latest.
+  GitHub's latest stable endpoint identifies `v0.8.7`, targeted to `main`, with
+  draft and prerelease flags false.
+- Application and installer version stamps are
+  `0.8.7+b50f0d2e01a92db2dcd90f46cd4079eb5cefa5a7`. The 29-entry package contains
+  the expected app and frontend, without scratch code or test evidence. The
+  embedded installer ZIP matches the standalone ZIP, the legacy installer alias
+  is identical, and all four GitHub asset sizes and SHA-256 digests match locally.
+- The release assembly started successfully with isolated state and NDI settings
+  and served the packaged frontend with version `0.8.7` and default channel Main.
+  This smoke check used the .NET host to retain isolation variables across the
+  executable's administrator-elevation boundary; the installer was not run.
+- The actual installed dev.99 updater offered `0.8.7` on Main, with the expected
+  installer size (147,402,164 bytes) and SHA-256. Its original Development selection
+  was restored after the check. The installed app remains `0.8.0-dev.99`.
 
 ## September factory-reset hardware test
 
