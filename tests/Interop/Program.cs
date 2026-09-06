@@ -129,7 +129,56 @@ await Run("Unfinished local work reports repair and unrelated peers cannot final
     Check(f.Service.Status(f.Endpoint, await f.Store.ReadAsync())!.Status == "failed", "Restart concealed repair status.");
 });
 
-Console.WriteLine("PASS: 8 cross-repository onboarding outcome scenarios.");
+await Run("A denied fetch cannot revive while waiting for persisted state", async f => {
+    var staged = await f.StageAsync();
+    var gate = (SemaphoreSlim)typeof(AppStateStore).GetField("_gate", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(f.Store)!;
+    await gate.WaitAsync();
+    Task fetch;
+    try
+    {
+        fetch = f.FetchAsync(staged);
+        f.Service.RecordAgentResponse(f.Endpoint, HttpStatusCode.Forbidden, staged.AttemptId);
+    }
+    finally { gate.Release(); }
+    await Throws<InvalidOperationException>(() => fetch);
+    Check(!(await f.Store.ReadAsync()).PcOnboardingReceipts?.Any() ?? true, "Denied attempt obtained a durable permission receipt.");
+    Check(f.Service.Status(f.Endpoint)!.Status == "denied", "Denied attempt was revived.");
+});
+
+await Run("An offline old server and corrupt journal cannot starve later confirmations", async f => {
+    await f.PrepareAsync(); await f.RegisterAsync();
+    var current = f.Outcome("completed");
+    var older = current with { AttemptId = Guid.NewGuid().ToString(), ServerAddress = "192.0.2.254", UpdatedUtc = current.UpdatedUtc.AddHours(-1) };
+    f.OfflineServerAddress = older.ServerAddress;
+    OnboardingOutcomes.Write(f.AgentStatePath, older);
+    OnboardingOutcomes.Write(f.AgentStatePath, current);
+    var corrupt = Path.Combine(Path.GetDirectoryName(f.AgentStatePath)!, "onboarding-outcomes", "broken.json");
+    File.WriteAllText(corrupt, "{partial");
+    var warnings = new List<string>();
+    var available = OnboardingOutcomes.ReadAll(f.AgentStatePath, warnings.Add);
+    Check(warnings.Count == 1 && File.ReadAllText(corrupt) == "{partial", "Corrupt evidence was concealed or discarded.");
+    var first = OnboardingOutcomes.SelectNext(available, f.Endpoint, current.AdapterId, null)!;
+    Check(first.AttemptId == older.AttemptId, "Fixture did not start at the offline job.");
+    await Throws<HttpRequestException>(() => OnboardingOutcomes.SendAsync(f.Client, first, CancellationToken.None));
+    var second = OnboardingOutcomes.SelectNext(available, f.Endpoint, current.AdapterId, first.AttemptId)!;
+    Check(await OnboardingOutcomes.SendAsync(f.Client, second, CancellationToken.None) == "completed", "Later job was starved by an offline server.");
+    OnboardingOutcomes.Acknowledge(f.AgentStatePath, second);
+    Check(OnboardingOutcomes.ReadAll(f.AgentStatePath, _ => {}).Single() == older, "Retry queue discarded an unresolved outcome.");
+});
+
+await Run("A denial between fetch and persistence cannot create restart authorization", async f => {
+    await f.PrepareAsync();
+    var map = typeof(WindowsPcRemoteOnboardingService).GetField("_pending", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(f.Service)!;
+    var fetched = map.GetType().GetProperty("Item")!.GetValue(map, [f.Endpoint]);
+    await f.Store.UpdateAsync(state => state with { PcOnboardingReceipts = [] });
+    f.Service.RecordAgentResponse(f.Endpoint, HttpStatusCode.Forbidden, f.Configuration!.AttemptId);
+    var persist = typeof(WindowsPcRemoteOnboardingService).GetMethod("PersistFetchedConfigurationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    await Throws<InvalidOperationException>(() => (Task)persist.Invoke(f.Service, [fetched])!);
+    f.RestartServer();
+    Check(!(await f.Store.ReadAsync()).PcOnboardingReceipts!.Any(), "Denied fetch persisted a permission that survived restart.");
+});
+
+Console.WriteLine("PASS: 11 cross-repository onboarding outcome scenarios.");
 
 async Task Run(string name, Func<Fixture, Task> test)
 {
@@ -160,6 +209,7 @@ sealed class Fixture : IDisposable
     public WindowsPcRemoteOnboardingConfiguration? Configuration { get; private set; }
     public int DropRegistrations { get; set; }
     public int DropOutcomes { get; set; }
+    public string? OfflineServerAddress { get; set; }
     public int RegistrationRequests { get; private set; }
     private readonly FixtureEnvironment _environment;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -214,6 +264,7 @@ sealed class Fixture : IDisposable
     public Task<string> CompleteAsync() => OnboardingOutcomes.SendAsync(Client, Outcome("completed"), CancellationToken.None);
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        if (request.RequestUri!.Host == OfflineServerAddress) throw new HttpRequestException("Earlier server is offline");
         if (request.RequestUri!.AbsolutePath.EndsWith("/register"))
         {
             RegistrationRequests++;

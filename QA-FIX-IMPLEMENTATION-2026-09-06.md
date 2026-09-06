@@ -1,6 +1,6 @@
 # QA corrections and implementation evidence — 6 September 2026
 
-All seven findings in [the latest QA report](<C:/Users/jligh/OneDrive/Documents/Job Setup - Kiloview Suite/SUITE-QA-REVIEW-2026-09-06.md>) and its four additional recommendations have been implemented across the five independent repositories. The earlier implementation was committed in every repository before these corrections began. The new corrections remain uncommitted for review. Nothing was pushed, published or installed.
+All seven findings in [the latest QA report](<C:/Users/jligh/OneDrive/Documents/Job Setup - Kiloview Suite/SUITE-QA-REVIEW-2026-09-06.md>) and its four additional recommendations were implemented across the five independent repositories. The earlier implementation was committed before these corrections began. These corrections have now also been committed in each repository; [the follow-up report](<C:/Users/jligh/OneDrive/Documents/Job Setup - Kiloview Suite/QA-FOLLOWUP-2026-09-06.md>) records those checkpoints and additional fixes. Nothing was pushed, published or installed.
 
 ## Baseline checkpoints
 

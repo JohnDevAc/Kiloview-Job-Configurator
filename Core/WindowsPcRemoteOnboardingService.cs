@@ -133,21 +133,7 @@ public sealed class WindowsPcRemoteOnboardingService(
                 return current with { ConfigurationFetchedUtc = firstFetch, Status = "awaiting-registration",
                     RegistrationDeadlineUtc = firstFetch.Add(RegistrationTimeout), ExpiresUtc = firstFetch.Add(RegistrationTimeout) };
             }) ?? throw new InvalidOperationException("The onboarding attempt changed during the fetch. Request fresh local approval.");
-            var fetchedUtc = pending.ConfigurationFetchedUtc!.Value;
-            await store.UpdateAsync(current =>
-            {
-                if (current.JobId != pending.JobId || current.JobRevision != pending.JobRevision)
-                    throw new InvalidOperationException("The job changed during configuration fetch.");
-                var receipts = (current.PcOnboardingReceipts ?? []).ToList();
-                if (!receipts.Any(receipt => receipt.AttemptId == pending.AttemptId))
-                {
-                    receipts = receipts.Select(receipt => receipt.EndpointId == endpointId
-                        ? receipt with { Status = "superseded" } : receipt).ToList();
-                    receipts.Add(new(endpointId, pending.AttemptId, pending.JobId, pending.JobRevision,
-                        pending.AgentAddress, pending.Network, fetchedUtc, pending.RegistrationDeadlineUtc!.Value, "applying"));
-                }
-                return current with { PcOnboardingReceipts = receipts };
-            });
+            await PersistFetchedConfigurationAsync(pending);
             logger.LogInformation(
                 "Remote Windows onboarding configuration fetch completed for endpoint {EndpointId} from {RequestAddress} in {ElapsedMilliseconds} ms",
                 endpointId,
@@ -172,6 +158,24 @@ public sealed class WindowsPcRemoteOnboardingService(
             throw;
         }
     }
+
+    private Task<AppState> PersistFetchedConfigurationAsync(PendingConfiguration pending) => store.UpdateAsync(current =>
+    {
+        if (!_pending.TryGetValue(pending.EndpointId, out var active) || active.AttemptId != pending.AttemptId || !IsActive(active))
+            throw new InvalidOperationException("The onboarding attempt changed before settings could be issued.");
+        if (current.JobId != pending.JobId || current.JobRevision != pending.JobRevision)
+            throw new InvalidOperationException("The job changed during configuration fetch.");
+        var receipts = (current.PcOnboardingReceipts ?? []).ToList();
+        if (!receipts.Any(receipt => receipt.AttemptId == pending.AttemptId))
+        {
+            receipts = receipts.Select(receipt => receipt.EndpointId == pending.EndpointId
+                ? receipt with { Status = "superseded" } : receipt).ToList();
+            receipts.Add(new(pending.EndpointId, pending.AttemptId, pending.JobId, pending.JobRevision,
+                pending.AgentAddress, pending.Network, pending.ConfigurationFetchedUtc!.Value,
+                pending.RegistrationDeadlineUtc!.Value, "applying"));
+        }
+        return current with { PcOnboardingReceipts = receipts };
+    });
 
     public void RecordApprovalRequestStarted(string endpointId, string? attemptId = null)
     {

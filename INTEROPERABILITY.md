@@ -1,5 +1,9 @@
 # Suite deployment and integration contract
 
+## Additional QA corrections — 6 September 2026
+
+Configuration permission is rechecked inside the persisted-state update so a denied, expired or replaced attempt cannot leave a durable authorization after waiting for state access. Companion confirmations rotate across saved outcomes; corrupt records and old offline servers cannot block later confirmations. Read QA-FOLLOWUP-2026-09-06.md for the follow-up checkpoints and validation. Installation, topology and local process contracts remain unchanged.
+
 ## QA follow-up contract — 6 September 2026
 
 This section updates the earlier contract below. Remote onboarding now also requires `onboarding-outcome-v1`; configuration must return `requiresFinalConfirmation: true`. Registration creates a durable candidate receipt and returns `awaiting-confirmation`. Only a matching `completed` final outcome posted to `/api/pc-onboarding/outcome` adds that PC to the active job. Exhausted registration responses cause local rollback and a durable `aborted` outcome, or `recovery-required` if restoration fails. Lost final confirmation never triggers rollback: Agent retries its saved outcome after Setup exits and after restart. Interrupted `applying` journals require local repair. Changed jobs/newer attempts return `superseded`; terminal outcomes are idempotent. Preserve server state/backups and the companion's `onboarding-outcomes` directory beside its configuration for reconciliation.
