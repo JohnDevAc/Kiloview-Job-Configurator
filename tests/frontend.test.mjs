@@ -9,6 +9,7 @@ async function loadModule(path) {
 const { windowsCardState, createWindowsMonitor } = await loadModule('../wwwroot/js/windows-monitor.js');
 const { createPreviewController } = await loadModule('../wwwroot/js/previews.js');
 const { createLocalOnboarding } = await loadModule('../wwwroot/js/local-onboarding.js');
+const { createWindowsCards } = await loadModule('../wwwroot/js/windows-cards.js');
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
 
@@ -135,9 +136,24 @@ test('Windows metrics and timestamps update existing elements, preserving zero r
 test('Both registered and available Windows cards expose metric update targets', () => {
   const remoteCard = appSource.slice(appSource.indexOf('  const remotePcCard='), appSource.indexOf('  const availablePcAgentCard='));
   const availableCard = appSource.split(/\r?\n/).find(line => line.includes('const availablePcAgentCard='));
-  assert.match(remoteCard, /data-windows-endpoint/);
-  assert.match(availableCard, /data-windows-endpoint/);
+  assert.match(remoteCard, /windowsEndpointCard\(pc/);
+  assert.match(availableCard, /windowsEndpointCard\(agent/);
   assert.match(availableCard, /windowsMetrics\(agent\)/);
+});
+
+test('Windows expansion follows endpoint identity through a status redraw or registration', () => {
+  const { captureWindowsExpansion, restoreWindowsExpansion } = createWindowsCards({ esc: String });
+  const card = (id, open) => ({ dataset: { windowsEndpoint: id }, disclosure: { open }, querySelector() { return this.disclosure; } });
+  const root = cards => ({ querySelectorAll: () => cards });
+  const expanded = captureWindowsExpansion(root([card('SERVER', true), card('offline', false)]));
+  const replacement = [card('server', false), card('OFFLINE', true), card('newly-discovered', false)];
+  restoreWindowsExpansion(root(replacement), expanded);
+  assert.deepEqual(replacement.map(c => c.disclosure.open), [true, false, false]);
+  replacement[0].disclosure.open = false;
+  replacement[1].disclosure.open = true;
+  const next = [card('server', true), card('offline', false)];
+  restoreWindowsExpansion(root(next), captureWindowsExpansion(root(replacement)));
+  assert.deepEqual(next.map(c => c.disclosure.open), [false, true]);
 });
 
 test('Preview refresh skips hidden and offscreen images and prioritizes healthy captures', async () => {

@@ -1,5 +1,9 @@
 # Codex Project Handoff
 
+## Compact Windows endpoint cards — 7 September 2026
+
+Prepared server Main 0.8.12 / Development 0.8.12-dev.1. Windows endpoint cards start collapsed with hostname, address, connectivity and attention indicators; expanding reveals health, onboarding and removal controls. Native disclosures support mouse and keyboard input, and their state follows the endpoint GUID through background redraws and registration. Newly discovered cards and page reloads start collapsed. Desktop and mobile browser checks confirmed independent card heights, no horizontal overflow, accessible controls and expansion retention across real polling redraws. All 23 server regression checks, 13 frontend checks and the installer suite passed. The release uses the already published PC Agent Main 0.7.3 / Development 0.7.3-dev.1 from clean separate checkouts; no companion source or integration contract changes are included. Publication and local installation are separate verification steps.
+
 ## Native firewall deployment correction — 7 September 2026
 
 Prepared server Main 0.8.11 / Development 0.8.11-dev.1 with PC Agent Main 0.7.3 / Development 0.7.3-dev.1. The authorized 0.8.10 deployment exposed an existing companion firewall marshalling fault before the server was replaced: Windows rejects the `string[]` passed to `INetFwRule.Interfaces`. The companion now sends a VARIANT array, tests the real COM object without adding firewall rules, and preserves nested installation exceptions in internal reports. Server 0.8.9 remained running; matching 0.7.2 Agent/Setup binaries were installed and the Agent restarted, but Setup correctly reported the incomplete firewall step. Publish the corrected companion first, then bundle it in 0.8.11. Existing job/NDI settings were retained at this checkpoint. Earlier release notes below describe superseded versions.
