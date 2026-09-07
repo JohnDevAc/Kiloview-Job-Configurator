@@ -1,5 +1,9 @@
 # Codex Project Handoff
 
+## PC onboarding feedback and internal diagnostics — 7 September 2026
+
+Prepared for server Main 0.8.10 / Development 0.8.10-dev.1 with the separately released PC Agent Main 0.7.2 / Development 0.7.2-dev.1. Durable internal failure reports have seven-day retention, bounded client retry queues, persisted per-attempt upload scopes, source validation, redaction and localhost-only retrieval. See [ONBOARDING-DIAGNOSTICS.md](ONBOARDING-DIAGNOSTICS.md). The server card now shows the target job/settings, a styled action, persistent error/retry feedback and duplicate-click protection. Successful onboarding is preserved if the subsequent card refresh fails. Diagnostic reports are not displayed or linked in the UI. Server regression/frontend/installer, both companion validation projects, twelve cross-repository scenarios and the isolated diagnostic HTTP checks passed before release preparation. Earlier installed 0.8.9/0.7.1 binaries do not contain these changes. The original live onboarding failure still requires reproduction with the updated pair to obtain its client-side evidence.
+
 ## Further QA corrections — 6 September 2026
 
 The initial QA changes were committed at `a68f5e7`. The subsequent corrections and test evidence are recorded in the suite's QA-FOLLOWUP-2026-09-06.md. Read the current INTEROPERABILITY.md additions for retry fairness, strict persisted identity, deployment evidence and mutation authorization. Earlier implementation reports remain historical checkpoints.

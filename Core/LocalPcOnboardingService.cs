@@ -16,6 +16,13 @@ public interface ILocalPcOnboarding
     Task<WindowsPcEndpoint> OnboardAsync(LocalNetworkInterface network, string jobName, string discoveryServerIp, CancellationToken ct);
 }
 
+public sealed class LocalPcOnboardingException(string message, string? reportId = null,
+    OnboardingFailureReport? failureReport = null, Exception? inner = null) : InvalidOperationException(message, inner)
+{
+    public string? ReportId { get; } = reportId;
+    public OnboardingFailureReport? FailureReport { get; } = failureReport;
+}
+
 public sealed class LocalPcOnboardingService : ILocalPcOnboarding
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -73,11 +80,21 @@ public sealed class LocalPcOnboardingService : ILocalPcOnboarding
             }, Json).AsMemory(), timeout.Token);
             process.StandardInput.Close();
             await process.WaitForExitAsync(timeout.Token);
-            var response = JsonSerializer.Deserialize<CommandResponse>(await output, Json)
-                ?? throw new InvalidOperationException("PC Agent Setup returned no result.");
-            _ = await error;
+            var outputText = await output;
+            var errorText = await error;
+            CommandResponse response;
+            try
+            {
+                response = JsonSerializer.Deserialize<CommandResponse>(outputText, Json)
+                    ?? throw new JsonException("Empty response");
+            }
+            catch (JsonException ex)
+            {
+                throw new InvalidOperationException($"PC Agent Setup exited with code {process.ExitCode} without a valid result. "
+                    + (string.IsNullOrWhiteSpace(errorText) ? "Repair or update the complete PC Agent package and retry." : OnboardingDiagnosticsStore.Redact(errorText)), ex);
+            }
             if (process.ExitCode != 0 || response.SchemaVersion != 1 || !response.Success)
-                throw new InvalidOperationException(response.Error ?? "Local PC onboarding failed.");
+                throw new LocalPcOnboardingException(response.Error ?? "Local PC onboarding failed.", failureReport: response.FailureReport);
             return ValidateResult(response.Endpoint, network);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -112,5 +129,6 @@ public sealed class LocalPcOnboardingService : ILocalPcOnboarding
         return new string(buffer, 0, count);
     }
 
-    private sealed record CommandResponse(int SchemaVersion, bool Success, string Version, WindowsPcRegistration? Endpoint, string? Error);
+    private sealed record CommandResponse(int SchemaVersion, bool Success, string Version, WindowsPcRegistration? Endpoint, string? Error,
+        OnboardingFailureReport? FailureReport = null);
 }

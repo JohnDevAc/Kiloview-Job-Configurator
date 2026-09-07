@@ -8,8 +8,66 @@ async function loadModule(path) {
 }
 const { windowsCardState, createWindowsMonitor } = await loadModule('../wwwroot/js/windows-monitor.js');
 const { createPreviewController } = await loadModule('../wwwroot/js/previews.js');
+const { createLocalOnboarding } = await loadModule('../wwwroot/js/local-onboarding.js');
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
+
+test('Local onboarding failure stays on the card, permits retry and survives a redraw', async () => {
+  let fail = true, completions = 0;
+  const controller = createLocalOnboarding({ esc: value => String(value).replaceAll('<', '&lt;'), onChange: () => {},
+    onComplete: async () => { completions++; }, api: async (url, options) => {
+      if (!options) return { compatible: true };
+      if (fail) throw new Error('Close <NDI client> before applying settings.');
+      return { endpoint: {} };
+    } });
+  await controller.onboard();
+  const failed = controller.render();
+  assert.match(failed, /role="alert"/);
+  assert.match(failed, /Close &lt;NDI client>/);
+  assert.match(failed, /Retry onboarding/);
+  assert.doesNotMatch(failed, /disabled|Applying settings/);
+  const replacement = { dataset: { registered: 'false' }, outerHTML: '' };
+  controller.sync({ querySelectorAll: selector => selector.includes('controls') ? [replacement] : [] });
+  assert.equal(replacement.outerHTML, failed);
+  fail = false;
+  await controller.onboard();
+  assert.equal(completions, 1);
+  assert.match(controller.render(true), /Server PC onboarded/);
+  assert.doesNotMatch(controller.render(true), /Retry onboarding|role="alert"/);
+});
+
+test('Repeated local clicks do not queue another configuration, including during refresh', async () => {
+  let release, posted = 0;
+  const pending = new Promise(resolve => { release = resolve; });
+  const controller = createLocalOnboarding({ esc: String, onChange: () => {}, onComplete: () => pending,
+    api: async (url, options) => { if (options) posted++; return { compatible: true }; } });
+  const first = controller.onboard();
+  await controller.onboard();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(controller.render(), /disabled/);
+  await controller.onboard();
+  assert.equal(posted, 1);
+  release();
+  await first;
+  assert.doesNotMatch(controller.render(true), /disabled/);
+});
+
+test('Display refresh failures cannot claim that a successful onboarding failed', async () => {
+  const controller = createLocalOnboarding({ esc: String, onChange: () => {},
+    api: async () => ({ compatible: true }), onComplete: async () => { throw Error('Display unavailable'); } });
+  await controller.onboard();
+  assert.match(controller.render(true), /Settings were saved/);
+  assert.doesNotMatch(controller.render(true), /role="alert"|Retry onboarding|disabled/);
+});
+
+test('Missing companion prevents mutation and presents an actionable persistent error', async () => {
+  let posted = 0;
+  const controller = createLocalOnboarding({ esc: String, onChange: () => {}, onComplete: async () => {},
+    api: async (url, options) => { if(options) posted++; return { compatible: false, error: 'Install the complete PC Agent package.' }; } });
+  await controller.onboard();
+  assert.equal(posted, 0);
+  assert.match(controller.render(), /Install the complete PC Agent package/);
+});
 test('Remote onboarding requires attempt and durable outcome support', () => {
   const source = appSource.split(/\r?\n/).find(line => line.startsWith('function pcAgentSupportsRemoteOnboarding('));
   const supports = new Function(`${source};return pcAgentSupportsRemoteOnboarding`)();

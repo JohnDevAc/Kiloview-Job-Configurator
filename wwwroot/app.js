@@ -2,6 +2,7 @@ import { api, upload } from './js/api.js';
 import { createPreviewController } from './js/previews.js';
 import { createSystemSettingsController } from './js/system-settings.js';
 import { createWindowsMonitor, windowsCardState } from './js/windows-monitor.js';
+import { createLocalOnboarding } from './js/local-onboarding.js';
 
 const PC_AGENT_PRODUCT='NDI Configurator PC Agent';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -31,7 +32,7 @@ function compactBytes(bytes){const value=Math.max(0,Number(bytes)||0);if(!value)
 async function loadPcAgents(refresh=false){if(refresh)try{await api('/api/pc-agents/discover',{method:'POST',body:'{}'})}catch{};try{state.pcAgents=await api('/api/pc-agents')}catch{state.pcAgents=[]};return state.pcAgents}
 function pcAgentSupportsRemoteOnboarding(agent){const capabilities=agent.capabilities||[];return ['remote-onboarding-v2','network-config-v1','onboarding-attempt-v1','onboarding-outcome-v1'].every(capability=>capabilities.includes(capability))}
 function remoteOnboardingEditor(agent,registered=false){
-  if(agent.address===state.selectedNetwork?.address)return registered?'':'<button type="button" data-local-onboarding-action="onboard">Onboard this server PC</button>';
+  if(agent.address===state.selectedNetwork?.address)return registered?'':localOnboarding.render();
   if(registered)return '';
   if(!pcAgentSupportsRemoteOnboarding(agent))return `<div class="local-pc-drift"><strong>${PC_AGENT_PRODUCT.toUpperCase()} UPDATE REQUIRED</strong><span>Install the complete current Agent and Setup package to support approved attempts and durable completion confirmation.</span></div>`;
   const network=agent.networkConfiguration||{},gateway=network.defaultGateways?.[0]||'',dns=(network.dnsServers||[]).join(', '),operation=agent.remoteOnboarding,status=operation?`<div class="remote-onboarding-state ${esc(operation.status)}"><strong>${esc(String(operation.status).replaceAll('-',' ').toUpperCase())}</strong><span>${esc(operation.message)}</span></div>`:'';
@@ -48,6 +49,10 @@ function restoreRemoteOnboardingEditors(container,drafts){
 const {clearPreviewWarning,encoderPreview,refreshEncoderPreviews,releasePreviewObjectUrls}=createPreviewController({state,$,$$,esc,isTeleTool});
 const {loadSystemSettings}=createSystemSettingsController({api,$,state,toast});
 const {windowsMetrics,windowsConnectivity,refreshWindowsMetrics}=createWindowsMonitor({esc,compactDuration,compactBytes,product:PC_AGENT_PRODUCT});
+const localOnboarding=createLocalOnboarding({api,esc,onChange:()=>localOnboarding.sync(document),onComplete:async()=>{
+  const [app]=await Promise.all([api('/api/state'),loadPcAgents()]);
+  state.monitorCardSignature=null;renderMonitor(app);
+}});
 const serviceConnections=$('#serviceConnections'),serviceConnectionsStateText=$('#serviceConnectionsStateText'),toggleServiceConnections=$('#toggleServiceConnections'),serviceChecks={kiloLinkFound:false,kiloLinkAuthenticated:false,ndiDiscoveryFound:false};
 function setServiceConnectionsExpanded(expanded){
   serviceConnections.classList.toggle('is-collapsed',!expanded);
@@ -337,7 +342,19 @@ function multicastIcon(endpoint){
   const reserved=endpoint.status==='reserved',configured=endpoint.multicastConfigured===true||endpoint.status==='applied'||reserved,active=endpoint.multicastInUse===true||endpoint.inUse===true,prefix=endpoint.multicastNetPrefix||endpoint.netPrefix,title=reserved?`Multicast range reserved for manual setup${prefix?` · ${prefix}`:''}`:active?`Multicast active${prefix?` · ${prefix}`:''}`:configured?`Multicast configured but not currently active${prefix?` · ${prefix}`:''}`:'Multicast is not configured';
   return `<span class="multicast-status ${active?'active':configured?'configured':'inactive'}" role="img" aria-label="${esc(title)}" title="${esc(title)}">MULTICAST</span>`;
 }
+function availableServerPcCard(agent,job){
+  return `<article data-windows-endpoint="${esc(agent.endpointId)}" class="device-card pc-agent-card server-onboarding-card">
+    <header>${windowsBadge(agent.operatingSystemVersion)}<i class="health online" title="PC Agent online"></i></header>
+    <h3>${esc(agent.hostname)}</h3><div class="ip">${esc(agent.address)}/${esc(agent.prefixLength)}</div>
+    <div class="meta"><span class="pill agent-product">SERVER PC</span><span class="pill connectivity-online">AGENT ONLINE</span><span class="pill standalone">NOT ONBOARDED</span></div>
+    <p class="server-onboarding-intro">${job?'Apply this job’s NDI settings to this PC.':'Create a job before onboarding this PC.'}</p>
+    <dl class="server-onboarding-settings"><div><dt>Job group</dt><dd>${esc(job?.jobName||'No active job')}</dd></div><div><dt>NDI interface</dt><dd>${esc(agent.adapterName)}</dd></div><div><dt>Discovery Server</dt><dd>${esc(job?.ndiDiscoveryServerIp||'Not configured')}</dd></div></dl>
+    <p class="server-onboarding-note">Keeps the current Windows IP settings. No additional approval is needed on this PC.</p>
+    <details class="server-onboarding-details"><summary>PC health &amp; agent details</summary><div class="meta"><span class="pill">NDI ${esc(agent.ndiToolsVersion||'NOT INSTALLED')}</span><span class="pill">AGENT ${esc(agent.agentVersion)}</span></div>${windowsMetrics(agent)}</details>
+    ${localOnboarding.render()}</article>`;
+}
 function renderMonitor(app){
+  localOnboarding.setContext(JSON.stringify([app.jobId,app.lastJob?.jobName,app.selectedNetworkAdapterId,app.selectedNetworkAddress,(app.windowsPcs||[]).some(pc=>pc.isServerPc)]));
   state.devices=app.devices||[];
   state.multicastConfigured=app.multicast!=null;
   const revert=$('#revertMulticast'),revertSummary=$('#multicastRevertSummary');
@@ -372,9 +389,9 @@ function renderMonitor(app){
     const attention=pc.error?`<div class="local-pc-drift"><strong>Windows endpoint needs attention</strong><span>${esc(pc.error)}</span></div>`:offline?`<div class="local-pc-drift"><strong>Windows endpoint offline</strong><span>The ${agentProduct} did not answer three consecutive authenticated-contract status checks on TCP 8094.</span></div>`:stale?`<div class="remote-pc-checking"><strong>Confirming agent connectivity</strong><span>A recent ${agentProduct} status poll failed. The endpoint is marked offline only after three consecutive failures.</span></div>`:`<div class="local-pc-note">${agentProduct} ${esc(pc.agentVersion||agent?.agentVersion||'unknown')} is reporting live Windows and NDI health.</div>`;
     const metrics=windowsMetrics(pc,agent);
     const pills=windowsEndpointPills({statusLabel,statusClass,statusTitle:connectivityTitle,preferred:pc.preferredInterfaceConfigured,adapterName:pc.adapterName,ndiToolsVersion:pc.ndiToolsVersion,jobName:windowsJobName,assignment,multicastApplied:true});
-    return `<article data-windows-endpoint="${esc(pc.endpointId)}" class="device-card remote-pc-card ${configured&&online?'':'configuration-drift'}"><header>${windowsBadge(pc.operatingSystemVersion)}<span class="card-indicators">${multicastIcon(assignment?{...assignment,multicastConfigured:true}:{})}<i data-connectivity-title class="health ${healthClass}" title="${esc(connectivityTitle)}"></i></span></header><h3>${esc(pc.hostname)}</h3><div class="ip">${esc(pc.address)}/${esc(pc.prefixLength)}</div><div class="meta">${pills}${pc.isServerPc?'<span class="pill agent-product">SERVER PC</span>':''}${agent?`<span class="pill agent-product">${esc(agentProduct)}</span><span class="pill">VERSION ${esc(agent.agentVersion)}</span><span class="pill">JOBS ${esc(agent.memberships?.length||0)}</span>`:''}</div>${metrics}${attention}${manualMulticast}<div class="card-actions">${pc.isServerPc?'<button type="button" data-local-onboarding-action="onboard">Reapply server NDI settings</button>':''}<button type="button" class="remove-remote-pc" data-remote-pc-action="remove" data-endpoint-id="${esc(pc.endpointId)}" data-endpoint-name="${esc(pc.hostname)}">Remove</button></div>${agent?remoteOnboardingEditor(agent,true):''}</article>`;
+    return `<article data-windows-endpoint="${esc(pc.endpointId)}" class="device-card remote-pc-card ${configured&&online?'':'configuration-drift'}"><header>${windowsBadge(pc.operatingSystemVersion)}<span class="card-indicators">${multicastIcon(assignment?{...assignment,multicastConfigured:true}:{})}<i data-connectivity-title class="health ${healthClass}" title="${esc(connectivityTitle)}"></i></span></header><h3>${esc(pc.hostname)}</h3><div class="ip">${esc(pc.address)}/${esc(pc.prefixLength)}</div><div class="meta">${pills}${pc.isServerPc?'<span class="pill agent-product">SERVER PC</span>':''}${agent?`<span class="pill agent-product">${esc(agentProduct)}</span><span class="pill">VERSION ${esc(agent.agentVersion)}</span><span class="pill">JOBS ${esc(agent.memberships?.length||0)}</span>`:''}</div>${metrics}${attention}${manualMulticast}${pc.isServerPc?localOnboarding.render(true):agent?remoteOnboardingEditor(agent,true):''}<div class="card-actions"><button type="button" class="remove-remote-pc" ${pc.isServerPc?'data-local-onboarding-remove':''} data-remote-pc-action="remove" data-endpoint-id="${esc(pc.endpointId)}" data-endpoint-name="${esc(pc.hostname)}">Remove</button></div></article>`;
   };
-  const availablePcAgentCard=agent=>`<article data-windows-endpoint="${esc(agent.endpointId)}" class="device-card pc-agent-card"><header>${windowsBadge(agent.operatingSystemVersion)}<i class="health online" title="${esc(agent.product||PC_AGENT_PRODUCT)} online"></i></header><h3>${esc(agent.hostname)}</h3><div class="ip">${esc(agent.address)}/${esc(agent.prefixLength)}</div><div class="meta"><span class="pill agent-product">${esc(agent.product||PC_AGENT_PRODUCT)}</span><span class="pill connectivity-online">ONLINE</span><span class="pill">${esc(agent.adapterName)}</span><span class="pill">NDI ${esc(agent.ndiToolsVersion||'NOT INSTALLED')}</span><span class="pill">VERSION ${esc(agent.agentVersion)}</span><span class="pill">JOBS ${esc(agent.memberships?.length||0)}</span><span class="pill standalone">NOT ONBOARDED</span></div>${windowsMetrics(agent)}<div class="local-pc-note">${esc(agent.product||PC_AGENT_PRODUCT)} discovered read-only on the selected subnet. ${agent.address===state.selectedNetwork?.address?'The installed server companion applies local changes directly.':'Onboarding requires approval on this remote PC.'}</div>${remoteOnboardingEditor(agent,false)}</article>`;
+  const availablePcAgentCard=agent=>agent.address===state.selectedNetwork?.address?availableServerPcCard(agent,app.lastJob):`<article data-windows-endpoint="${esc(agent.endpointId)}" class="device-card pc-agent-card"><header>${windowsBadge(agent.operatingSystemVersion)}<i class="health online" title="${esc(agent.product||PC_AGENT_PRODUCT)} online"></i></header><h3>${esc(agent.hostname)}</h3><div class="ip">${esc(agent.address)}/${esc(agent.prefixLength)}</div><div class="meta"><span class="pill agent-product">${esc(agent.product||PC_AGENT_PRODUCT)}</span><span class="pill connectivity-online">ONLINE</span><span class="pill">${esc(agent.adapterName)}</span><span class="pill">NDI ${esc(agent.ndiToolsVersion||'NOT INSTALLED')}</span><span class="pill">VERSION ${esc(agent.agentVersion)}</span><span class="pill">JOBS ${esc(agent.memberships?.length||0)}</span><span class="pill standalone">NOT ONBOARDED</span></div>${windowsMetrics(agent)}<div class="local-pc-note">Onboarding requires approval on this remote PC.</div>${remoteOnboardingEditor(agent,false)}</article>`;
   const remoteEndpointIds=new Set(windowsPcs.map(pc=>String(pc.endpointId).toLowerCase())),remoteMulticastAssignments=(app.multicast?.assignments||[]).filter(assignment=>remoteEndpointIds.has(String(assignment.endpointId).toLowerCase())),cardDevices=devices.map(({lastSeenUtc,systemTemperatureC,...device})=>device),cardWindowsPcs=windowsPcs.map(windowsCardState),cardSignature=JSON.stringify({devices:cardDevices,windowsPcs:cardWindowsPcs,pcAgents:pcAgents.map(windowsCardState),remoteMulticastAssignments,jobName:windowsJobName});
   if(cardSignature!==state.monitorCardSignature){
     const windowsEndpoints=[...windowsPcs,...availablePcAgents],windowsCards=windowsPcs.map(remotePcCard).join('')+availablePcAgents.map(availablePcAgentCard).join(''),monitorGrid=$('#monitorGrid'),remoteEditorDrafts=captureRemoteOnboardingEditors(monitorGrid);releasePreviewObjectUrls(monitorGrid);monitorGrid.innerHTML=onboarded||availablePcAgents.length
@@ -393,6 +410,7 @@ function renderMonitor(app){
   }
   refreshTeleToolTemperatures(teletools);
   refreshWindowsMetrics($('#monitorGrid'),windowsPcs,pcAgents);
+  localOnboarding.sync($('#monitorGrid'));
 }
 function validUnicastIpv4(value){const number=ipv4Number(value),first=number===null?null:number>>>24;return number!==null&&number!==0&&number!==0xffffffff&&first>0&&first!==127&&first<224}
 function usableIpv4Host(value,prefix){const number=ipv4Number(value),length=Number(prefix);if(number===null||!Number.isInteger(length)||length<1||length>30)return false;const mask=(0xffffffff<<(32-length))>>>0,network=(number&mask)>>>0,broadcast=(network|(~mask>>>0))>>>0;return number!==network&&number!==broadcast}
@@ -577,12 +595,11 @@ document.addEventListener('submit',e=>{const form=e.target.closest('[data-remote
 document.addEventListener('click',e=>{const a=e.target.closest('[data-action]');if(!a)return;e.preventDefault();if(a.dataset.action==='back-setup'||a.dataset.action==='new-job')show('setup');if(a.dataset.action==='monitor'||a.dataset.action==='back-multicast')api('/api/state').then(x=>{renderMonitor(x);show('monitor')});if(a.dataset.action==='name-displays')openDisplayNaming();if(a.dataset.action==='multicast'){show('multicast');loadMulticastSetup(false)}if(a.dataset.action==='settings'){state.returnView=views.find(v=>!$(`#${v}View`).classList.contains('hidden'))||'setup';show('settings');loadSystemSettings()}if(a.dataset.action==='back-settings')show(state.returnView||'setup')});
 document.addEventListener('click',async e=>{
   const button=e.target.closest('[data-local-onboarding-action]');if(!button)return;
+  e.preventDefault();
+  if(button.dataset.localOnboardingAction==='onboard'){await localOnboarding.onboard();return}
   try{
     button.disabled=true;
-    if(button.dataset.localOnboardingAction==='onboard'){
-      button.textContent='Applying settings…';await api('/api/pc-onboarding/local',{method:'POST',body:'{}'});
-      state.monitorCardSignature=null;await loadPcAgents(true);renderMonitor(await api('/api/state'));toast('Server PC onboarded through PC Agent Setup');
-    }else await refreshLocalPcComponent();
+    await refreshLocalPcComponent();
   }catch(err){toast(err.message,true)}finally{button.disabled=false}
 });
 boot();

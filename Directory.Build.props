@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Product>NDI Job Configurator</Product>
     <Company>John Lightfoot</Company>
-    <Version>0.8.9</Version>
+    <Version>0.8.10</Version>
     <ReleaseChannel>Main</ReleaseChannel>
     <Copyright>Copyright (c) 2026 John Lightfoot. All rights reserved.</Copyright>
   </PropertyGroup>

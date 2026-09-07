@@ -50,6 +50,8 @@ builder.Services.ConfigureHttpJsonOptions(o =>
     o.SerializerOptions.TypeInfoResolver = resolver;
 });
 builder.Services.AddSingleton<AppStateStore>();
+builder.Services.AddSingleton<OnboardingDiagnosticsStore>();
+builder.Services.AddHostedService<OnboardingDiagnosticsCleanup>();
 builder.Services.AddSingleton<KiloLinkCredentialStore>();
 builder.Services.AddSingleton<KiloLinkServerClient>();
 builder.Services.AddSingleton<KiloLinkConnectionService>();
@@ -316,7 +318,7 @@ app.MapPost("/api/pc-onboarding/register", async (
     AppState state;
     try
     {
-    state = await remoteOnboarding.RegisterAsync(registration, endpoint);
+        state = await remoteOnboarding.RegisterAsync(registration, endpoint);
     }
     catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
     remoteOnboarding.RecordRegistration(endpoint, registration.AttemptId!);
@@ -543,7 +545,48 @@ app.MapGet("/api/network/subnets", async (AppStateStore store) =>
 });
 app.MapGet("/api/network/interfaces", () => Results.Ok(NetworkAddressing.GetLocalInterfaces()));
 app.MapGet("/api/pc-onboarding/local", (ILocalPcOnboarding localPc) => Results.Ok(localPc.Status));
-app.MapPost("/api/pc-onboarding/local", async (OnboardingService onboarding, CancellationToken ct) =>
+app.MapPost("/api/pc-onboarding/diagnostics", async (HttpContext context, OnboardingDiagnosticsStore diagnostics,
+    WindowsPcAgentService agents) =>
+{
+    if (context.Request.ContentLength > OnboardingDiagnosticsStore.MaximumReportBytes)
+        return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+    try
+    {
+        // Bound streamed/chunked requests too, before deserialization or disk writes.
+        var bytes = new byte[OnboardingDiagnosticsStore.MaximumReportBytes + 1];
+        var count = 0;
+        while (count < bytes.Length)
+        {
+            var read = await context.Request.Body.ReadAsync(bytes.AsMemory(count), context.RequestAborted);
+            if (read == 0) break;
+            count += read;
+        }
+        if (count > OnboardingDiagnosticsStore.MaximumReportBytes) return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        var report = JsonSerializer.Deserialize<OnboardingFailureReport>(bytes.AsSpan(0, count), new JsonSerializerOptions(JsonSerializerDefaults.Web))
+            ?? throw new ArgumentException("A failure report is required.");
+        var source = context.Connection.RemoteIpAddress?.MapToIPv4().ToString() ?? "";
+        var saved = diagnostics.SaveRemote(report, source,
+            (endpoint, address) => agents.Snapshot().Any(a => a.EndpointId == endpoint && a.Address == address));
+        return Results.Ok(new { saved.ReportId, saved.ExpiresUtc });
+    }
+    catch (UnauthorizedAccessException ex) { return Results.Json(new { error = ex.Message }, statusCode: 403); }
+    catch (Exception ex) when (ex is ArgumentException or JsonException or InvalidOperationException)
+    { return Results.BadRequest(new { error = ex.Message }); }
+});
+app.MapGet("/api/pc-onboarding/diagnostics", (HttpContext context, string? endpointId, OnboardingDiagnosticsStore diagnostics) =>
+    context.Connection.RemoteIpAddress is { } source && IPAddress.IsLoopback(source)
+        ? Results.Ok(new { retentionDays = OnboardingDiagnosticsStore.RetentionDays, reports = diagnostics.List(endpointId) })
+        : Results.Json(new { error = "Internal diagnostics are available from localhost on the server." }, statusCode: 403));
+app.MapGet("/api/pc-onboarding/diagnostics/{reportId:guid}", (HttpContext context, string reportId, OnboardingDiagnosticsStore diagnostics) =>
+{
+    if (context.Connection.RemoteIpAddress is not { } source || !IPAddress.IsLoopback(source))
+        return Results.Json(new { error = "Internal diagnostics are available from localhost on the server." }, statusCode: 403);
+    context.Response.Headers.CacheControl = "no-store";
+    return diagnostics.ReportText(reportId) is { } report ? Results.Text(report, "text/plain; charset=utf-8")
+        : Results.NotFound(new { error = "This onboarding report is unavailable or its seven-day retention period has expired." });
+});
+app.MapPost("/api/pc-onboarding/local", async (OnboardingService onboarding, AppStateStore store,
+    OnboardingDiagnosticsStore diagnostics, CancellationToken ct) =>
 {
     try
     {
@@ -553,7 +596,24 @@ app.MapPost("/api/pc-onboarding/local", async (OnboardingService onboarding, Can
     catch (Exception ex) when (ex is InvalidOperationException or IOException or JsonException
         or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
     {
-        return Results.Conflict(new { error = ex.Message });
+        var reportId = (ex as LocalPcOnboardingException)?.ReportId;
+        if (ex is not LocalPcOnboardingException)
+        {
+            // Also retain failures that happen before Setup starts (for example a missing job/adapter).
+            try
+            {
+                var current = await store.ReadAsync();
+                var attemptId = Guid.NewGuid().ToString("D");
+                diagnostics.Register(new(current.WindowsPcs?.FirstOrDefault(pc => pc.IsServerPc)?.EndpointId ?? "", attemptId,
+                    Environment.MachineName, current.JobId, current.JobRevision, current.LastJob?.JobName ?? "No active job",
+                    current.SelectedNetworkAddress ?? "", null, current.SelectedNetworkAdapterId ?? "", true,
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
+                reportId = diagnostics.SaveLocal(attemptId, ex).ReportId;
+            }
+            catch (Exception saveError) when (saveError is IOException or UnauthorizedAccessException or ArgumentException)
+            { app.Logger.LogError(saveError, "Could not store local onboarding request failure"); }
+        }
+        return Results.Conflict(new { error = ex.Message, reportId });
     }
 });
 app.MapPut("/api/network/selection", async (NetworkAdapterSelection selection, AppStateStore store) =>
