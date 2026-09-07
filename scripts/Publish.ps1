@@ -66,6 +66,7 @@ Copy-Item -LiteralPath (Join-Path $root 'wwwroot\NDIJobConfigurator.ico') -Desti
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'INTEROPERABILITY.md') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'PC-ONBOARDING-CONTRACT.md') -Destination $publish
+Copy-Item -LiteralPath (Join-Path $root 'ONBOARDING-DIAGNOSTICS.md') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'installer\Select-InstallOptions.ps1') -Destination $publish
 Copy-Item -LiteralPath (Join-Path $root 'installer\PcAgentPackage.ps1') -Destination $publish
 

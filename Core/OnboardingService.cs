@@ -14,7 +14,8 @@ public sealed class OnboardingService(
     NdiTitleCardService titleCards,
     ILocalPcOnboarding localPc,
     EncoderThumbnailService thumbnails,
-    ILogger<OnboardingService> logger)
+    ILogger<OnboardingService> logger,
+    OnboardingDiagnosticsStore? diagnostics = null)
 {
     private static readonly TimeSpan PlanLifetime = TimeSpan.FromMinutes(15);
     // Size the pipeline for the supported 1 Gb/s network floor. Firmware files
@@ -33,7 +34,8 @@ public sealed class OnboardingService(
 
     public async Task<WindowsPcEndpoint> ReapplyServerPcAsync(CancellationToken ct)
     {
-        await _startGate.WaitAsync(ct);
+        if (!await _startGate.WaitAsync(0, ct))
+            throw new InvalidOperationException("Server PC onboarding is already in progress. Wait for it to finish before retrying.");
         try
         {
             if (_run is { IsCompleted: false })
@@ -42,7 +44,7 @@ public sealed class OnboardingService(
             var network = NetworkAddressing.ResolveLocalInterface(state.SelectedNetworkAdapterId, state.SelectedNetworkAddress);
             if (network is null || state.LastJob is null)
                 throw new InvalidOperationException("Select an active network adapter and create a job first.");
-            var endpoint = await localPc.OnboardAsync(network, state.LastJob.JobName, state.LastJob.NdiDiscoveryServerIp, ct);
+            var endpoint = await OnboardServerPcAsync(network, state.LastJob.JobName, state.LastJob.NdiDiscoveryServerIp, ct);
             await store.UpdateAsync(current =>
             {
                 if (current.LastJob != state.LastJob || current.SelectedNetworkAdapterId != state.SelectedNetworkAdapterId
@@ -60,6 +62,31 @@ public sealed class OnboardingService(
             return endpoint;
         }
         finally { _startGate.Release(); }
+    }
+
+    private async Task<WindowsPcEndpoint> OnboardServerPcAsync(LocalNetworkInterface network, string jobName, string discoveryServerIp, CancellationToken ct)
+    {
+        var current = await store.ReadAsync();
+        var attemptId = Guid.NewGuid().ToString("D");
+        diagnostics?.Register(new(current.WindowsPcs?.FirstOrDefault(pc => pc.IsServerPc)?.EndpointId ?? "", attemptId,
+            Environment.MachineName, current.JobId, current.JobRevision, jobName, network.Address, null, network.Id,
+            true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, []));
+        logger.LogInformation("Starting server PC onboarding attempt {AttemptId} for job {JobName} on {Address}", attemptId, jobName, network.Address);
+        try
+        {
+            var endpoint = await localPc.OnboardAsync(network, jobName, discoveryServerIp, ct);
+            logger.LogInformation("PC Agent verified server onboarding attempt {AttemptId}, endpoint {EndpointId}", attemptId, endpoint.EndpointId);
+            return endpoint;
+        }
+        catch (Exception ex)
+        {
+            OnboardingFailureSummary? report = null;
+            try { report = diagnostics?.SaveLocal(attemptId, ex, (ex as LocalPcOnboardingException)?.FailureReport); }
+            catch (Exception saveError) when (saveError is IOException or UnauthorizedAccessException or ArgumentException)
+            { logger.LogError(saveError, "Could not store failure report for server onboarding {AttemptId}", attemptId); }
+            logger.LogWarning("Server PC onboarding attempt {AttemptId} failed: {Error}", attemptId, OnboardingDiagnosticsStore.Redact(ex.Message));
+            throw new LocalPcOnboardingException(ex.Message, report?.ReportId, inner: ex);
+        }
     }
 
     public async Task<OnboardingPlan> BuildPlanAsync(OnboardingRequest request, CancellationToken ct)
@@ -189,7 +216,10 @@ public sealed class OnboardingService(
                 var started = DateTimeOffset.UtcNow;
                 await store.UpdateAsync(current => current with
                 {
-                    Devices = [], WindowsPcs = null, Multicast = null, FirmwareJob = null,
+                    Devices = [],
+                    WindowsPcs = null,
+                    Multicast = null,
+                    FirmwareJob = null,
                     LastJob = new(plan.Settings.JobName, plan.Settings.StaticStart, plan.Settings.StaticEnd, plan.Settings.NdiDiscoveryServerIp, started)
                 });
                 titleCards.StopAll();
@@ -200,7 +230,7 @@ public sealed class OnboardingService(
                 }
             }
             var serverEndpoint = plan.Settings.IncludeServerPc
-                ? await localPc.OnboardAsync(selectedNetwork, plan.Settings.JobName, plan.Settings.NdiDiscoveryServerIp, ct) : null;
+                ? await OnboardServerPcAsync(selectedNetwork, plan.Settings.JobName, plan.Settings.NdiDiscoveryServerIp, ct) : null;
             if (serverEndpoint is not null) await thumbnails.ReloadNdiConfigurationAsync(ct);
             if (plan.Settings.CleanOnboarding) await PrepareCleanOnboardingAsync(plan, ct);
             if (serverEndpoint is not null)

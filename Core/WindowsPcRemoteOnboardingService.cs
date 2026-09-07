@@ -9,7 +9,8 @@ public sealed class WindowsPcRemoteOnboardingService(
     AppStateStore store,
     WindowsPcAgentService agents,
     ILogger<WindowsPcRemoteOnboardingService> logger,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    OnboardingDiagnosticsStore? diagnostics = null)
 {
     private static readonly TimeSpan ConfigurationLifetime = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan RegistrationTimeout = TimeSpan.FromMinutes(5);
@@ -27,74 +28,77 @@ public sealed class WindowsPcRemoteOnboardingService(
         await _stageGate.WaitAsync();
         try
         {
-        Cleanup();
-        if (!Guid.TryParse(endpointId, out _))
-            throw new ArgumentException("The Windows PC endpoint identifier is invalid.");
-        var state = await store.ReadAsync();
-        var network = NetworkAddressing.ResolveLocalInterface(
-            state.SelectedNetworkAdapterId,
-            state.SelectedNetworkAddress)
-            ?? throw new InvalidOperationException("The selected onboarding adapter is no longer active.");
-        if (!AllowedOperator(requestedBy, network))
-            throw new UnauthorizedAccessException("Remote onboarding can only be staged from the selected production subnet.");
-        var job = state.LastJob
-            ?? throw new InvalidOperationException("Create or open a job before requesting PC onboarding.");
-        var agent = agents.Snapshot().FirstOrDefault(candidate =>
-            string.Equals(candidate.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
-            ?? throw new KeyNotFoundException("The NDI Configurator PC Agent is no longer discoverable on the selected subnet.");
-        RequireRemoteCapabilities(agent);
-        if (string.Equals(agent.Address, network.Address, StringComparison.Ordinal))
-            throw new InvalidOperationException("Use server PC onboarding for this local endpoint. Its network address is retained.");
-        if (!Contains(network, agent.Address))
-            throw new UnauthorizedAccessException("The NDI Configurator PC Agent is outside the selected production subnet.");
+            Cleanup();
+            if (!Guid.TryParse(endpointId, out _))
+                throw new ArgumentException("The Windows PC endpoint identifier is invalid.");
+            var state = await store.ReadAsync();
+            var network = NetworkAddressing.ResolveLocalInterface(
+                state.SelectedNetworkAdapterId,
+                state.SelectedNetworkAddress)
+                ?? throw new InvalidOperationException("The selected onboarding adapter is no longer active.");
+            if (!AllowedOperator(requestedBy, network))
+                throw new UnauthorizedAccessException("Remote onboarding can only be staged from the selected production subnet.");
+            var job = state.LastJob
+                ?? throw new InvalidOperationException("Create or open a job before requesting PC onboarding.");
+            var agent = agents.Snapshot().FirstOrDefault(candidate =>
+                string.Equals(candidate.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase))
+                ?? throw new KeyNotFoundException("The NDI Configurator PC Agent is no longer discoverable on the selected subnet.");
+            RequireRemoteCapabilities(agent);
+            if (string.Equals(agent.Address, network.Address, StringComparison.Ordinal))
+                throw new InvalidOperationException("Use server PC onboarding for this local endpoint. Its network address is retained.");
+            if (!Contains(network, agent.Address))
+                throw new UnauthorizedAccessException("The NDI Configurator PC Agent is outside the selected production subnet.");
 
-        var desired = ValidateNetwork(request.Network, agent, network);
-        if (Status(endpointId, state) is { Status: "staged" or "awaiting-local-approval" or "awaiting-registration" })
-            throw new InvalidOperationException("An onboarding attempt is already active for this PC. Wait for completion or expiry before retrying.");
-        if (desired.Mode == "static" && desired.Address is { } target
-            && (KnownInfrastructure(state, agent, desired).Contains(target)
-                || state.Devices.Any(d => d.IpAddress == target)
-                || (state.WindowsPcs ?? []).Any(pc => pc.EndpointId != endpointId && pc.Address == target)
-                || agents.Snapshot().Any(pc => pc.EndpointId != endpointId && pc.Address == target)
-                || (state.PcOnboardingReceipts ?? []).Any(receipt => receipt.EndpointId != endpointId
-                    && receipt.Status is "applying" or "registered" or "recovery-required"
-                    && receipt.Network.Address == target)
-                || _pending.Values.Any(pc => pc.EndpointId != endpointId && pc.Network.Address == target && IsActive(pc))))
-            throw new InvalidOperationException("The requested static address is occupied or reserved by job infrastructure or another device/PC.");
-        var now = Now;
-        var pending = new PendingConfiguration(
-            endpointId,
-            agent.Address,
-            requestedBy,
-            job.JobName,
-            job.NdiDiscoveryServerIp,
-            desired,
-            now,
-            now.Add(ConfigurationLifetime),
-            "staged",
-            "Configuration staged; waiting for local approval.",
-            null,
-            null,
-            Guid.NewGuid().ToString("D"), state.JobId!, state.JobRevision!);
-        _pending[endpointId] = pending;
-        _results.TryRemove(endpointId, out _);
-        logger.LogInformation(
-            "Remote Windows onboarding staged for endpoint {EndpointId} by {RequestedBy}; adapter {AdapterId}; before DHCP {BeforeDhcp}, address {BeforeAddress}/{BeforePrefix}, gateways {BeforeGateways}, DNS {BeforeDns}; after mode {Mode}, address {AfterAddress}/{AfterPrefix}, gateway {AfterGateway}, DNS {AfterDns}; expires {ExpiresUtc}",
-            endpointId,
-            requestedBy,
-            agent.AdapterId,
-            agent.NetworkConfiguration?.DhcpEnabled,
-            agent.Address,
-            agent.PrefixLength,
-            Join(agent.NetworkConfiguration?.DefaultGateways),
-            Join(agent.NetworkConfiguration?.DnsServers),
-            desired.Mode,
-            desired.Address,
-            desired.PrefixLength,
-            desired.DefaultGateway,
-            desired.DnsServers is null ? "retain" : Join(desired.DnsServers),
-            pending.ExpiresUtc);
-        return ToState(pending);
+            var desired = ValidateNetwork(request.Network, agent, network);
+            if (Status(endpointId, state) is { Status: "staged" or "awaiting-local-approval" or "awaiting-registration" })
+                throw new InvalidOperationException("An onboarding attempt is already active for this PC. Wait for completion or expiry before retrying.");
+            if (desired.Mode == "static" && desired.Address is { } target
+                && (KnownInfrastructure(state, agent, desired).Contains(target)
+                    || state.Devices.Any(d => d.IpAddress == target)
+                    || (state.WindowsPcs ?? []).Any(pc => pc.EndpointId != endpointId && pc.Address == target)
+                    || agents.Snapshot().Any(pc => pc.EndpointId != endpointId && pc.Address == target)
+                    || (state.PcOnboardingReceipts ?? []).Any(receipt => receipt.EndpointId != endpointId
+                        && receipt.Status is "applying" or "registered" or "recovery-required"
+                        && receipt.Network.Address == target)
+                    || _pending.Values.Any(pc => pc.EndpointId != endpointId && pc.Network.Address == target && IsActive(pc))))
+                throw new InvalidOperationException("The requested static address is occupied or reserved by job infrastructure or another device/PC.");
+            var now = Now;
+            var pending = new PendingConfiguration(
+                endpointId,
+                agent.Address,
+                requestedBy,
+                job.JobName,
+                job.NdiDiscoveryServerIp,
+                desired,
+                now,
+                now.Add(ConfigurationLifetime),
+                "staged",
+                "Configuration staged; waiting for local approval.",
+                null,
+                null,
+                Guid.NewGuid().ToString("D"), state.JobId!, state.JobRevision!);
+            diagnostics?.Register(new(endpointId, pending.AttemptId, agent.Hostname, state.JobId, state.JobRevision,
+                job.JobName, agent.Address, desired.Mode == "static" ? desired.Address : null, agent.AdapterId,
+                false, now, now, []));
+            _pending[endpointId] = pending;
+            _results.TryRemove(endpointId, out _);
+            logger.LogInformation(
+                "Remote Windows onboarding staged for endpoint {EndpointId} by {RequestedBy}; adapter {AdapterId}; before DHCP {BeforeDhcp}, address {BeforeAddress}/{BeforePrefix}, gateways {BeforeGateways}, DNS {BeforeDns}; after mode {Mode}, address {AfterAddress}/{AfterPrefix}, gateway {AfterGateway}, DNS {AfterDns}; expires {ExpiresUtc}",
+                endpointId,
+                requestedBy,
+                agent.AdapterId,
+                agent.NetworkConfiguration?.DhcpEnabled,
+                agent.Address,
+                agent.PrefixLength,
+                Join(agent.NetworkConfiguration?.DefaultGateways),
+                Join(agent.NetworkConfiguration?.DnsServers),
+                desired.Mode,
+                desired.Address,
+                desired.PrefixLength,
+                desired.DefaultGateway,
+                desired.DnsServers is null ? "retain" : Join(desired.DnsServers),
+                pending.ExpiresUtc);
+            return ToState(pending);
         }
         finally { _stageGate.Release(); }
     }
@@ -130,8 +134,13 @@ public sealed class WindowsPcRemoteOnboardingService(
             pending = UpdatePending(endpointId, attemptId, current =>
             {
                 var firstFetch = current.ConfigurationFetchedUtc ?? Now;
-                return current with { ConfigurationFetchedUtc = firstFetch, Status = "awaiting-registration",
-                    RegistrationDeadlineUtc = firstFetch.Add(RegistrationTimeout), ExpiresUtc = firstFetch.Add(RegistrationTimeout) };
+                return current with
+                {
+                    ConfigurationFetchedUtc = firstFetch,
+                    Status = "awaiting-registration",
+                    RegistrationDeadlineUtc = firstFetch.Add(RegistrationTimeout),
+                    ExpiresUtc = firstFetch.Add(RegistrationTimeout)
+                };
             }) ?? throw new InvalidOperationException("The onboarding attempt changed during the fetch. Request fresh local approval.");
             await PersistFetchedConfigurationAsync(pending);
             logger.LogInformation(
@@ -322,7 +331,8 @@ public sealed class WindowsPcRemoteOnboardingService(
             if (result == "completed" && receipt.Status != "completed")
                 pcs = (pcs ?? []).Where(pc => pc.EndpointId != request.EndpointId)
                     .Append(receipt.Candidate!).OrderBy(pc => pc.Hostname, StringComparer.OrdinalIgnoreCase).ToArray();
-            return current with {
+            return current with
+            {
                 WindowsPcs = pcs,
                 PcOnboardingReceipts = current.PcOnboardingReceipts!.Select(item => item.AttemptId == request.AttemptId
                     ? item with { Status = result } : item).ToArray()

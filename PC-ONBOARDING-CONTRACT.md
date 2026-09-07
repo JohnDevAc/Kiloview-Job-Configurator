@@ -82,6 +82,11 @@ and stores a `WindowsPcs` entry with `isServerPc:true`. This is part of the trus
 LAN management UI. The companion's network API gains no no-consent operation.
 Remote registration cannot replace the server's local identity.
 
+Internal failure diagnostics are documented in [ONBOARDING-DIAGNOSTICS.md](ONBOARDING-DIAGNOSTICS.md).
+The schema-1 local response can optionally carry `failureReport`; older responses remain valid.
+Remote failure reports use a separate bounded endpoint and persistent attempt scope, never configuration permission.
+The server retains reports for seven days, and the Agent retries a bounded durable queue. No diagnostic log UI is added.
+
 All Windows PCs use their real agent GUID, discovery on UDP 8093, monitoring on
 TCP 8094, and membership-authorized multicast requests. Agent status includes
 `ndiConfiguration` with preferred-interface state, send/receive groups and

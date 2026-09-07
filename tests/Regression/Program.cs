@@ -37,6 +37,7 @@ await Run("Selected-interface access, complete subnets and stable job revisions"
 await Run("Remote attempts reserve addresses and reject stale approvals/jobs", RemoteAttemptBoundaries);
 await Run("Remote-only job execution makes no endpoint changes", RemoteOnlyJobExecution);
 await Run("Server identity publication recovers and migrates credential snapshots", IdentityMigration);
+await Run("Onboarding diagnostics enforce identity, bounded storage, redaction and retention", () => { DiagnosticsRegression.Run(environment); return Task.CompletedTask; });
 Console.WriteLine($"PASS: {passed} regression checks. Isolated data: {root}");
 
 async Task Run(string name, Func<Task> test)

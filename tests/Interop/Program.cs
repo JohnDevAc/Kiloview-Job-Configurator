@@ -14,6 +14,22 @@ var root = Path.Combine(Path.GetTempPath(), "ndi-outcome-contract-" + Guid.NewGu
 Directory.CreateDirectory(root);
 Console.WriteLine("Isolated interop data: " + root);
 
+await Run("Client failure diagnostics survive lost acknowledgements and server restart before configuration fetch", async f => {
+    var staged = await f.StageAsync();
+    var trace = new OnboardingTrace();
+    trace.Step("fetch-configuration", "Requesting approved configuration.");
+    var report = trace.Failure(f.Endpoint, staged.AttemptId!, "fixture-agent", new IOException("Fixture HTTP failure"));
+    OnboardingDiagnostics.Queue(f.AgentStatePath, report, f.Network.Address, "fixture");
+    var queued = OnboardingDiagnostics.Next(f.AgentStatePath, f.Endpoint, "fixture", DateTimeOffset.UtcNow)!;
+    f.DropDiagnostics = 1;
+    Check(!await OnboardingDiagnostics.TrySendAsync(f.AgentStatePath, queued, f.Client, CancellationToken.None), "A lost diagnostic acknowledgement was accepted.");
+    Check(f.Diagnostics.List(f.Endpoint).Count == 1, "The server did not persist the early client failure.");
+    f.RestartServer();
+    Check(await OnboardingDiagnostics.TrySendAsync(f.AgentStatePath, queued, f.Client, CancellationToken.None), "Queued client diagnostics did not reconcile after server restart.");
+    Check(f.Diagnostics.List(f.Endpoint).Count == 1 && f.Diagnostics.ReportText(report.ReportId)!.Contains("Fixture HTTP failure"), "Retry duplicated or lost diagnostic evidence.");
+    Check((await f.Store.ReadAsync()).WindowsPcs?.Count is null or 0, "Diagnostic delivery changed onboarding membership.");
+});
+
 await Run("Infrastructure targets are reserved without probes", async f => {
     foreach (var ip in new[] { f.Pool[2], f.Pool[3], f.Pool[4], f.Network.Address })
         await Throws<Exception>(async () => await f.Service.StageAsync(f.Endpoint,
@@ -178,7 +194,7 @@ await Run("A denial between fetch and persistence cannot create restart authoriz
     Check(!(await f.Store.ReadAsync()).PcOnboardingReceipts!.Any(), "Denied fetch persisted a permission that survived restart.");
 });
 
-Console.WriteLine("PASS: 11 cross-repository onboarding outcome scenarios.");
+Console.WriteLine("PASS: 12 cross-repository onboarding outcome and diagnostic scenarios.");
 
 async Task Run(string name, Func<Fixture, Task> test)
 {
@@ -196,6 +212,8 @@ static async Task Throws<T>(Func<Task> action) where T : Exception
 
 sealed class Fixture : IDisposable
 {
+    public OnboardingDiagnosticsStore Diagnostics { get; private set; } = null!;
+    public int DropDiagnostics { get; set; }
     public string Directory { get; }
     public string AgentStatePath => Path.Combine(Directory, "pc", "agent-state.json");
     public string Endpoint { get; } = Guid.NewGuid().ToString();
@@ -223,7 +241,8 @@ sealed class Fixture : IDisposable
         Pool = NetworkAddressing.ExpandCidr(NetworkAddressing.GetScanCidr(Network)).Select(ip => ip.ToString()).Where(ip => ip != Network.Address).ToArray();
         Store = new(_environment, NullLogger<AppStateStore>.Instance);
         Agents = NewAgents();
-        Service = new(Store, Agents, NullLogger<WindowsPcRemoteOnboardingService>.Instance, Clock);
+        Diagnostics = new(_environment, NullLogger<OnboardingDiagnosticsStore>.Instance, Clock);
+        Service = new(Store, Agents, NullLogger<WindowsPcRemoteOnboardingService>.Instance, Clock, Diagnostics);
         Store.UpdateAsync(_ => new AppState([], new("Interop", Pool[0], Pool[^1], Pool[2], Clock.GetUtcNow()) { KiloLinkServerIp = Pool[3] },
             SelectedNetworkAdapterId: Network.Id, SelectedNetworkAddress: Network.Address)).GetAwaiter().GetResult();
         Client = new(new FixtureHandler(SendAsync));
@@ -232,7 +251,8 @@ sealed class Fixture : IDisposable
     {
         Store = new(_environment, NullLogger<AppStateStore>.Instance);
         Agents = NewAgents();
-        Service = new(Store, Agents, NullLogger<WindowsPcRemoteOnboardingService>.Instance, Clock);
+        Diagnostics = new(_environment, NullLogger<OnboardingDiagnosticsStore>.Instance, Clock);
+        Service = new(Store, Agents, NullLogger<WindowsPcRemoteOnboardingService>.Instance, Clock, Diagnostics);
     }
     private WindowsPcAgentService NewAgents()
     {
@@ -265,6 +285,13 @@ sealed class Fixture : IDisposable
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
         if (request.RequestUri!.Host == OfflineServerAddress) throw new HttpRequestException("Earlier server is offline");
+        if (request.RequestUri.AbsolutePath.EndsWith("/diagnostics"))
+        {
+            var report = await request.Content!.ReadFromJsonAsync<OnboardingFailureReport>(Json, ct);
+            var receipt = Diagnostics.SaveRemote(report!, Pool[0], (_, _) => false);
+            if (DropDiagnostics-- > 0) throw new HttpRequestException("Lost diagnostic acknowledgement");
+            return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { receipt.ReportId, receipt.ExpiresUtc }) };
+        }
         if (request.RequestUri!.AbsolutePath.EndsWith("/register"))
         {
             RegistrationRequests++;
