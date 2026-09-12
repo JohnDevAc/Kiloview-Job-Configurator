@@ -408,6 +408,7 @@ public sealed class MulticastService(
 
     public async Task<MulticastRevertResult> RevertToUnicastAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         var state = await store.ReadAsync();
         var current = state.Multicast
             ?? throw new InvalidOperationException("Multicast is not currently configured for this job.");
@@ -423,75 +424,87 @@ public sealed class MulticastService(
         if (devices.Count == 0 && remoteAssignments.Length == 0)
             throw new InvalidOperationException("There are no multicast endpoints to revert.");
 
-        await store.UpdateAsync(app => app with
+        await store.UpdateAsync(app =>
         {
-            Multicast = app.Multicast is null ? null : app.Multicast with { Status = "reverting" }
+            ct.ThrowIfCancellationRequested();
+            if (app.Multicast?.PlanId != current.PlanId)
+                throw new InvalidOperationException("The multicast configuration changed. Retry reversion for the current job.");
+            return app with { Multicast = app.Multicast with { Status = "reverting" } };
         });
 
         var results = new ConcurrentDictionary<string, string?>(StringComparer.Ordinal);
-        await Parallel.ForEachAsync(
-            remoteAssignments,
-            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
-            async (assignment, token) =>
-            {
-                try
-                {
-                    var agent = pcAgents.Snapshot().FirstOrDefault(candidate =>
-                        string.Equals(candidate.EndpointId, assignment.EndpointId, StringComparison.OrdinalIgnoreCase));
-                    if (agent is null || !agent.Capabilities.Contains("multicast-config-v1", StringComparer.Ordinal))
-                        throw new NotSupportedException(
-                            "This NDI Configurator PC Agent cannot revert NDI Access Manager remotely. Disable multicast manually or update the agent.");
-                    await pcAgents.ConfigureMulticastAsync(
-                        assignment.EndpointId,
-                        "unicast",
-                        current.JobName,
-                        null,
-                        null,
-                        null,
-                        token);
-                    results[assignment.EndpointId] = null;
-                }
-                catch (Exception ex) when (ex is HttpRequestException
-                    or TaskCanceledException
-                    or InvalidOperationException
-                    or IOException
-                    or KeyNotFoundException
-                    or NotSupportedException
-                    or System.Text.Json.JsonException
-                    or UnauthorizedAccessException)
-                {
-                    logger.LogWarning(ex, "Reverting remote Windows multicast failed for {EndpointId}", assignment.EndpointId);
-                    results[assignment.EndpointId] = ex.Message;
-                }
-            });
-        await Parallel.ForEachAsync(
-            devices.Values,
-            new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
-            async (device, token) =>
-            {
-                try
-                {
-                    await factory.Create(device).DisableMulticastAsync(token);
-                    results[device.Id] = null;
-                }
-                catch (Exception ex) when (ex is HttpRequestException
-                    or TaskCanceledException
-                    or DeviceApiException
-                    or InvalidOperationException
-                    or IOException
-                    or UnauthorizedAccessException)
-                {
-                    logger.LogWarning(ex, "Reverting multicast failed for {EndpointId}", device.Id);
-                    results[device.Id] = ex.Message;
-                }
-            });
-
-        var serverPc = windowsPcs.Values.FirstOrDefault(pc => pc.IsServerPc);
-        if (serverPc is not null && results.TryGetValue(serverPc.EndpointId, out var serverError) && serverError is null)
+        try
         {
-            try { await thumbnails.ReloadNdiConfigurationAsync(ct); }
-            catch (Exception ex) when (ex is InvalidOperationException or IOException or TaskCanceledException)
-            { results[serverPc.EndpointId] = "Unicast was applied, but preview reload failed: " + ex.Message; }
+            await Parallel.ForEachAsync(
+                remoteAssignments,
+                new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+                async (assignment, token) =>
+                {
+                    try
+                    {
+                        var agent = pcAgents.Snapshot().FirstOrDefault(candidate =>
+                            string.Equals(candidate.EndpointId, assignment.EndpointId, StringComparison.OrdinalIgnoreCase));
+                        if (agent is null || !agent.Capabilities.Contains("multicast-config-v1", StringComparer.Ordinal))
+                            throw new NotSupportedException(
+                                "This NDI Configurator PC Agent cannot revert NDI Access Manager remotely. Disable multicast manually or update the agent.");
+                        await pcAgents.ConfigureMulticastAsync(
+                            assignment.EndpointId,
+                            "unicast",
+                            current.JobName,
+                            null,
+                            null,
+                            null,
+                            token);
+                        results[assignment.EndpointId] = null;
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException
+                        or TaskCanceledException
+                        or InvalidOperationException
+                        or IOException
+                        or KeyNotFoundException
+                        or NotSupportedException
+                        or System.Text.Json.JsonException
+                        or UnauthorizedAccessException)
+                    {
+                        logger.LogWarning(ex, "Reverting remote Windows multicast failed for {EndpointId}", assignment.EndpointId);
+                        results[assignment.EndpointId] = ex.Message;
+                    }
+                });
+            await Parallel.ForEachAsync(
+                devices.Values,
+                new ParallelOptions { MaxDegreeOfParallelism = 6, CancellationToken = ct },
+                async (device, token) =>
+                {
+                    try
+                    {
+                        await factory.Create(device).DisableMulticastAsync(token);
+                        results[device.Id] = null;
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException
+                        or TaskCanceledException
+                        or DeviceApiException
+                        or InvalidOperationException
+                        or IOException
+                        or UnauthorizedAccessException)
+                    {
+                        logger.LogWarning(ex, "Reverting multicast failed for {EndpointId}", device.Id);
+                        results[device.Id] = ex.Message;
+                    }
+                });
+
+            var serverPc = windowsPcs.Values.FirstOrDefault(pc => pc.IsServerPc);
+            if (serverPc is not null && results.TryGetValue(serverPc.EndpointId, out var serverError) && serverError is null)
+            {
+                try { await thumbnails.ReloadNdiConfigurationAsync(ct); }
+                catch (Exception ex) when (ex is InvalidOperationException or IOException or TaskCanceledException)
+                { results[serverPc.EndpointId] = "Unicast was applied, but preview reload failed: " + ex.Message; }
+            }
+
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            foreach (var endpointId in devices.Keys.Concat(remoteAssignments.Select(a => a.EndpointId)))
+                results.TryAdd(endpointId, "Unicast reversion was interrupted before completion. Retry reversion.");
         }
 
         var failedResults = results
@@ -501,7 +514,7 @@ public sealed class MulticastService(
         var reverted = results.Count - failed;
         if (failed == 0)
         {
-            await store.UpdateAsync(app => app with
+            await store.UpdateAsync(app => app.Multicast?.PlanId != current.PlanId ? app : app with
             {
                 Multicast = null,
                 Devices = app.Devices.Select(ClearMulticast).ToArray()
@@ -522,7 +535,7 @@ public sealed class MulticastService(
             Assignments = assignments,
             AppliedUtc = DateTimeOffset.UtcNow
         };
-        await store.UpdateAsync(app => app with
+        await store.UpdateAsync(app => app.Multicast?.PlanId != current.PlanId ? app : app with
         {
             Multicast = partial,
             Devices = app.Devices.Select(device =>

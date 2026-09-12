@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ServerAssemblyPath)' == ''">
+    <ProjectReference Include="..\..\NDI.Job.Configurator.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ServerAssemblyPath)' != ''">
+    <Reference Include="NDIJobConfigurator" HintPath="$(ServerAssemblyPath)" />
+  </ItemGroup>
+</Project>

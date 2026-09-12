@@ -193,10 +193,12 @@ public sealed class DeviceMonitor(
                             : !monitored.MulticastConfigured
                                 ? "TeleTool reports multicast disabled. Reapply multicast setup."
                                 : $"TeleTool multicast settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}; device reports {monitored.MulticastNetPrefix ?? "unset"}/{monitored.MulticastNetmask ?? "unset"}, TTL {monitored.MulticastTtl?.ToString() ?? "unset"}.";
+                    if (multicast!.Status == "revert-partial" && matches) error = assignment.Error;
                     monitored = monitored with { MulticastLastError = error };
                     var refreshed = assignment with
                     {
-                        Status = monitored.Health != DeviceHealth.Online ? "error" : matches ? "applied" : "drifted",
+                        Status = monitored.Health != DeviceHealth.Online ? "error" : matches
+                            ? multicast.Status == "revert-partial" ? assignment.Status : "applied" : "drifted",
                         InUse = matches && monitored.MulticastInUse,
                         Error = error
                     };
@@ -249,9 +251,10 @@ public sealed class DeviceMonitor(
                             : reported is null
                                 ? "NDI Configurator PC Agent did not report NDI Access Manager multicast status. Reapply multicast setup."
                                 : $"Remote NDI Access Manager settings changed. Expected {assignment.NetPrefix}/{assignment.Netmask}, TTL {assignment.Ttl}.";
+                    if (multicast!.Status == "revert-partial" && matches) error = assignment.Error;
                     var refreshed = assignment with
                     {
-                        Status = matches ? "applied" : "drifted",
+                        Status = matches ? multicast.Status == "revert-partial" ? assignment.Status : "applied" : "drifted",
                         InUse = matches && reported!.InUse,
                         Error = error
                     };
@@ -273,7 +276,8 @@ public sealed class DeviceMonitor(
             multicast = multicast with
             {
                 Assignments = assignments,
-                Status = assignments.All(assignment => assignment.Status is "applied" or "reserved") ? "completed" : "partial"
+                Status = multicast.Status == "revert-partial" ? "revert-partial"
+                    : assignments.All(assignment => assignment.Status is "applied" or "reserved") ? "completed" : "partial"
             };
         }
         return current with
@@ -387,7 +391,7 @@ public sealed class DeviceMonitor(
         && (latest.AgentCapabilities ?? []).SequenceEqual(original.AgentCapabilities ?? [], StringComparer.Ordinal);
 
     private static bool CanMonitorMulticast(MulticastConfiguration? configuration) =>
-        configuration?.Status is "completed" or "partial";
+        configuration?.Status is "completed" or "partial" or "revert-partial";
 
     private static bool CanMonitorAssignment(MulticastAssignment assignment) =>
         assignment.Status is not ("unicast" or "reserved");
