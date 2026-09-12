@@ -22,9 +22,12 @@ await Run("Fresh polls retain license acceptance", FreshPoll);
 await Run("Clean onboarding validates readiness before deleting inventory", CleanPreflight);
 await Run("Incremental plans allocate unique names for both families", UniqueNames);
 await Run("Partial unicast reversions survive monitor passes", PartialRevert);
+await Run("Cancelled unicast reversion persists retryable outcomes", CancelledRevert);
+await Run("Delayed reversion cannot overwrite a newer multicast plan", SupersededRevert);
 await Run("Normal multicast drift is still detected", MulticastDrift);
 await Run("State cache is immutable and reloads external edits", StateCache);
 await Run("State recovery still works with caching", StateRecovery);
+await Run("Schema-invalid collections recover from a valid backup", StateShapeRecovery);
 await Run("Preview cache invalidates after state changes", PreviewCache);
 await Run("Preview failures back off without hiding recovery", PreviewBackoff);
 await Run("Gateway sessions work with localhost and LAN listeners", Gateway);
@@ -360,6 +363,102 @@ async Task IntegrationBoundaries()
     Check(before.JobId != (before with { LastJob = before.LastJob! with { StartedUtc = now.AddSeconds(1) } }).JobId, "Same-name replacement reused job identity.");
 }
 
+async Task CancelledRevert()
+{
+    var devices = Enumerable.Range(0, 8).Select(i => Device("cancel-revert-" + i, "192.0.2." + (20 + i), DeviceFamily.N60)
+        with { Role = DeviceRole.Decoder, IsOnboarded = true, MulticastConfigured = true }).ToArray();
+    await store.UpdateAsync(_ => new AppState(devices, Job()));
+    using var cancellation = new CancellationTokenSource();
+    var clients = new RevertFixtureClients(cancellation);
+    var service = new MulticastService(store, new DeviceClientFactory(store, null!, clients), null!, null!, null!, NullLogger<MulticastService>.Instance);
+    var plan = await service.BuildPlanAsync(new(), CancellationToken.None);
+    await store.UpdateAsync(state => state with { Multicast = plan with { Status = "completed" } });
+    await Throws<OperationCanceledException>(() => service.RevertToUnicastAsync(new CancellationToken(true)));
+    Check((await store.ReadAsync()).Multicast!.Status == "completed" && clients.Requests == 0,
+        "Cancellation before work published a running state or called a device.");
+    var result = await service.RevertToUnicastAsync(cancellation.Token);
+    Check(result.Status == "partial" && result.Failed == devices.Length && result.Configuration!.Assignments.All(a => a.Status == "error"),
+        "Cancellation lost failed or unattempted endpoint outcomes.");
+    var restarted = await new AppStateStore(environment, NullLogger<AppStateStore>.Instance).ReadAsync();
+    Check(restarted.Multicast!.Status == "revert-partial" && restarted.Devices.All(d => d.MulticastConfigured),
+        "Cancelled reversion persisted running or cleared unverified configuration.");
+    var remaining = Device("remaining", "192.0.2.50", DeviceFamily.SimulatedTeleTool) with { IsOnboarded = true, Health = DeviceHealth.Online };
+    await store.UpdateAsync(_ => new AppState([remaining], Multicast: Multicast([Assignment(remaining) with { Status = "error", Error = "Retry reversion" }], "revert-partial")));
+    var reopened = await new AppStateStore(environment, NullLogger<AppStateStore>.Instance).ReadAsync();
+    remaining = reopened.Devices.Single();
+    var monitored = Apply(reopened,
+        [(remaining, remaining with { Health = DeviceHealth.Offline })], []);
+    Check(monitored.Multicast!.Status == "revert-partial" && monitored.Multicast.Assignments[0].Error != "Retry reversion",
+        "Partial reversion stopped live monitoring or lost its retryable state.");
+    await store.UpdateAsync(_ => restarted);
+    var retry = await service.RevertToUnicastAsync(CancellationToken.None);
+    Check(retry.Failed == 0 && retry.Reverted == devices.Length && (await store.ReadAsync()).Multicast is null,
+        "Interrupted reversion could not be retried successfully.");
+}
+
+async Task SupersededRevert()
+{
+    foreach (var cancel in new[] { false, true })
+    {
+        var device = Device("delayed-revert", "192.0.2.20", DeviceFamily.N60) with
+            { Role = DeviceRole.Decoder, IsOnboarded = true, MulticastConfigured = true };
+        await store.UpdateAsync(_ => new AppState([device], Job()));
+        var planning = new MulticastService(store, null!, null!, null!, null!, NullLogger<MulticastService>.Instance);
+        var old = await planning.BuildPlanAsync(new(), CancellationToken.None);
+        var replacement = old with { PlanId = Guid.NewGuid(), Status = "completed", Ttl = 19 };
+        await store.UpdateAsync(state => state with { Multicast = old with { Status = "completed" } });
+        using var cancellation = new CancellationTokenSource();
+        var clients = new RevertFixtureClients(cancel ? cancellation : null, async () =>
+        {
+            await store.UpdateAsync(state => state with { Multicast = replacement, Devices = [device with { MulticastTtl = 19 }] });
+        });
+        var service = new MulticastService(store, new DeviceClientFactory(store, null!, clients), null!, null!, null!, NullLogger<MulticastService>.Instance);
+        await service.RevertToUnicastAsync(cancellation.Token);
+        var latest = await store.ReadAsync();
+        Check(latest.Multicast?.PlanId == replacement.PlanId && latest.Devices.Single().MulticastTtl == 19,
+            "A delayed completion/partial result overwrote the newer multicast plan or device state.");
+    }
+}
+
+async Task StateShapeRecovery()
+{
+    var file = Path.Combine(root, "state.json");
+    foreach (var invalid in new[]
+    {
+        "{}", "{\"devices\":null}", "{\"devices\":[null]}",
+        "{\"devices\":[],\"windowsPcs\":[null]}",
+        "{\"devices\":[],\"windowsPcs\":[{\"agentCapabilities\":[null]}]}",
+        "{\"devices\":[],\"firmwareJob\":{\"packages\":null}}",
+        "{\"devices\":[],\"firmwareJob\":{\"packages\":[null]}}",
+        "{\"devices\":[],\"multicast\":{\"assignments\":null}}",
+        "{\"devices\":[],\"multicast\":{\"assignments\":[null]}}",
+        "{\"devices\":[],\"pcOnboardingReceipts\":[null]}",
+        "{\"devices\":[],\"pcOnboardingReceipts\":[{\"network\":null}]}",
+        "{\"devices\":[],\"pcOnboardingReceipts\":[{\"network\":{\"dnsServers\":[null]}}]}"
+    })
+    {
+        await store.UpdateAsync(_ => new AppState([Device("recoverable-schema", "192.0.2.20")]));
+        var backup = File.ReadAllText(file + ".bak");
+        var before = Directory.GetFiles(root, "state.corrupt-*.json").Length;
+        File.WriteAllText(file, invalid);
+        var recovered = await new AppStateStore(environment, NullLogger<AppStateStore>.Instance).ReadAsync();
+        Check(recovered.Devices.Single().Id == "recoverable-schema", "Schema-invalid primary bypassed backup recovery.");
+        Check(Directory.GetFiles(root, "state.corrupt-*.json").Length == before + 1, "Invalid state was not preserved.");
+        Check(File.ReadAllText(file + ".bak") == backup, "Recovery changed the valid backup.");
+        await store.ReloadAsync();
+    }
+    var good = File.ReadAllText(file);
+    File.WriteAllText(file, "{\"devices\":null}");
+    File.WriteAllText(file + ".bak", "{\"devices\":[null]}");
+    await Throws<InvalidDataException>(() => store.ReloadAsync());
+    await Throws<InvalidDataException>(() => store.ReloadAsync());
+    await Throws<InvalidDataException>(() => store.ReloadAsync());
+    Check(!File.Exists(file), "Invalid primary was silently accepted when both copies failed validation.");
+    File.WriteAllText(file, good);
+    File.WriteAllText(file + ".bak", good);
+    await store.ReloadAsync();
+}
+
 async Task RemoteAttemptBoundaries()
 {
     var network = NetworkAddressing.GetLocalInterfaces().First(n => n.PrefixLength is >= 20 and <= 30);
@@ -539,5 +638,31 @@ sealed class FailingCompanion : ILocalPcOnboarding
     {
         Attempts++;
         throw new InvalidOperationException("Synthetic companion preflight failure");
+    }
+}
+
+sealed class RevertFixtureClients(CancellationTokenSource? cancellation, Func<Task>? beforeFirst = null) : IHttpClientFactory
+{
+    private readonly CancellationTokenSource? _cancellation = cancellation;
+    private readonly Func<Task>? _beforeFirst = beforeFirst;
+    public int Requests;
+    public HttpClient CreateClient(string name) => new(new Handler(this));
+    private sealed class Handler(RevertFixtureClients fixture) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref fixture.Requests) == 1)
+            {
+                if (fixture._beforeFirst is not null) await fixture._beforeFirst();
+                if (fixture._cancellation is not null)
+                {
+                    fixture._cancellation.Cancel();
+                    ct.ThrowIfCancellationRequested();
+                }
+            }
+            var body = request.RequestUri!.AbsolutePath == "/api/codec/mode/get" ? "decode"
+                : """{"result":"ok","data":{"token":"fixture","alias":"Fixture","ndi_connection":"unicast"}}""";
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(body) };
+        }
     }
 }

@@ -46,6 +46,7 @@ public sealed class AppStateStore
             var state = await ReadStateUnsafeAsync();
             var updated = update(state);
             if (ReferenceEquals(updated, state)) return state;
+            ValidateShape(updated);
             updated = Freeze(updated);
 
             await PersistStateUnsafeAsync(updated);
@@ -150,6 +151,8 @@ public sealed class AppStateStore
                 throw new InvalidDataException(
                     $"The application state backup was corrupt and has been preserved at '{quarantinedBackup}'.");
             }
+            if (Directory.EnumerateFiles(Path.GetDirectoryName(_file)!, "state.corrupt-*.json").Any())
+                throw new InvalidDataException("Application state requires repair. Restore a valid state file or backup; quarantined state has been preserved.");
             return AppState.Empty;
         }
 
@@ -176,7 +179,9 @@ public sealed class AppStateStore
         try
         {
             await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            return await JsonSerializer.DeserializeAsync<AppState>(stream, _json);
+            var state = await JsonSerializer.DeserializeAsync<AppState>(stream, _json);
+            ValidateShape(state);
+            return state;
         }
         catch (JsonException ex)
         {
@@ -185,10 +190,44 @@ public sealed class AppStateStore
         }
     }
 
+    private static void ValidateShape(AppState? state)
+    {
+        static void Collection<T>(IReadOnlyList<T>? values, string name) where T : class
+        {
+            if (values is null || values.Any(value => value is null))
+                throw new JsonException($"Application state requires a non-null {name} collection with non-null entries.");
+        }
+        static void Endpoint(WindowsPcEndpoint endpoint)
+        {
+            if (endpoint.AgentCapabilities is not null) Collection(endpoint.AgentCapabilities, "agent capabilities");
+        }
+        if (state is null) throw new JsonException("Application state must be an object.");
+        Collection(state.Devices, "devices");
+        if (state.Devices.Any(device => device.Credentials is null))
+            throw new JsonException("A device's credentials object cannot be null.");
+        if (state.FirmwareJob is not null) Collection(state.FirmwareJob.Packages, "firmware packages");
+        if (state.Multicast is not null) Collection(state.Multicast.Assignments, "multicast assignments");
+        if (state.WindowsPcs is not null)
+        {
+            Collection(state.WindowsPcs, "Windows PCs");
+            foreach (var endpoint in state.WindowsPcs) Endpoint(endpoint);
+        }
+        if (state.PcOnboardingReceipts is not null)
+        {
+            Collection(state.PcOnboardingReceipts, "onboarding receipts");
+            foreach (var receipt in state.PcOnboardingReceipts)
+            {
+                if (receipt.Network is null) throw new JsonException("An onboarding receipt requires its network configuration.");
+                if (receipt.Network.DnsServers is not null) Collection(receipt.Network.DnsServers, "DNS servers");
+                if (receipt.Candidate is not null) Endpoint(receipt.Candidate);
+            }
+        }
+    }
+
     private string Quarantine(string path)
     {
         var directory = Path.GetDirectoryName(path)!;
-        var quarantine = Path.Combine(directory, $"state.corrupt-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}.json");
+        var quarantine = Path.Combine(directory, $"state.corrupt-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}.json");
         File.Move(path, quarantine);
         return quarantine;
     }

@@ -16,9 +16,10 @@ public sealed class SystemTrayService(
     private SynchronizationContext? _traySynchronizationContext;
     private Exception? _startupException;
     private int _restartRequested;
+    private int _maintenanceStopRequested;
     private int _stopping;
 
-    public bool RestartRequested => Volatile.Read(ref _restartRequested) == 1;
+    public bool RestartRequested => Volatile.Read(ref _restartRequested) == 1 && Volatile.Read(ref _maintenanceStopRequested) == 0;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -99,6 +100,7 @@ public sealed class SystemTrayService(
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
             _traySynchronizationContext = SynchronizationContext.Current;
 
+            using var shutdownWindow = new WindowsShutdownWindow(RequestMaintenanceStop);
             using var icon = LoadApplicationIcon();
             using var menu = new ContextMenuStrip();
             var openItem = new ToolStripMenuItem("Open Web UI")
@@ -171,6 +173,14 @@ public sealed class SystemTrayService(
     {
         if (restart) Interlocked.Exchange(ref _restartRequested, 1);
         applicationLifetime.StopApplication();
+    }
+
+    private void RequestMaintenanceStop()
+    {
+        // Windows owns the maintenance interval. Never replace this process from
+        // a pending tray Restart while an installer is replacing native libraries.
+        Interlocked.Exchange(ref _maintenanceStopRequested, 1);
+        RequestStop(restart: false);
     }
 
     public void Dispose()
