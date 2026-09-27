@@ -61,12 +61,15 @@ public sealed class FirmwareService(AppStateStore store, KiloLinkCredentialStore
                     "n60Firmware" => "N60",
                     _ => throw new ArgumentException($"Unexpected firmware upload field '{fieldName}'.")
                 };
-                if (packages.Any(package => string.Equals(package.Model, model, StringComparison.OrdinalIgnoreCase)))
-                    throw new ArgumentException($"Only one {model} firmware package can be staged at a time.");
                 var fileName = HeaderUtilities.RemoveQuotes(disposition.FileNameStar.HasValue
                     ? disposition.FileNameStar
                     : disposition.FileName).Value;
-                packages.Add(await SaveStreamAsync(model, fileName ?? string.Empty, section.Body, ct));
+                // Browsers submit filename="" for an enabled file input with no selection.
+                // Required models are checked after all actual packages have been read.
+                if (string.IsNullOrEmpty(fileName)) continue;
+                if (packages.Any(package => string.Equals(package.Model, model, StringComparison.OrdinalIgnoreCase)))
+                    throw new ArgumentException($"Only one {model} firmware package can be staged at a time.");
+                packages.Add(await SaveStreamAsync(model, fileName, section.Body, ct));
             }
 
             if (needsN6 && packages.All(package => !string.Equals(package.Model, "N6", StringComparison.OrdinalIgnoreCase)))

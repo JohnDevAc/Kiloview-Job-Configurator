@@ -13,6 +13,32 @@ const { createWindowsCards } = await loadModule('../wwwroot/js/windows-cards.js'
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
 
+test('Firmware uploads include only the models shown for the current fleet', () => {
+  const source = appSource.slice(appSource.indexOf('function renderFirmware('), appSource.indexOf("$('#firmwareForm').addEventListener"));
+  const elements = new Map();
+  const $ = selector => {
+    if (!elements.has(selector)) elements.set(selector, {
+      disabled: false, required: false, dataset: {}, classList: { toggle(name, enabled) { this[name] = enabled; } },
+      querySelector: () => ({})
+    });
+    return elements.get(selector);
+  };
+  const render = new Function('state', '$', 'isTeleTool', source + ';return renderFirmware;')(
+    { firmwarePreOnboarding: true }, $, device => device.family === 'TeleTool');
+  // Reuse the same controls to cover changing the selection on a later render.
+  for (const models of [['N6'], ['N6', 'N60'], ['N60'], ['N6']]) {
+    render({ devices: [...models.map(model => ({ model })), { model: 'TeleTool', family: 'TeleTool' }] });
+    assert.equal($('#firmwareCoverage').dataset.models, models.join(','));
+    for (const model of ['N6', 'N60']) {
+      const included = models.includes(model), name = model.toLowerCase();
+      assert.equal($(`#${name}FirmwareLabel`).classList.hidden, !included);
+      assert.equal($(`input[name="${name}Firmware"]`).required, included);
+      assert.equal($(`input[name="${name}Firmware"]`).disabled, !included,
+        `${model} input must be omitted from FormData when absent from the fleet`);
+    }
+  }
+});
+
 test('Local onboarding failure stays on the card, permits retry and survives a redraw', async () => {
   let fail = true, completions = 0;
   const controller = createLocalOnboarding({ esc: value => String(value).replaceAll('<', '&lt;'), onChange: () => {},
