@@ -1,0 +1,123 @@
+name: Package verified onboarding releases
+
+on:
+  push:
+    branches: [codex/publish-onboarding-0-8-15]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: onboarding-release-0-8-15
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: server-main
+            version: 0.8.15
+            channel: Main
+            branch: main
+            commit: aa9518514c0316248a13548a47ba3dbb60a50278
+            agentVersion: 0.7.5
+            agentCommit: d4e4d644a4064c72ce8f9fb35a1c18d1da36cda1
+          - name: server-dev
+            version: 0.8.15-dev.1
+            channel: Development
+            branch: development
+            commit: ddb524374e134818dc6a24f63ea59f7bdb3a2b5e
+            agentVersion: 0.7.5-dev.1
+            agentCommit: 7fa30fe24e59ca21793d5e4f95af3002d0689e23
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: release-tools
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ matrix.commit }}
+          path: server
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: JohnDevAc/Kiloview-PC-Onboarding
+          ref: ${{ matrix.agentCommit }}
+          path: companion
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Verify published companion and source identities
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $server=(Resolve-Path server).Path
+          $agent=(Resolve-Path companion).Path
+          if((git -C $server rev-parse HEAD).Trim() -ne '${{ matrix.commit }}'){throw 'Wrong server source'}
+          if((git -C $agent rev-parse HEAD).Trim() -ne '${{ matrix.agentCommit }}'){throw 'Wrong companion source'}
+          $serverTag=gh api 'repos/JohnDevAc/Kiloview-Job-Configurator/git/ref/tags/v${{ matrix.version }}' | ConvertFrom-Json
+          $agentTag=gh api 'repos/JohnDevAc/Kiloview-PC-Onboarding/git/ref/tags/v${{ matrix.agentVersion }}' | ConvertFrom-Json
+          $released=gh api 'repos/JohnDevAc/Kiloview-PC-Onboarding/releases/tags/v${{ matrix.agentVersion }}' | ConvertFrom-Json
+          if($serverTag.object.sha -ne '${{ matrix.commit }}' -or $agentTag.object.sha -ne '${{ matrix.agentCommit }}' -or $released.draft -or $released.assets.Count -ne 4){throw 'Published source prerequisite mismatch'}
+          $evidence=Join-Path $env:RUNNER_TEMP 'release-evidence'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          Copy-Item release-tools/.github/release-support/*.ps1 $evidence
+          @(@{name='${{ matrix.name }}';version='${{ matrix.version }}';channel='${{ matrix.channel }}';root=$server;commit='${{ matrix.commit }}'}) | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'server-candidates.json')
+          @(@{name='${{ matrix.name }}'.Replace('server-','agent-');version='${{ matrix.agentVersion }}';root=$agent;commit='${{ matrix.agentCommit }}'}) | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'agent-candidates.json')
+      - name: Validate server and companion
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          node --check server/wwwroot/app.js
+          if($LASTEXITCODE -ne 0){throw 'Frontend syntax failed'}
+          node --test server/tests/frontend.test.mjs
+          if($LASTEXITCODE -ne 0){throw 'Frontend tests failed'}
+          powershell.exe -NoProfile -File server/tests/installer.Tests.ps1
+          if($LASTEXITCODE -ne 0){throw 'Installer tests failed'}
+          dotnet run --project server/tests/Regression/Regression.csproj --configuration Release
+          if($LASTEXITCODE -ne 0){throw 'Server regression failed'}
+          dotnet run --project companion/tests/Kiloview.PcOnboarding.Validation/Kiloview.PcOnboarding.Validation.csproj --configuration Release
+          if($LASTEXITCODE -ne 0){throw 'Companion Setup validation failed'}
+          dotnet run --project companion/tests/Kiloview.PcAgent.Validation/Kiloview.PcAgent.Validation.csproj --configuration Release
+          if($LASTEXITCODE -ne 0){throw 'Agent validation failed'}
+      - name: Build and verify final installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:GITHUB_REF_TYPE='tag'
+          $env:GITHUB_REF_NAME='v${{ matrix.version }}'
+          $env:UseSharedCompilation='false'
+          $evidence=Join-Path $env:RUNNER_TEMP 'release-evidence'
+          powershell.exe -NoProfile -File server/scripts/Publish.ps1 -SetupExe -CompanionRoot (Resolve-Path companion).Path
+          if($LASTEXITCODE -ne 0){throw 'Installer build failed'}
+          powershell.exe -NoProfile -File (Join-Path $evidence 'Verify-Server.ps1') -Name '${{ matrix.name }}'
+          if($LASTEXITCODE -ne 0){throw 'Package verification failed'}
+          powershell.exe -NoProfile -File (Join-Path $evidence 'Smoke-Server.ps1') -Name '${{ matrix.name }}'
+          if($LASTEXITCODE -ne 0){throw 'Isolated startup/staging failed'}
+      - name: Upload verified assets to existing draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $evidence=Join-Path $env:RUNNER_TEMP 'release-evidence'
+          $local=Get-Content (Join-Path $evidence '${{ matrix.name }}-verification.json') -Raw | ConvertFrom-Json
+          $releases=gh api 'repos/JohnDevAc/Kiloview-Job-Configurator/releases?per_page=20' | ConvertFrom-Json
+          $draft=@($releases | Where-Object tag_name -eq 'v${{ matrix.version }}')
+          if($draft.Count -ne 1 -or -not $draft[0].draft -or $draft[0].target_commitish -ne '${{ matrix.branch }}'){throw 'Expected matching unpublished draft'}
+          gh release upload 'v${{ matrix.version }}' @($local.assets.path) --repo JohnDevAc/Kiloview-Job-Configurator --clobber
+          if($LASTEXITCODE -ne 0){throw 'Draft asset upload failed'}
+          powershell.exe -NoProfile -File (Join-Path $evidence 'Verify-RemoteRelease.ps1') -Name '${{ matrix.name }}' -Draft
+          if($LASTEXITCODE -ne 0){throw 'Remote asset verification failed'}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-release-evidence
+          path: ${{ runner.temp }}/release-evidence/*.json
+          if-no-files-found: error
+          retention-days: 14
