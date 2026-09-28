@@ -266,13 +266,7 @@ internal sealed class N6DeviceApi(
             new { enable = true, servers = new[] { new { ip = settings.NdiDiscoveryServerIp, group_name = settings.JobName } } },
             "set N6 NDI discovery server",
             ct);
-        foreach (var type in new[] { "ndihx", "ndifull" })
-        {
-            using var stream = await PostWhenCodecReadyAsync(client, "/api/device/modify.json",
-                new { types = type, device_group = settings.JobName, channel_name = channelName, machine_name = hostname },
-                $"set N6 {type} identity",
-                ct);
-        }
+        await SetNdiIdentityAsync(client, channelName, settings.JobName, hostname, ct);
         using var host = await PostAsync(client, "/api/device/set_hostname.json", new { hostname }, "set N6 hostname", ct);
     }
 
@@ -892,10 +886,12 @@ internal sealed class N6DeviceApi(
         var name = String(source, "name", String(source, "ndi_name"));
         var channelMatch = !string.IsNullOrWhiteSpace(encoder.NdiChannelName) &&
             name.Contains(encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase);
+        var exactChannelMatch = channelMatch &&
+            string.Equals(TunedNdiChannel(source), encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase);
         var hostMatch = !string.IsNullOrWhiteSpace(encoder.Hostname) &&
             name.Contains(encoder.Hostname, StringComparison.OrdinalIgnoreCase);
         if (!addressMatch && !channelMatch && !hostMatch) return 0;
-        return (channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
+        return (exactChannelMatch ? 16 : channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
     }
 
     private static int DiscoveredSourcePort(JsonElement source)
@@ -912,21 +908,131 @@ internal sealed class N6DeviceApi(
         var url = String(preset, "stream_url");
         var channelMatch = !string.IsNullOrWhiteSpace(encoder.NdiChannelName) &&
             name.Contains(encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase);
+        var exactChannelMatch = channelMatch &&
+            string.Equals(TunedNdiChannel(preset), encoder.NdiChannelName, StringComparison.OrdinalIgnoreCase);
         var hostMatch = !string.IsNullOrWhiteSpace(encoder.Hostname) &&
             name.Contains(encoder.Hostname, StringComparison.OrdinalIgnoreCase);
         var addressMatch = !string.IsNullOrWhiteSpace(encoder.IpAddress) &&
             url.StartsWith($"{encoder.IpAddress}:", StringComparison.Ordinal);
-        return (channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
+        return (exactChannelMatch ? 16 : channelMatch ? 8 : 0) + (hostMatch ? 4 : 0) + (addressMatch ? 2 : 0);
     }
 
     public async Task SetIdentityAsync(string hostname, string channelName, string group, CancellationToken ct)
     {
         using var client = await AuthorizedAsync(ct);
-        foreach (var type in new[] { "ndihx", "ndifull" })
+        await SetNdiIdentityAsync(client, channelName, group, null, ct);
+    }
+
+    private sealed record NdiIdentity(string Channel, string Group);
+
+    private async Task<NdiIdentity> ReadNdiIdentityAsync(HttpClient client, string type, CancellationToken ct)
+    {
+        using var current = await PostAsync(client, "/api/encoder/ndi/get_config.json", new { types = type }, $"read N6 {type} identity", ct);
+        var data = Payload(current.RootElement);
+        var channel = String(data, "channel_name");
+        if (string.IsNullOrWhiteSpace(channel) || !data.TryGetProperty("device_group", out _))
+            throw new DeviceApiException($"N6 {type} did not return a complete identity; no further naming changes were made.");
+        return new(channel, String(data, "device_group"));
+    }
+
+    private async Task<(NdiIdentity Hx, NdiIdentity Full)> ReadNdiIdentitiesWhenReadyAsync(HttpClient client, CancellationToken ct)
+    {
+        // Discovery configuration can briefly restart the codec during onboarding.
+        // Preserve the existing recovery allowance, using only reads before writes.
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(45);
+        while (true)
         {
-            try { using var stream = await PostAsync(client, "/api/encoder/ndi/set_config.json", new { types = type, device_group = group, channel_name = channelName }, $"set N6 {type} name", ct); }
-            catch (DeviceApiException) when (type == "ndifull") { /* Full NDI can be disabled on some firmware. */ }
+            try
+            {
+                using var mode = await GetAsync(client, "/api/mode/get.json", "check N6 role before naming", ct);
+                if (!string.Equals(String(Payload(mode.RootElement), "mode"), "encoder", StringComparison.OrdinalIgnoreCase))
+                    throw new DeviceApiException("N6 sender naming requires encoder mode; inactive decoder profiles were left unchanged.");
+                return (await ReadNdiIdentityAsync(client, "ndihx", ct), await ReadNdiIdentityAsync(client, "ndifull", ct));
+            }
+            catch (DeviceApiException ex) when (DateTimeOffset.UtcNow < deadline &&
+                (IsModeServiceUnavailable(ex) || ex.Message.Contains("waitChangeModeError", StringComparison.OrdinalIgnoreCase)))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            }
         }
+    }
+
+    private async Task SetNdiIdentityAsync(HttpClient client, string channelName, string group, string? onboardingHostname, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelName);
+
+        // N5/N6 API v3.0 section 3.2 forbids sharing a channel name between
+        // HX and Full NDI. Preserve the existing primary HX name and distinguish HB.
+        // Read both before any identity write; an unavailable profile is not proof
+        // that it is safe to ignore a configuration or codec-service failure.
+        var (hx, full) = await ReadNdiIdentitiesWhenReadyAsync(client, ct);
+        var desiredHx = new NdiIdentity(channelName, group);
+        var desiredFull = new NdiIdentity(channelName + "-HB", group);
+
+        if (string.Equals(desiredFull.Channel, hx.Channel, StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.Equals(desiredHx.Channel, full.Channel, StringComparison.OrdinalIgnoreCase))
+            {
+                // Swapping existing names needs one temporary identity to avoid
+                // a collision even between the individual verified writes.
+                string temporary;
+                do { temporary = "N6-" + Guid.NewGuid().ToString("N")[..12]; }
+                while (new[] { hx.Channel, full.Channel, desiredHx.Channel, desiredFull.Channel }
+                    .Contains(temporary, StringComparer.OrdinalIgnoreCase));
+                await SetNdiProfileIdentityAsync(client, "ndifull", new(temporary, group), onboardingHostname, ct);
+                full = new(temporary, group);
+            }
+            if (hx != desiredHx || onboardingHostname is not null)
+                await SetNdiProfileIdentityAsync(client, "ndihx", desiredHx, onboardingHostname, ct);
+            if (full != desiredFull || onboardingHostname is not null)
+                await SetNdiProfileIdentityAsync(client, "ndifull", desiredFull, onboardingHostname, ct);
+        }
+        else
+        {
+            // Repair the legacy duplicate on the Full profile first. An already
+            // correct HX sender then needs no write or restart at all.
+            if (full != desiredFull || onboardingHostname is not null)
+                await SetNdiProfileIdentityAsync(client, "ndifull", desiredFull, onboardingHostname, ct);
+            if (hx != desiredHx || onboardingHostname is not null)
+                await SetNdiProfileIdentityAsync(client, "ndihx", desiredHx, onboardingHostname, ct);
+        }
+
+        if (await ReadNdiIdentityAsync(client, "ndihx", ct) != desiredHx ||
+            await ReadNdiIdentityAsync(client, "ndifull", ct) != desiredFull)
+            throw new DeviceApiException("N6 did not retain distinct HX and Full NDI identities. Read both profiles before retrying.");
+    }
+
+    private async Task SetNdiProfileIdentityAsync(HttpClient client, string type, NdiIdentity identity, string? onboardingHostname, CancellationToken ct)
+    {
+        var path = onboardingHostname is null ? "/api/encoder/ndi/set_config.json" : "/api/device/modify.json";
+        object body = onboardingHostname is null
+            ? new { types = type, device_group = identity.Group, channel_name = identity.Channel }
+            : new { types = type, device_group = identity.Group, channel_name = identity.Channel, machine_name = onboardingHostname };
+        using var accepted = await PostAsync(client, path, body, $"set N6 {type} identity", ct);
+
+        // A successful write restarts the sender. Retry only readback while it
+        // settles, never replay a potentially accepted write during recovery.
+        var consecutiveReady = 0;
+        DeviceApiException? last = null;
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            try
+            {
+                var saved = await ReadNdiIdentityAsync(client, type, ct);
+                using var status = await GetAsync(client, "/api/mode/status.json", "verify N6 codec after naming", ct);
+                var data = Payload(status.RootElement);
+                var ready = saved == identity && String(data, "status") == "ready" && String(data, "mode") == "encoder";
+                consecutiveReady = ready ? consecutiveReady + 1 : 0;
+                if (consecutiveReady >= 2) return;
+            }
+            catch (DeviceApiException ex) when (IsModeServiceUnavailable(ex) || ex.Message.Contains("waitChangeModeError", StringComparison.OrdinalIgnoreCase))
+            {
+                last = ex;
+                consecutiveReady = 0;
+            }
+        }
+        throw new DeviceApiException($"N6 {type} identity or codec readiness could not be verified after naming. No subsequent profile was changed.", last);
     }
 
     public async Task SetHostnameAsync(string hostname, CancellationToken ct)

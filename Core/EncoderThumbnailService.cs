@@ -247,6 +247,7 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
         private static (string Name, string Url)? FindSource(IntPtr sources, uint count, ManagedDevice device)
         {
             (string Name, string Url)? hostnameMatch = null;
+            (string Name, string Url)? partialChannelMatch = null;
             var size = Marshal.SizeOf<NdiSource>();
             for (var index = 0; index < count; index++)
             {
@@ -256,10 +257,14 @@ public sealed class EncoderThumbnailService(AppStateStore store, ILogger<Encoder
                 if (string.IsNullOrWhiteSpace(name)) continue;
                 var host = name.Contains(device.Hostname, StringComparison.OrdinalIgnoreCase);
                 var channel = name.Contains(device.NdiChannelName, StringComparison.OrdinalIgnoreCase);
-                if (host && channel) return (name, url);
+                // A sibling such as CAM-01-HB must not win merely because it
+                // appears before the exact CAM-01 advertisement in discovery.
+                if (host && !string.IsNullOrWhiteSpace(device.NdiChannelName) &&
+                    name.EndsWith($"({device.NdiChannelName})", StringComparison.OrdinalIgnoreCase)) return (name, url);
+                if (host && channel) partialChannelMatch ??= (name, url);
                 if (host) hostnameMatch = (name, url);
             }
-            return hostnameMatch;
+            return partialChannelMatch ?? hostnameMatch;
         }
 
         private byte[]? Receive((string Name, string Url) source, ManagedDevice device, CancellationToken ct)
