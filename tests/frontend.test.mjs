@@ -13,6 +13,102 @@ const { createWindowsCards } = await loadModule('../wwwroot/js/windows-cards.js'
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
 
+function firmwareScreen({ upload, startOnboarding = async () => {} }) {
+  const source = appSource.slice(appSource.indexOf('function renderFirmware('), appSource.indexOf('async function startFleetUpdate('));
+  const elements = new Map(), state = { firmwarePreOnboarding: true }, messages = [];
+  const $ = selector => {
+    if (!elements.has(selector)) {
+      const label = {};
+      elements.set(selector, {
+        disabled: false, dataset: {}, type: 'submit', onclick: null,
+        classList: { toggle(name, enabled) { this[name] = enabled; } },
+        querySelector: () => label,
+        addEventListener(name, listener) { this[name] = listener; }
+      });
+    }
+    return elements.get(selector);
+  };
+  const render = new Function('state', '$', 'isTeleTool', 'upload', 'FormData', 'esc', 'toast', 'startOnboarding', 'startFleetUpdate',
+    source + ';return renderFirmware;')(state, $, () => false, upload, class {}, String,
+    message => messages.push(message), startOnboarding, () => {});
+  const button = $('#stageFirmware');
+  return {
+    state, button, messages,
+    render: () => render({ devices: [{ model: 'N6' }] }),
+    label: () => button.querySelector('span').textContent,
+    click: async () => {
+      if (button.disabled) return;
+      if (button.type === 'button') return button.onclick?.();
+      return $('#firmwareForm').submit({ preventDefault() {}, currentTarget: $('#firmwareForm') });
+    }
+  };
+}
+
+test('Two consecutive onboarding runs both stage firmware and start without reloading the page', async () => {
+  let finishUpload, uploads = 0, starts = 0;
+  const screen = firmwareScreen({
+    upload: async url => {
+      assert.equal(url, '/api/firmware/stage?models=N6');
+      uploads++;
+      await new Promise(resolve => { finishUpload = resolve; });
+      return { packages: [{ model: 'N6', fileName: 'n6.bin', sha256: 'abc123' }] };
+    },
+    startOnboarding: async () => { starts++; }
+  });
+  for (let run = 1; run <= 2; run++) {
+    screen.render();
+    assert.equal(screen.button.disabled, false, `Run ${run} must allow staging`);
+    assert.equal(screen.label(), 'Stage & start onboarding');
+    const pending = screen.click();
+    assert.equal(screen.button.disabled, true);
+    assert.equal(screen.label(), 'Staging…');
+    await screen.click();
+    assert.equal(uploads, run, 'A second click during staging must not upload twice');
+    finishUpload();
+    await pending;
+    assert.equal(starts, run);
+  }
+});
+
+test('Firmware staging and onboarding failures allow retry, and a fleet action resets for onboarding', async () => {
+  let failUpload = true, failStart = true, starts = 0;
+  const screen = firmwareScreen({
+    upload: async () => {
+      if (failUpload) throw Error('Upload failed');
+      return { packages: [] };
+    },
+    startOnboarding: async () => {
+      if (failStart) throw Error('Start failed');
+      starts++;
+    }
+  });
+  screen.render();
+  await screen.click();
+  assert.equal(screen.button.disabled, false);
+  assert.equal(screen.label(), 'Stage & start onboarding');
+  assert.equal(screen.messages.at(-1), 'Upload failed');
+  failUpload = false;
+  await screen.click();
+  assert.equal(screen.button.disabled, false);
+  assert.equal(screen.messages.at(-1), 'Start failed');
+  failStart = false;
+  await screen.click();
+  assert.equal(starts, 1);
+
+  screen.state.firmwarePreOnboarding = false;
+  screen.render();
+  await screen.click();
+  assert.equal(screen.button.type, 'button');
+  assert.equal(screen.label(), 'Start fleet update');
+  screen.state.firmwarePreOnboarding = true;
+  screen.render();
+  assert.equal(screen.button.disabled, false);
+  assert.equal(screen.button.type, 'submit');
+  assert.equal(screen.button.onclick, null);
+  await screen.click();
+  assert.equal(starts, 2);
+});
+
 test('Firmware uploads include only the models shown for the current fleet', () => {
   const source = appSource.slice(appSource.indexOf('function renderFirmware('), appSource.indexOf("$('#firmwareForm').addEventListener"));
   const elements = new Map();
