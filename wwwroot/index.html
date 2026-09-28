@@ -76,7 +76,7 @@
         <label><span>DNS server</span><input name="dns" value="8.8.8.8" required inputmode="decimal"><small>Applied when assigning a new static address; existing in-range devices are not changed.</small></label>
 
         <div class="section-title"><span>04</span><div><h2>Identity & discovery</h2><p>Job name prefixes hostnames and becomes the NDI group.</p></div></div>
-        <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required maxlength="32"></label>
+        <label class="wide"><span>Job Name</span><input name="jobName" placeholder="Wimbledon-Court-1" required><small>Any non-empty NDI group name. No password complexity requirements; commas are group separators.</small></label>
         <label class="check clean-onboarding-option wide"><input name="cleanOnboarding" type="checkbox" role="switch" checked><span><strong>Clean onboarding</strong><small>Delete all existing KiloLink devices/groups and previous configurator job devices before this run. Switch off when adding to an existing job.</small></span></label>
         <details class="wide advanced">
           <summary>Device login & test options</summary>
@@ -93,6 +93,7 @@
     <section id="discoverView" class="view hidden">
       <div class="page-head"><div><p class="eyebrow">DISCOVERY</p><h1>Select devices</h1><p>Kiloview converters and compatible TeleTool Dev encoders share one collision-checked address plan.</p></div><button class="quiet" data-action="back-setup">← Edit job</button></div>
       <div id="discoverySummary" class="summary-strip"></div>
+      <div class="discovery-selection-actions" role="group" aria-label="Onboarding device selection"><button id="selectAllDevices" class="quiet" type="button">Select all</button><button id="selectNoDevices" class="quiet" type="button">Select none</button></div>
       <div id="discoveredGrid" class="device-grid"></div>
       <section class="device-group discovery-windows-endpoints" aria-labelledby="windowsNdiEndpointsTitle">
         <div class="device-group-title"><h2 id="windowsNdiEndpointsTitle">Windows NDI Endpoints</h2><span id="windowsEndpointDiscoveryCount">1 ENDPOINT</span></div>

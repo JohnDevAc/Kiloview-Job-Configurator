@@ -293,6 +293,16 @@ function renderDiscovery(result){
   updateSelected()
 }
 function setDiscoveryDecision(id,onboard){if(onboard){state.selected.add(id);state.skipped.delete(id)}else{state.selected.delete(id);state.skipped.add(id)}renderDiscovery(state.discovery)}
+function setAllDiscoveryDecisions(onboard){
+  for(const device of state.discovery?.devices||[]){
+    if(device.canOnboard===false||device.isOnboarded)continue;
+    if(onboard){state.selected.add(device.id);state.skipped.delete(device.id)}else{state.selected.delete(device.id);state.skipped.add(device.id)}
+  }
+  state.includeServerPc=onboard&&state.localPcComponent?.compatible===true;
+  renderDiscovery(state.discovery);
+}
+$('#selectAllDevices').onclick=()=>setAllDiscoveryDecisions(true);
+$('#selectNoDevices').onclick=()=>setAllDiscoveryDecisions(false);
 function updateSelected(){const local=state.includeServerPc&&state.localPcComponent?.compatible;const count=state.selected.size+(local?1:0);$('#selectedCount').textContent=count?`${count} onboard · ${state.skipped.size} standalone`:'Create job for remote PCs · no local endpoint required';$('#buildPlan').disabled=!state.networkReady}
 $('#buildPlan').onclick=async()=>{const button=$('#buildPlan'),label=button.querySelector('span');try{button.disabled=true;label.textContent='Preparing onboarding…';state.settings.deviceIds=[...state.selected];state.settings.includeServerPc=state.includeServerPc&&state.localPcComponent?.compatible===true;state.plan=await api('/api/onboarding/plan',{method:'POST',body:JSON.stringify(state.settings)});state.settings.kiloLinkPassword='';kiloLinkPassword.value='';credentialHint.textContent='KiloLink login stored locally for this server.';await continueWithPlan()}catch(e){toast(e.message,true);button.disabled=false}finally{label.textContent='Continue onboarding'}};
 async function continueWithPlan(){const ids=new Set(state.plan.devices.filter(d=>['N6','N60'].includes(d.family)).map(d=>d.deviceId)),devices=(state.discovery?.devices||state.devices).filter(d=>ids.has(d.id));state.firmwarePreOnboarding=devices.length>0;if(state.firmwarePreOnboarding){renderFirmware({devices});show('firmware')}else await startOnboarding()}

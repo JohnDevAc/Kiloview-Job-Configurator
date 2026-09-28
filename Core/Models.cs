@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 
 namespace NDIJobConfigurator.Core;
 
@@ -444,6 +445,15 @@ public sealed record MulticastRevertResult(
 
 public static class InputValidation
 {
+    public static void NdiGroupName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Job Name is required.");
+        if (name.Contains(',')) throw new ArgumentException("Job Name cannot contain a comma because it is also used as an NDI group name.");
+        if (name.Any(char.IsControl)) throw new ArgumentException("Job Name cannot contain control characters.");
+        // NDI limits each complete send/receive group list to 248 UTF-8 bytes.
+        if (Encoding.UTF8.GetByteCount(name) > 248) throw new ArgumentException("Job Name exceeds the NDI group limit of 248 UTF-8 bytes.");
+    }
+
     public static IPAddress Ip(string value, string field)
     {
         if (!IPAddress.TryParse(value, out var ip) || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
@@ -486,8 +496,7 @@ public static class InputValidation
             if (gatewayNumber >= startNumber && gatewayNumber <= endNumber)
                 throw new ArgumentException("Gateway cannot be inside the device static range.");
         }
-        if (string.IsNullOrWhiteSpace(request.JobName)) throw new ArgumentException("Job Name is required.");
-        if (request.JobName.Contains(',')) throw new ArgumentException("Job Name cannot contain a comma because it is also used as an NDI group name.");
+        NdiGroupName(request.JobName);
         if (requireKiloLink && request.KiloLinkPort is < 1 or > 65535) throw new ArgumentException("KiloLink port is invalid.");
         if (requireKiloLink && request.KiloLinkWebPort is < 1 or > 65535) throw new ArgumentException("KiloLink web port is invalid.");
     }
