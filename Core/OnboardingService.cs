@@ -848,6 +848,13 @@ public sealed class OnboardingService(
         device = device with { Role = role, Health = DeviceHealth.Configuring, LastError = null };
         await SaveDeviceAsync(device);
         device = await WaitForDeviceAsync(device, TimeSpan.FromSeconds(device.Family == DeviceFamily.N60 ? 90 : 60), ct);
+        if (device.Family == DeviceFamily.N6 && device.IsOnboarded && role == DeviceRole.Encoder)
+        {
+            // Older jobs may retain duplicate HX/Full identities in inactive
+            // encoder profiles. Repair them when the encoder service is available,
+            // without switching live decoders just to edit unused sender settings.
+            await factory.Create(device).SetIdentityAsync(device.Hostname, device.NdiChannelName, device.NdiGroup, ct);
+        }
         device = device with
         {
             Role = role,
