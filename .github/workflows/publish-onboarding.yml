@@ -1,14 +1,14 @@
-name: Package verified onboarding releases
+name: Package verified N6 naming releases
 
 on:
   push:
-    branches: [codex/publish-onboarding-0-8-15]
+    branches: [codex/publish-n6-naming-0-8-16]
 
 permissions:
   contents: write
 
 concurrency:
-  group: onboarding-release-0-8-15
+  group: n6-naming-release-0-8-16
   cancel-in-progress: false
 
 jobs:
@@ -19,17 +19,17 @@ jobs:
       matrix:
         include:
           - name: server-main
-            version: 0.8.15
+            version: 0.8.16
             channel: Main
             branch: main
-            commit: aa9518514c0316248a13548a47ba3dbb60a50278
+            commit: d3a1cc2e3ed23a6c249f774408347d33192c0eb2
             agentVersion: 0.7.5
             agentCommit: d4e4d644a4064c72ce8f9fb35a1c18d1da36cda1
           - name: server-dev
-            version: 0.8.15-dev.1
+            version: 0.8.16-dev.1
             channel: Development
             branch: development
-            commit: ddb524374e134818dc6a24f63ea59f7bdb3a2b5e
+            commit: 146907e852626ee438141ce813c6c40a4ad71699
             agentVersion: 0.7.5-dev.1
             agentCommit: 7fa30fe24e59ca21793d5e4f95af3002d0689e23
     steps:
