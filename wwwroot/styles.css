@@ -154,3 +154,4 @@ main:has(>#monitorView:not(.hidden)){padding-top:24px;padding-bottom:70px}
 .windows-endpoint-context{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:5px 7px;color:var(--muted);font:9px var(--mono);line-height:1.4;overflow-wrap:anywhere}.windows-endpoint-context>span+span::before{content:'·';margin-right:7px;color:#536159}.windows-endpoint-context .windows-endpoint-attention{color:var(--amber)}
 .windows-endpoint-body{padding:16px;border-top:1px solid var(--line)}
 @media(min-width:2560px){.windows-endpoint-summary{padding:22px 24px;gap:14px 18px}.windows-endpoint-kind,.windows-endpoint-context{font-size:12px}.windows-endpoint-name{font-size:22px}.windows-endpoint-address{font-size:15px}.windows-endpoint-aside>.pill{font-size:11px;padding:6px 8px}.windows-endpoint-toggle{font-size:13px}.windows-endpoint-body{padding:24px}}
+.discovery-selection-actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}

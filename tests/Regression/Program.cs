@@ -21,6 +21,7 @@ await Run("Stale polls cannot replace configuration or credentials", StalePoll);
 await Run("Fresh polls retain license acceptance", FreshPoll);
 await Run("Clean onboarding validates readiness before deleting inventory", CleanPreflight);
 await Run("Incremental plans allocate unique names for both families", UniqueNames);
+await Run("Job names enforce NDI compatibility without password complexity", () => JobNameRegression.Run(Settings([])));
 await Run("Partial unicast reversions survive monitor passes", PartialRevert);
 await Run("Cancelled unicast reversion persists retryable outcomes", CancelledRevert);
 await Run("Delayed reversion cannot overwrite a newer multicast plan", SupersededRevert);

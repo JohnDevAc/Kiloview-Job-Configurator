@@ -1,12 +1,10 @@
-using System.Text.RegularExpressions;
-
 namespace NDIJobConfigurator.Core;
 
 /// <summary>
 /// Verifies an existing KiloLink login and completes the official first-login password change
 /// when a server is still using its factory administrator credential.
 /// </summary>
-public sealed partial class KiloLinkConnectionService(
+public sealed class KiloLinkConnectionService(
     KiloLinkCredentialStore credentials,
     KiloLinkServerClient client)
 {
@@ -73,9 +71,7 @@ public sealed partial class KiloLinkConnectionService(
         if (string.IsNullOrWhiteSpace(jobName))
             throw new InvalidOperationException(
                 "KiloLink Server is using its factory login. Enter the Job Name below; it will become the new KiloLink administrator password.");
-        if (!KiloLinkPasswordPattern().IsMatch(jobName))
-            throw new ArgumentException(
-                "The Job Name must be 6–32 characters and contain an uppercase letter, lowercase letter, and number before it can be used as the KiloLink password.");
+        InputValidation.NdiGroupName(jobName);
 
         await client.ChangeInitialPasswordAsync(request.ServerIp, request.WebPort, FactoryCredential, jobName, ct);
         var provisionedCredential = new KiloLinkCredential(FactoryCredential.Username, jobName);
@@ -106,6 +102,4 @@ public sealed partial class KiloLinkConnectionService(
         string.Equals(credential.Username, FactoryCredential.Username, StringComparison.Ordinal) &&
         string.Equals(credential.Password, FactoryCredential.Password, StringComparison.Ordinal);
 
-    [GeneratedRegex(@"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z\d!@#$%^&*()_+\-=\[\]{};':""\\|,.<>/?]{6,32}$")]
-    private static partial Regex KiloLinkPasswordPattern();
 }

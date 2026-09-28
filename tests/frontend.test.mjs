@@ -13,6 +13,63 @@ const { createWindowsCards } = await loadModule('../wwwroot/js/windows-cards.js'
 const windows = createWindowsMonitor({ esc: String, compactDuration: String, compactBytes: String, product: 'PC Agent' });
 const appSource = await readFile(new URL('../wwwroot/app.js', import.meta.url), 'utf8');
 
+test('Job names stay required without browser password-length or character-pattern restrictions', async () => {
+  const html = await readFile(new URL('../wwwroot/index.html', import.meta.url), 'utf8');
+  const input = html.match(/<input\b[^>]*name="jobName"[^>]*>/)[0];
+  assert.match(input, /\brequired\b/);
+  assert.doesNotMatch(input, /\b(?:minlength|maxlength|pattern)=/);
+});
+
+test('Bulk onboarding selection updates existing checkboxes, counts and individual decisions', () => {
+  const devices = [
+    { id: 'n6', model: 'N6', family: 'N6' },
+    { id: 'tt', model: 'TeleTool', family: 'TeleTool' },
+    { id: 'blocked', canOnboard: false },
+    { id: 'onboarded', isOnboarded: true }
+  ].map(device => ({ hostname: device.id, ipAddress: '192.0.2.20', role: 'Encoder', ...device }));
+  const state = { discovery: { devices, scannedCidrs: [] }, selected: new Set(['n6']), skipped: new Set(['tt']),
+    settings: {}, includeServerPc: true, localPcComponent: { compatible: true }, networkReady: true };
+  const elements = new Map();
+  const $ = selector => { if (!elements.has(selector)) elements.set(selector, {}); return elements.get(selector); };
+  const source = appSource.slice(appSource.indexOf('function renderDiscovery('), appSource.indexOf("$('#buildPlan').onclick="));
+  const selectOne = new Function('state', '$', '$$', 'isTeleTool', 'inRange', 'esc', 'roleClass', 'renderOnboardingPcAgents',
+    source + '; return setDiscoveryDecision;')(state, $, () => [], device => device.family === 'TeleTool', () => false,
+    String, () => '', () => { $('#includeServerPc').checked = state.includeServerPc && state.localPcComponent.compatible; });
+  const checkbox = id => $('#discoveredGrid').innerHTML.match(new RegExp(`data-id="${id}"[\\s\\S]*?<input[^>]+>`))[0];
+
+  $('#selectAllDevices').onclick();
+  assert.deepEqual([...state.selected], ['n6', 'tt']);
+  assert.equal(state.skipped.size, 0);
+  assert.match(checkbox('n6'), /\bchecked\b/);
+  assert.match(checkbox('tt'), /\bchecked\b/);
+  assert.match(checkbox('blocked'), /\bdisabled\b/);
+  assert.doesNotMatch(checkbox('blocked'), /\bchecked\b/);
+  assert.doesNotMatch(checkbox('onboarded'), /\bchecked\b/);
+  assert.equal($('#includeServerPc').checked, true);
+  assert.equal($('#selectedCount').textContent, '3 onboard · 0 standalone');
+
+  $('#selectNoDevices').onclick();
+  assert.equal(state.selected.size, 0);
+  assert.deepEqual([...state.skipped], ['n6', 'tt']);
+  assert.doesNotMatch(checkbox('n6'), /\bchecked\b/);
+  assert.doesNotMatch(checkbox('tt'), /\bchecked\b/);
+  assert.equal($('#includeServerPc').checked, false);
+  assert.equal($('#buildPlan').disabled, false, 'Remote-only job creation remains available');
+
+  selectOne('tt', true);
+  assert.deepEqual([...state.selected], ['tt']);
+  assert.match(checkbox('tt'), /\bchecked\b/);
+  assert.equal($('#selectedCount').textContent, '1 onboard · 1 standalone');
+  state.localPcComponent.compatible = false;
+  $('#selectAllDevices').onclick();
+  assert.equal($('#includeServerPc').checked, false, 'Unavailable PC onboarding stays unselected');
+  state.discovery.devices = [];
+  state.selected.clear(); state.skipped.clear();
+  $('#selectAllDevices').onclick();
+  assert.equal(state.selected.size, 0);
+  assert.match($('#discoveredGrid').innerHTML, /No Kiloview/);
+});
+
 function firmwareScreen({ upload, startOnboarding = async () => {} }) {
   const source = appSource.slice(appSource.indexOf('function renderFirmware('), appSource.indexOf('async function startFleetUpdate('));
   const elements = new Map(), state = { firmwarePreOnboarding: true }, messages = [];
