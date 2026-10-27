@@ -1,14 +1,14 @@
-name: Package verified N6 naming releases
+name: Package verified lifecycle releases
 
 on:
   push:
-    branches: [codex/publish-n6-naming-0-8-16]
+    branches: [codex/publish-lifecycle-0-8-17]
 
 permissions:
   contents: write
 
 concurrency:
-  group: n6-naming-release-0-8-16
+  group: lifecycle-release-0-8-17
   cancel-in-progress: false
 
 jobs:
@@ -19,19 +19,22 @@ jobs:
       matrix:
         include:
           - name: server-main
-            version: 0.8.16
+            version: 0.8.17
             channel: Main
             branch: main
-            commit: d3a1cc2e3ed23a6c249f774408347d33192c0eb2
-            agentVersion: 0.7.5
-            agentCommit: d4e4d644a4064c72ce8f9fb35a1c18d1da36cda1
+            commit: 065cfb40ffa365509bc0848c2a934669332ba075
+            agentVersion: 0.7.6
+            agentCommit: 616506fa9ccd9f195347fbc1f6e9e1021be73019
           - name: server-dev
-            version: 0.8.16-dev.1
+            version: 0.8.17-dev.1
             channel: Development
             branch: development
-            commit: 146907e852626ee438141ce813c6c40a4ad71699
-            agentVersion: 0.7.5-dev.1
-            agentCommit: 7fa30fe24e59ca21793d5e4f95af3002d0689e23
+            commit: 474101fcf40ab3d1542023880f53ec536bbd5833
+            agentVersion: 0.7.6-dev.1
+            agentCommit: c25e5a5eb95209967142fc739f3da3326a43106c
+    env:
+      DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false'
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -51,7 +54,7 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
-      - name: Verify published companion and source identities
+      - name: Verify source identities and download the published companion
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,6 +73,20 @@ jobs:
           Copy-Item release-tools/.github/release-support/*.ps1 $evidence
           @(@{name='${{ matrix.name }}';version='${{ matrix.version }}';channel='${{ matrix.channel }}';root=$server;commit='${{ matrix.commit }}'}) | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'server-candidates.json')
           @(@{name='${{ matrix.name }}'.Replace('server-','agent-');version='${{ matrix.agentVersion }}';root=$agent;commit='${{ matrix.agentCommit }}'}) | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence 'agent-candidates.json')
+          $downloads=Join-Path $agent 'artifacts'
+          New-Item -ItemType Directory -Path $downloads | Out-Null
+          gh release download 'v${{ matrix.agentVersion }}' --repo JohnDevAc/Kiloview-PC-Onboarding --dir $downloads
+          if($LASTEXITCODE){throw 'Published Agent asset download failed'}
+          foreach($asset in $released.assets){
+            $file=Join-Path $downloads $asset.name
+            if(-not $asset.digest -or (Get-Item -LiteralPath $file).Length -ne $asset.size -or ('sha256:'+(Get-FileHash -LiteralPath $file).Hash.ToLowerInvariant()) -ne $asset.digest){throw 'Published Agent asset digest/size mismatch'}
+          }
+          $zip=Join-Path $downloads 'NDI-Configurator-PC-Agent-win-x64.zip'
+          $hash=(Get-FileHash -LiteralPath $zip).Hash
+          if((Get-Content -LiteralPath "$zip.sha256" -Raw).Split(' ')[0].Trim() -ne $hash){throw 'Agent checksum mismatch'}
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $downloads 'win-x64')
+          $released | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $evidence 'published-agent.json')
+          "AGENT_ARCHIVE_SHA256=$hash" >> $env:GITHUB_ENV
       - name: Validate server and companion
         shell: pwsh
         run: |
@@ -78,14 +95,18 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Frontend syntax failed'}
           node --test server/tests/frontend.test.mjs
           if($LASTEXITCODE -ne 0){throw 'Frontend tests failed'}
-          powershell.exe -NoProfile -File server/tests/installer.Tests.ps1
-          if($LASTEXITCODE -ne 0){throw 'Installer tests failed'}
+          foreach($test in @('installer.Tests.ps1','job-lifecycle.Tests.ps1','job-agent-component.Tests.ps1','publish-package.Tests.ps1','installer-dialog.Tests.ps1')){
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "server/tests/$test"
+            if($LASTEXITCODE){throw "Installer/lifecycle test failed: $test"}
+          }
           dotnet run --project server/tests/Regression/Regression.csproj --configuration Release
           if($LASTEXITCODE -ne 0){throw 'Server regression failed'}
           dotnet run --project companion/tests/Kiloview.PcOnboarding.Validation/Kiloview.PcOnboarding.Validation.csproj --configuration Release
           if($LASTEXITCODE -ne 0){throw 'Companion Setup validation failed'}
           dotnet run --project companion/tests/Kiloview.PcAgent.Validation/Kiloview.PcAgent.Validation.csproj --configuration Release
           if($LASTEXITCODE -ne 0){throw 'Agent validation failed'}
+          dotnet run --project server/tests/Interop/Interop.csproj --configuration Release "-p:CompanionRoot=$((Resolve-Path companion).Path)"
+          if($LASTEXITCODE){throw 'Onboarding interoperability validation failed'}
       - name: Build and verify final installer
         shell: pwsh
         run: |
@@ -94,13 +115,16 @@ jobs:
           $env:GITHUB_REF_NAME='v${{ matrix.version }}'
           $env:UseSharedCompilation='false'
           $evidence=Join-Path $env:RUNNER_TEMP 'release-evidence'
-          powershell.exe -NoProfile -File server/scripts/Publish.ps1 -SetupExe -CompanionRoot (Resolve-Path companion).Path
+          $agentArchive=(Resolve-Path companion/artifacts/NDI-Configurator-PC-Agent-win-x64.zip).Path
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File server/scripts/Publish.ps1 -SetupExe -CompanionRoot (Resolve-Path companion).Path -CompanionPackage $agentArchive -CompanionPackageSha256 $env:AGENT_ARCHIVE_SHA256
           if($LASTEXITCODE -ne 0){throw 'Installer build failed'}
           powershell.exe -NoProfile -File (Join-Path $evidence 'Verify-Server.ps1') -Name '${{ matrix.name }}'
           if($LASTEXITCODE -ne 0){throw 'Package verification failed'}
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File server/tests/Verify-LifecycleCandidates.ps1 -ServerPackage (Resolve-Path server/artifacts/NDI-Job-Configurator-Windows.zip).Path -AgentPackage $agentArchive -ServerInstaller (Resolve-Path server/artifacts/NDI-Job-Configurator.exe).Path > (Join-Path $evidence 'lifecycle-package-verification.json')
+          if($LASTEXITCODE){throw 'Lifecycle descriptors, retained maintenance or native inspections failed'}
           powershell.exe -NoProfile -File (Join-Path $evidence 'Smoke-Server.ps1') -Name '${{ matrix.name }}'
           if($LASTEXITCODE -ne 0){throw 'Isolated startup/staging failed'}
-      - name: Upload verified assets to existing draft
+      - name: Upload verified assets to the empty release draft
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -110,12 +134,13 @@ jobs:
           $local=Get-Content (Join-Path $evidence '${{ matrix.name }}-verification.json') -Raw | ConvertFrom-Json
           $releases=gh api 'repos/JohnDevAc/Kiloview-Job-Configurator/releases?per_page=20' | ConvertFrom-Json
           $draft=@($releases | Where-Object tag_name -eq 'v${{ matrix.version }}')
-          if($draft.Count -ne 1 -or -not $draft[0].draft -or $draft[0].target_commitish -ne '${{ matrix.branch }}'){throw 'Expected matching unpublished draft'}
-          gh release upload 'v${{ matrix.version }}' @($local.assets.path) --repo JohnDevAc/Kiloview-Job-Configurator --clobber
+          if($draft.Count -ne 1 -or -not $draft[0].draft -or $draft[0].target_commitish -ne '${{ matrix.branch }}' -or $draft[0].assets.Count -ne 0){throw 'Expected matching empty unpublished draft'}
+          gh release upload 'v${{ matrix.version }}' @($local.assets.path) --repo JohnDevAc/Kiloview-Job-Configurator
           if($LASTEXITCODE -ne 0){throw 'Draft asset upload failed'}
           powershell.exe -NoProfile -File (Join-Path $evidence 'Verify-RemoteRelease.ps1') -Name '${{ matrix.name }}' -Draft
           if($LASTEXITCODE -ne 0){throw 'Remote asset verification failed'}
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: ${{ matrix.name }}-release-evidence
           path: ${{ runner.temp }}/release-evidence/*.json
