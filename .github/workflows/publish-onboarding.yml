@@ -105,7 +105,9 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'Companion Setup validation failed'}
           dotnet run --project companion/tests/Kiloview.PcAgent.Validation/Kiloview.PcAgent.Validation.csproj --configuration Release
           if($LASTEXITCODE -ne 0){throw 'Agent validation failed'}
-          dotnet run --project server/tests/Interop/Interop.csproj --configuration Release "-p:CompanionRoot=$((Resolve-Path companion).Path)"
+          dotnet build server/NDI.Job.Configurator.csproj --configuration Debug
+          if($LASTEXITCODE){throw 'Interop server Debug prerequisite build failed'}
+          dotnet run --project server/tests/Interop/Interop.csproj "-p:CompanionRoot=$((Resolve-Path companion).Path)"
           if($LASTEXITCODE){throw 'Onboarding interoperability validation failed'}
       - name: Build and verify final installer
         shell: pwsh
