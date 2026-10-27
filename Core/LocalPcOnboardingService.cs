@@ -37,13 +37,18 @@ public sealed class LocalPcOnboardingService : ILocalPcOnboarding
             var version = FileVersionInfo.GetVersionInfo(UtilityPath).ProductVersion;
             var agentPath = Path.Combine(Path.GetDirectoryName(UtilityPath)!, "NDI Configurator PC Agent.exe");
             var agentVersion = File.Exists(agentPath) ? FileVersionInfo.GetVersionInfo(agentPath).ProductVersion : null;
-            var compatible = IsCompatibleVersion(version) && IsCompatibleVersion(agentVersion);
-            return new(true, compatible, version, compatible ? null : "Update the PC Agent component to version 0.7.0 or later.");
+            var compatible = IsCompatiblePair(version, agentVersion)
+                && !File.Exists(Path.Combine(Path.GetDirectoryName(UtilityPath)!, ".pc-agent-install-recovery", "manifest.json"));
+            return new(File.Exists(agentPath), compatible, agentVersion, compatible ? null : "Repair the PC Agent with a complete matching Setup and Agent package (version 0.7.0 or later).");
         }
     }
 
     private static bool IsCompatibleVersion(string? version) =>
         Version.TryParse(version?.Split('-', '+')[0], out var parsed) && parsed >= new Version(0, 7, 0);
+
+    internal static bool IsCompatiblePair(string? setup, string? agent) =>
+        IsCompatibleVersion(setup) && IsCompatibleVersion(agent)
+        && string.Equals(setup!.Split('+')[0], agent!.Split('+')[0], StringComparison.Ordinal);
 
     public async Task<WindowsPcEndpoint> OnboardAsync(LocalNetworkInterface network, string jobName, string discoveryServerIp, CancellationToken ct)
     {

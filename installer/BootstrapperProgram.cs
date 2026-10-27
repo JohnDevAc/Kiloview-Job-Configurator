@@ -32,7 +32,7 @@ internal static class BootstrapperProgram
             if (!ShowLicenseAgreement(ReadEmbeddedText(LicenseResource), out var installPcAgent))
             {
                 Log("License agreement declined; installation cancelled.");
-                return 2;
+                return 1602;
             }
             Log("License agreement accepted; extracting the installation payload.");
 
@@ -87,6 +87,7 @@ internal static class BootstrapperProgram
             if (!string.IsNullOrWhiteSpace(error)) Log($"Installer error:{Environment.NewLine}{error.Trim()}");
             if (installer.ExitCode != 0)
             {
+                if (installer.ExitCode is 1602 or 1618 or 3010) return installer.ExitCode;
                 throw new InvalidOperationException($"Installation failed with exit code {installer.ExitCode}. See {InstallerLogPath} for details.");
             }
 

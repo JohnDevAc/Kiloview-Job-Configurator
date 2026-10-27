@@ -159,6 +159,7 @@ app.MapGet("/api/health", () => Results.Ok(new
     status = "ok",
     product = "NDI Job Configurator",
     version = BuildIdentity.Version,
+    processId = Environment.ProcessId,
     channel = BuildIdentity.ReleaseChannel
 }));
 app.MapGet("/api/pc-onboarding/profile", async (AppStateStore store) =>
