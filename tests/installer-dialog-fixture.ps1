@@ -16,6 +16,7 @@ $timer=[Windows.Forms.Timer]::new();$timer.Interval=200
 $timer.Add_Tick({
     $script:ticks++
     foreach($form in @([Windows.Forms.Application]::OpenForms)){
+        $form.Text='TEST ONLY - closes automatically; no installation'
         $controls=@($form.Controls[0].Controls)
         $consent=$controls|Where-Object {$_ -is [Windows.Forms.CheckBox] -and $_.Text -like 'I accept*'}
         $install=$controls|Where-Object {$_ -is [Windows.Forms.Button]}
