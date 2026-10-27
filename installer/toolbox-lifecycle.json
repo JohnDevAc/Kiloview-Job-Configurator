@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "productId": "job",
+  "supportedActions": ["inspect", "install", "update", "repair", "uninstall"],
+  "entryPoint": "Invoke-NDIJobConfiguratorLifecycle.ps1",
+  "entryPointKind": "powershell"
+}

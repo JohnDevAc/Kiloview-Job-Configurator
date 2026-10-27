@@ -1,19 +1,35 @@
 function Select-InstallOptions([string]$PackageRoot, [bool]$IncludePcAgent) {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
+    if (-not ('NdiJobInstaller.DialogVisibility' -as [type])) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+namespace NdiJobInstaller {
+    public static class DialogVisibility {
+        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
+        public static void Show(IntPtr window) { ShowWindow(window, 1); }
+    }
+}
+'@
+    }
     $dialog = New-Object Windows.Forms.Form
     $dialog.Text = 'NDI Job Configurator Installation'
     $dialog.Size = New-Object Drawing.Size(740, 620)
     $dialog.MinimumSize = New-Object Drawing.Size(600, 480)
     $dialog.StartPosition = 'CenterScreen'
+    # A hidden PowerShell STARTUPINFO hides the first native window even while
+    # WinForms reports Visible=true. Show our consent dialog after that first
+    # show has consumed the inherited flag; keep the parent console hidden.
+    $dialog.Add_Shown({ [NdiJobInstaller.DialogVisibility]::Show($dialog.Handle); $dialog.Activate() })
     $layout = New-Object Windows.Forms.TableLayoutPanel
     $layout.Dock = 'Fill'; $layout.ColumnCount = 1; $layout.RowCount = 4; $layout.Padding = 16
     [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Percent', 100)))
     foreach ($height in @(58, 40, 42)) { [void]$layout.RowStyles.Add((New-Object Windows.Forms.RowStyle('Absolute', $height))) }
     $license = New-Object Windows.Forms.RichTextBox
     $license.Dock = 'Fill'; $license.ReadOnly = $true
-    $serverLicense = Get-Content -LiteralPath (Join-Path $PackageRoot 'LICENSE.md') -Raw
-    $agentLicense = Get-Content -LiteralPath (Join-Path $PackageRoot 'pc-onboarding\LICENSE.md') -Raw
+    $serverLicense = Get-Content -LiteralPath (Join-Path $PackageRoot 'LICENSE.md') -Raw -Encoding UTF8
+    $agentLicense = Get-Content -LiteralPath (Join-Path $PackageRoot 'pc-onboarding\LICENSE.md') -Raw -Encoding UTF8
     $component = New-Object Windows.Forms.CheckBox
     $component.Dock = 'Fill'; $component.Checked = $IncludePcAgent
     $component.Text = "Install PC Onboarding / PC Agent (recommended)`r`nAllows this PC to join server jobs without another confirmation."

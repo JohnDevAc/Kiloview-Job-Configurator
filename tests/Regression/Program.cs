@@ -15,6 +15,15 @@ var environment = new TestEnvironment { ContentRootPath = root };
 var store = new AppStateStore(environment, NullLogger<AppStateStore>.Instance);
 var now = DateTimeOffset.UtcNow;
 var passed = 0;
+await Run("Local companion readiness requires a matching Setup and Agent release", () =>
+{
+    var pairCheck = typeof(LocalPcOnboardingService).GetMethod("IsCompatiblePair", BindingFlags.Static | BindingFlags.NonPublic)!;
+    foreach (var (setup, agent, expected) in new (string?, string?, bool)[] {
+        ("0.7.5+setup", "0.7.5+agent", true), ("0.7.5", "0.7.4", false),
+        ("0.7.5-dev.1", "0.7.5", false), ("0.7.5", null, false), ("0.6.9", "0.6.9", false) })
+        Check((bool)pairCheck.Invoke(null, [setup, agent])! == expected, "Companion matching-pair compatibility is inconsistent.");
+    return Task.CompletedTask;
+});
 await Run("NDI source selection prefers the exact channel over a suffixed sibling", N6IdentityRegression.SourceSelection);
 await Run("Remote polls survive state deserialization", RemotePoll);
 await Run("Three missed Windows polls persist offline status", RemoteOffline);

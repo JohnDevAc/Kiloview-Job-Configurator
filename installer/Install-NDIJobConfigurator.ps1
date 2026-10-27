@@ -1,240 +1,74 @@
 [CmdletBinding()]
-param([string]$Source = $PSScriptRoot, [switch]$SkipPcAgent, [switch]$LicenseAccepted)
-
-$ErrorActionPreference = 'Stop'
-function Test-Administrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
-if (-not (Test-Administrator)) {
-    $resolvedSource = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    $elevationArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Source `"$resolvedSource`""
-    if ($SkipPcAgent) { $elevationArguments += ' -SkipPcAgent' }
-    if ($LicenseAccepted) { $elevationArguments += ' -LicenseAccepted' }
-    $elevatedInstaller = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $elevationArguments -Wait -PassThru
-    exit $elevatedInstaller.ExitCode
-}
-
-if (-not $LicenseAccepted) {
-    . (Join-Path $Source 'Select-InstallOptions.ps1')
-    $SkipPcAgent = -not (Select-InstallOptions -PackageRoot $Source -IncludePcAgent (-not $SkipPcAgent))
-}
-
-# This per-user elevated server must run as its signed-in administrator owner.
-# Fail before installation rather than silently installing into a different UAC account.
-$installerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$installerSession = (Get-Process -Id $PID).SessionId
-$desktopOwners = @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.SessionId -eq $installerSession } | ForEach-Object {
-    $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
-    if ($owner.ReturnValue -ne 0) { throw 'The signed-in desktop owner could not be verified.' }
-    $owner.Sid
-} | Select-Object -Unique)
-if ($desktopOwners.Count -gt 1 -or ($desktopOwners.Count -eq 1 -and $desktopOwners[0] -ne $installerSid)) {
-    throw 'NDI Job Configurator runs as a signed-in administrator. Sign in to that administrator account and run Setup there. Supplying another account at UAC cannot install this per-user server for the current desktop. Client PCs do not need this server installed locally.'
-}
-$localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-$installRoot = Join-Path $localAppData 'Programs\NDI Job Configurator'
-$legacyInstallRoot = Join-Path $localAppData 'Programs\Kiloview Setup'
-$dataRoot = Join-Path $localAppData 'NDI Job Configurator'
-$legacyDataRoot = Join-Path $localAppData 'Kiloview Setup'
-$startup = [Environment]::GetFolderPath('Startup')
-$desktop = [Environment]::GetFolderPath('Desktop')
-$programs = [Environment]::GetFolderPath('Programs')
-$startMenu = Join-Path $programs 'NDI Job Configurator'
-$taskName = 'NDI Job Configurator Service'
-$legacyTaskName = 'Kiloview Job Configurator Service'
-$firewallRuleName = 'NDI Job Configurator LAN'
-$ndiFirewallRuleName = 'NDI Job Configurator NDI'
-$legacyFirewallRules = @('Kiloview Job Configurator LAN', 'Kiloview Job Configurator NDI')
-$installedExe = Join-Path $installRoot 'NDIJobConfigurator.exe'
-$legacyInstalledExe = Join-Path $legacyInstallRoot 'KiloviewSetup.exe'
-$sourceExe = Join-Path $Source 'NDIJobConfigurator.exe'
-if (-not (Test-Path $sourceExe)) { throw "NDIJobConfigurator.exe was not found in $Source. Run scripts\Publish.ps1 first." }
-
-$runtimeConfig = Join-Path $Source 'NDIJobConfigurator.runtimeconfig.json'
-if (Test-Path $runtimeConfig) {
-    $runtimeSettings = Get-Content -LiteralPath $runtimeConfig -Raw | ConvertFrom-Json
-    $needsSharedRuntime = $null -ne $runtimeSettings.runtimeOptions.framework -or $null -ne $runtimeSettings.runtimeOptions.frameworks
-    if ($needsSharedRuntime) {
-        $runtimes = & dotnet --list-runtimes 2>$null
-        if (-not ($runtimes -match 'Microsoft\.AspNetCore\.App 8\.')) {
-            throw 'The .NET 8 ASP.NET Core Runtime is required. Use NDI-Job-Configurator.exe or install the .NET 8 ASP.NET Core Runtime.'
+param([string]$Source=$PSScriptRoot,[switch]$SkipPcAgent,[switch]$LicenseAccepted,[string]$LifecycleRequestPath,[string]$RequestSha256)
+$ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'JobLifecycle.ps1')
+. (Join-Path $PSScriptRoot 'JobLifecycle.Windows.ps1')
+. (Join-Path $PSScriptRoot 'JobLifecycle.Package.ps1')
+. (Join-Path $PSScriptRoot 'PcAgentPackage.ps1')
+$request=$null;$lease=$null;$agentEffects=@();$agentEvidence=$null;$paths=Get-JobPaths
+try {
+    [void](Assert-JobDesktopOwner)
+    if($LifecycleRequestPath) {
+        $request=Read-JobLifecycleRequest $LifecycleRequestPath
+        if($request.action -notin @('install','update','repair')){throw 'Unsupported installer action.'}
+        if($RequestSha256 -and (Get-FileHash -LiteralPath $LifecycleRequestPath).Hash -ne $RequestSha256){throw 'Lifecycle intent changed during elevation.'}
+        if($request.PSObject.Properties['preserveData'] -and -not $request.preserveData){throw 'Data purging is not supported.'}
+    }
+    $sourceRoot=Assert-JobSafePath $Source
+    $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if(-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-JobLifecycleResult $request 'running' 'Waiting for Windows administrator approval.' @{stage='waiting-input';safeToCancel=$true}
+        $arguments='-NoProfile -ExecutionPolicy Bypass -File "'+$PSCommandPath+'" -Source "'+$sourceRoot+'"'
+        if($SkipPcAgent){$arguments+=' -SkipPcAgent'}
+        if($LicenseAccepted){$arguments+=' -LicenseAccepted'}
+        if($LifecycleRequestPath){$arguments+=' -LifecycleRequestPath "'+$LifecycleRequestPath+'" -RequestSha256 '+(Get-FileHash -LiteralPath $LifecycleRequestPath).Hash}
+        $worker=Start-Process powershell.exe -Verb RunAs -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+        Assert-JobWorkerExit $request $worker.ExitCode
+        exit $worker.ExitCode
+    }
+    $lease=Enter-JobLifecycleLease $paths.Recovery
+    $stop={Stop-JobOwnedProcesses $paths.Install}
+    $restore={param($saved) Restore-JobWindowsRegistration $paths.Install $saved}
+    Restore-JobReplacement $paths.Install $paths.Recovery $stop $restore
+    Write-JobLifecycleResult $request 'running' 'Validating the complete server package.' @{stage='preflight';safeToCancel=$true}
+    $manifest=Test-JobPackage $sourceRoot
+    if($request -and $request.requestedVersion -and $request.requestedVersion -ne $manifest.version){throw 'Requested server version differs from this verified package.'}
+    $payload=New-JobPayload $sourceRoot $paths.Recovery $manifest
+    if(-not $LicenseAccepted) {
+        Write-JobLifecycleResult $request 'running' 'Waiting for licence acceptance and optional PC Agent selection.' @{stage='waiting-input';safeToCancel=$true}
+        . (Join-Path $sourceRoot 'Select-InstallOptions.ps1')
+        $SkipPcAgent=-not (Select-InstallOptions -PackageRoot $sourceRoot -IncludePcAgent (-not $SkipPcAgent))
+    }
+    if(-not $SkipPcAgent) {
+        Write-JobLifecycleResult $request 'running' 'Installing or retaining the independent PC Agent component.' @{stage='pc-agent';safeToCancel=$false}
+        $agentResult=Install-JobAgentComponent $sourceRoot ([ref]$agentEffects) ([ref]$agentEvidence)
+        $agentEffects=@($agentResult.effects);$agentEvidence=$agentResult.component
+    }
+    $integration=Get-JobOwnedIntegration $paths.Install
+    Write-JobLifecycleResult $request 'running' 'Replacing the validated server package; rollback material is retained.' @{stage='replacement';safeToCancel=$false;partialEffects=$agentEffects}
+    $configure={Set-JobWindowsRegistration $paths.Install}
+    $verify={
+        for($attempt=0;$attempt -lt 20;$attempt++){
+            if(Test-JobExactHealth $paths.Install $manifest.version $manifest.channel){return}
+            Start-Sleep -Milliseconds 500
         }
+        throw 'The expected server version, channel, process path, owner and listening port did not become healthy.'
     }
-}
-
-if (-not $SkipPcAgent) {
-    $componentRoot = [IO.Path]::GetFullPath((Join-Path $Source 'pc-onboarding'))
-    . (Join-Path $Source 'PcAgentPackage.ps1')
-    $manifest = Test-PcAgentPackage -PackageRoot $Source
-    $setupPath = Join-Path $componentRoot 'NDI Configurator PC Agent Setup.exe'
-    $bundledVersion = (Get-Item -LiteralPath $setupPath).VersionInfo.ProductVersion
-    if ((Compare-PcAgentVersion $bundledVersion $manifest.version) -ne 0) { throw 'PC Agent binary version differs from its manifest.' }
-    $installedAgent = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'NDI Configurator\PC Agent\NDI Configurator PC Agent.exe'
-    $installedSetup = Join-Path (Split-Path -Parent $installedAgent) 'NDI Configurator PC Agent Setup.exe'
-    $agentVersion = if (Test-Path -LiteralPath $installedAgent) { (Get-Item -LiteralPath $installedAgent).VersionInfo.ProductVersion } else { $null }
-    $setupVersion = if (Test-Path -LiteralPath $installedSetup) { (Get-Item -LiteralPath $installedSetup).VersionInfo.ProductVersion } else { $null }
-    $retainNewerAgent = (Get-PcAgentInstallDecision $agentVersion $setupVersion $bundledVersion) -eq 'Retain'
-    if ($retainNewerAgent) {
-        Write-Host 'A newer independently updated PC Agent is installed; retaining it.'
-    } else {
-        $start = New-Object Diagnostics.ProcessStartInfo
-        $start.FileName = $setupPath; $start.Arguments = '--server-command'; $start.WorkingDirectory = $componentRoot
-        $start.UseShellExecute = $false; $start.CreateNoWindow = $true
-        $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
-        $componentProcess = [Diagnostics.Process]::Start($start)
-        try {
-            $output = $componentProcess.StandardOutput.ReadToEndAsync()
-            $errors = $componentProcess.StandardError.ReadToEndAsync()
-            $componentProcess.StandardInput.Write('{"schemaVersion":1,"operation":"install","acceptLicense":true}')
-            $componentProcess.StandardInput.Close()
-            if (-not $componentProcess.WaitForExit(180000)) { $componentProcess.Kill(); throw 'PC Agent installation timed out.' }
-            $response = $output.GetAwaiter().GetResult() | ConvertFrom-Json
-            [void]$errors.GetAwaiter().GetResult()
-            if ($componentProcess.ExitCode -ne 0 -or $response.schemaVersion -ne 1 -or -not $response.success) { throw "PC Agent installation failed: $($response.error)" }
-            Write-Host "PC Agent $($response.version) installed. Its network adapter will be selected during server onboarding."
-        } finally { $componentProcess.Dispose() }
-    }
-}
-
-foreach ($name in @($taskName, $legacyTaskName)) {
-    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-        Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-    }
-}
-
-$knownExecutables = @($installedExe, $legacyInstalledExe) | ForEach-Object { [IO.Path]::GetFullPath($_) }
-$runningProcesses = @(Get-Process NDIJobConfigurator, KiloviewSetup -ErrorAction SilentlyContinue | Where-Object {
-    try { $knownExecutables -contains [IO.Path]::GetFullPath($_.Path) } catch { $false }
-})
-foreach ($runningProcess in $runningProcesses) { $runningProcess | Stop-Process -Force }
-foreach ($runningProcess in $runningProcesses) {
-    try {
-        if (-not $runningProcess.WaitForExit(15000)) {
-            throw "NDI Job Configurator process $($runningProcess.Id) did not stop within 15 seconds."
-        }
-    }
-    finally { $runningProcess.Dispose() }
-}
-
-$expectedInstallRoot = [IO.Path]::GetFullPath((Join-Path $localAppData 'Programs\NDI Job Configurator')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-$resolvedInstallRoot = [IO.Path]::GetFullPath($installRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-$expectedLegacyInstallRoot = [IO.Path]::GetFullPath((Join-Path $localAppData 'Programs\Kiloview Setup')).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-$resolvedLegacyInstallRoot = [IO.Path]::GetFullPath($legacyInstallRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-if (-not [string]::Equals($resolvedInstallRoot, $expectedInstallRoot, [StringComparison]::OrdinalIgnoreCase) -or
-    -not [string]::Equals($resolvedLegacyInstallRoot, $expectedLegacyInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Refusing to modify an unexpected installation directory.'
-}
-$resolvedSourceRoot = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-if ($resolvedSourceRoot.StartsWith($resolvedInstallRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-    [string]::Equals($resolvedSourceRoot, $resolvedInstallRoot, [StringComparison]::OrdinalIgnoreCase) -or
-    $resolvedSourceRoot.StartsWith($resolvedLegacyInstallRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-    [string]::Equals($resolvedSourceRoot, $resolvedLegacyInstallRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Run the installer from its downloaded or extracted package, not from inside an existing installation directory.'
-}
-
-if (-not (Test-Path -LiteralPath $dataRoot) -and (Test-Path -LiteralPath $legacyDataRoot)) {
-    New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
-    Get-ChildItem -LiteralPath $legacyDataRoot -Force | Copy-Item -Destination $dataRoot -Recurse -Force
-}
-
-if (Test-Path -LiteralPath $resolvedInstallRoot) {
-    Get-ChildItem -LiteralPath $resolvedInstallRoot -Force | Remove-Item -Recurse -Force
-}
-New-Item -ItemType Directory -Path $resolvedInstallRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
-New-Item -ItemType Directory -Path $startMenu -Force | Out-Null
-Get-ChildItem -LiteralPath $Source -File | Where-Object Extension -in '.exe','.dll','.json','.pdb','.ico','.md','.txt' | Copy-Item -Destination $installRoot -Force
-if (Test-Path (Join-Path $Source 'wwwroot')) { Copy-Item -LiteralPath (Join-Path $Source 'wwwroot') -Destination $installRoot -Recurse -Force }
-if (Test-Path (Join-Path $Source 'THIRD-PARTY-NOTICES')) { Copy-Item -LiteralPath (Join-Path $Source 'THIRD-PARTY-NOTICES') -Destination $installRoot -Recurse -Force }
-Copy-Item -LiteralPath (Join-Path $Source 'Uninstall-NDIJobConfigurator.ps1') -Destination $installRoot -Force
-Copy-Item -LiteralPath (Join-Path $Source 'Launch-NDIJobConfigurator.ps1') -Destination $installRoot -Force
-
-foreach ($name in @($taskName, $legacyTaskName)) {
-    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $name -Confirm:$false
-    }
-}
-if (Test-Path -LiteralPath $resolvedLegacyInstallRoot) {
-    Remove-Item -LiteralPath $resolvedLegacyInstallRoot -Recurse -Force
-}
-
-$icon = Join-Path $installRoot 'NDIJobConfigurator.ico'
-$launcher = Join-Path $installRoot 'Launch-NDIJobConfigurator.ps1'
-$shell = New-Object -ComObject WScript.Shell
-$obsoleteItems = @(
-    (Join-Path $startup 'Kiloview Setup Service.lnk'),
-    (Join-Path $startup 'Kiloview Job Configurator Service.lnk'),
-    (Join-Path $desktop 'Kiloview Setup.url'),
-    (Join-Path $desktop 'Kiloview Job Configurator.url'),
-    (Join-Path $desktop 'Kiloview Job Configurator.lnk'),
-    (Join-Path $desktop 'NDI Job Configurator.url'),
-    (Join-Path $programs 'Kiloview Setup'),
-    (Join-Path $programs 'Kiloview Job Configurator')
-)
-$obsoleteItems | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-$profileRoot = Split-Path (Split-Path $localAppData -Parent) -Parent
-$profileEntry = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' | Where-Object {
-    $profilePath = [Environment]::ExpandEnvironmentVariables((Get-ItemProperty $_.PSPath).ProfileImagePath)
-    [string]::Equals([IO.Path]::GetFullPath($profilePath), [IO.Path]::GetFullPath($profileRoot), [StringComparison]::OrdinalIgnoreCase)
-} | Select-Object -First 1
-if (-not $profileEntry) { throw "Windows profile SID could not be resolved for $profileRoot." }
-$interactiveSid = $profileEntry.PSChildName
-$currentUser = ([Security.Principal.SecurityIdentifier]$interactiveSid).Translate([Security.Principal.NTAccount]).Value
-$taskAction = New-ScheduledTaskAction -Execute $installedExe -Argument '--lan' -WorkingDirectory $installRoot
-$taskTrigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
-$taskPrincipal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interactive -RunLevel Highest
-$taskSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Description 'Elevated NDI Job Configurator private LAN web service' -Force | Out-Null
-
-foreach ($name in @($firewallRuleName, $ndiFirewallRuleName) + $legacyFirewallRules) {
-    Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-}
-New-NetFirewallRule -DisplayName $firewallRuleName -Description 'Allows NDI Job Configurator web access from the local subnet on trusted Windows network profiles.' -Direction Inbound -Action Allow -Enabled True -Profile Domain,Private -Program $installedExe -Protocol TCP -LocalPort 8091 -RemoteAddress LocalSubnet -EdgeTraversalPolicy Block | Out-Null
-New-NetFirewallRule -DisplayName $ndiFirewallRuleName -Description 'Allows NDI Job Configurator to receive NDI multicast previews from the trusted local subnet.' -Direction Inbound -Action Allow -Enabled True -Profile Domain,Private -Program $installedExe -Protocol UDP -RemoteAddress LocalSubnet -EdgeTraversalPolicy Block | Out-Null
-
-$shortcutArguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
-foreach ($shortcutPath in @((Join-Path $desktop 'NDI Job Configurator.lnk'), (Join-Path $startMenu 'NDI Job Configurator.lnk'))) {
-    $shortcut = $shell.CreateShortcut($shortcutPath)
-    $shortcut.TargetPath = Join-Path $PSHOME 'powershell.exe'
-    $shortcut.Arguments = $shortcutArguments
-    $shortcut.WorkingDirectory = $installRoot
-    $shortcut.WindowStyle = 0
-    $shortcut.Description = 'Open NDI Job Configurator with its elevated local service'
-    $shortcut.IconLocation = "$icon,0"
-    $shortcut.Save()
-}
-
-$uninstallRoot = "Registry::HKEY_USERS\$interactiveSid\Software\Microsoft\Windows\CurrentVersion\Uninstall"
-$uninstallKey = Join-Path $uninstallRoot 'NDIJobConfigurator'
-Remove-Item -LiteralPath (Join-Path $uninstallRoot 'KiloviewSetup') -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -Path $uninstallKey -Force | Out-Null
-$displayVersion = (Get-Item -LiteralPath $installedExe).VersionInfo.ProductVersion
-New-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'NDI Job Configurator' -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value $displayVersion -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name Publisher -Value 'John Lightfoot' -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installRoot -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value $icon -PropertyType String -Force | Out-Null
-$uninstallCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $installRoot 'Uninstall-NDIJobConfigurator.ps1')`""
-New-ItemProperty -Path $uninstallKey -Name UninstallString -Value $uninstallCommand -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
-
-Start-ScheduledTask -TaskName $taskName
-$healthy = $false
-for ($attempt = 0; $attempt -lt 20; $attempt++) {
-    try {
-        $health = Invoke-RestMethod -Uri 'http://127.0.0.1:8091/api/health' -TimeoutSec 1
-        if ($health.status -eq 'ok') { $healthy = $true; break }
-    }
-    catch { }
-    Start-Sleep -Milliseconds 500
-}
-if (-not $healthy) { throw 'NDI Job Configurator was installed but did not start successfully on port 8091.' }
-Start-Process 'http://localhost:8091'
-Write-Host "NDI Job Configurator installed for the current user at $installRoot"
-Write-Host 'Existing application state and saved KiloLink credentials were retained.'
-Write-Host 'LAN access is enabled on TCP 8091 and NDI multicast preview reception is enabled over UDP on trusted local networks.'
+    Invoke-JobReplacement $payload $paths.Install $paths.Recovery $stop $configure $verify $integration $restore
+    $removalJournal=Join-Path $paths.Recovery 'removal.json'
+    if(Test-Path -LiteralPath $removalJournal){Remove-Item -LiteralPath $removalJournal -Force}
+    $components=@((Get-JobComponent $paths.Install));if($agentEvidence){$components+=$agentEvidence}
+    Write-JobLifecycleResult $request 'succeeded' 'Job Configurator installed and its exact process verified healthy.' @{stage='complete';components=$components;partialEffects=$agentEffects;recoveryRequired=$false}
+    if(-not $request){Start-Process 'http://localhost:8091'}
+    Write-Host 'Job Configurator installed. Existing user data and independent shared components were retained.'
+    exit 0
+}catch{
+    $message=$_.Exception.Message;$cancelled=$message -match '(?i)cancel|declined';$busy=$message -like '*JOB_LIFECYCLE_BUSY*'
+    $record=try{Read-JobReplacement $paths.Install $paths.Recovery}catch{$null}
+    $recovery=try{Test-JobRecoveryRequired $paths.Install $paths.Recovery}catch{$true}
+    $outcome=if($cancelled){'cancelled'}elseif($busy){'blocked'}elseif($agentEffects.Count -gt 0 -or $recovery){'partial'}else{'failed'}
+    $components=@();if($agentEvidence){$components+=$agentEvidence}
+    Write-JobLifecycleResult $request $outcome $message @{errorCode=$(if($busy){'operation-active'}else{'installation-failed'});partialEffects=$agentEffects;components=$components;recoveryRequired=$recovery}
+    Write-Error $message -ErrorAction Continue
+    if($cancelled){exit 1602};if($busy){exit 1618};exit 1
+}finally{if($lease){$lease.Dispose()}}
