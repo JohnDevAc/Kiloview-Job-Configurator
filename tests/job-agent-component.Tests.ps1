@@ -17,7 +17,8 @@ using System.Reflection;
 public static class HarmlessAgentComponent {
     public static int Main(string[] args) {
         if (args.Length != 1 || args[0] != "--server-command") return 4;
-        string input = Console.In.ReadToEnd();
+        string input;
+        using (var reader = new StreamReader(Console.OpenStandardInput())) input = reader.ReadToEnd();
         string root = AppDomain.CurrentDomain.BaseDirectory;
         File.WriteAllText(Path.Combine(root, "received-stdin.json"), input);
         if (input != "{\"schemaVersion\":1,\"operation\":\"install\",\"acceptLicense\":true}") return 5;
@@ -48,6 +49,18 @@ Assert ($effects.Count -eq 1 -and $effects[0] -eq $result.effects[0]) 'Caller ef
 Assert ($evidence.installed -eq $true -and $evidence.version -eq '0.7.5-dev.1') 'Caller component evidence was not updated'
 Write-JobAtomicJson (Join-Path $root 'successful-component.json') @{result=$result;effects=$effects;component=$evidence}
 Write-Output 'PASS native component child, schema1 input and reference success outputs'
+
+$originalInputEncoding=[Console]::InputEncoding
+try {
+    foreach($emitBom in @($false,$true)) {
+        [Console]::InputEncoding=[Text.UTF8Encoding]::new($emitBom)
+        $effects=@();$evidence=$null
+        $result=Install-JobAgentComponent $package ([ref]$effects) ([ref]$evidence) $installed
+        Assert ($result.component.installed -and $evidence.version -eq '0.7.5-dev.1' -and $effects.Count -eq 1) 'UTF-8 redirected input failed or lost component evidence'
+        Assert ([IO.File]::ReadAllText($received) -eq '{"schemaVersion":1,"operation":"install","acceptLicense":true}') 'Fixture did not decode the server-command stream like the real Agent'
+        Write-Output "PASS native component with UTF-8 console input, BOM=$emitBom"
+    }
+} finally { [Console]::InputEncoding=$originalInputEncoding }
 
 [IO.File]::WriteAllText($modePath,'failed');Remove-Item -LiteralPath $received
 $effects=@();$evidence=$null
