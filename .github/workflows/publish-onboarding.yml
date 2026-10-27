@@ -22,14 +22,14 @@ jobs:
             version: 0.8.18
             channel: Main
             branch: main
-            commit: 66946837b276a94bb629fc0d61dcd226a78fec02
+            commit: 662f4f3cdbddf17996b97c2ff86ca17998be3f3a
             agentVersion: 0.7.6
             agentCommit: 616506fa9ccd9f195347fbc1f6e9e1021be73019
           - name: server-dev
             version: 0.8.18-dev.1
             channel: Development
             branch: development
-            commit: e3313312acaa6f761155ec28044e5e3f97ee7937
+            commit: ab3f4dac6255048a14f37fa1aca6f9869947ea54
             agentVersion: 0.7.6-dev.1
             agentCommit: c25e5a5eb95209967142fc739f3da3326a43106c
     env:
