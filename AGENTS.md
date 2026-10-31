@@ -1,5 +1,19 @@
 # Suite ownership
 
+## Master task coordination
+
+Cross-project work is coordinated through the master task identified in
+`PROJECT-COORDINATION.md`. Route implementation through each project's existing
+`Current Dev` task so its development context remains available for independent
+work. Those tasks report cross-project decisions, dependencies, blockers,
+validation, and completion back to the master. Read the routing document before
+assigning cross-project work; avoid concurrent writers in the same checkout.
+The master coordinates work and does not replace the project development tasks.
+All repository, contract, release, deployment, and authorization boundaries below
+remain in force.
+
+## Repository ownership
+
 This workspace is responsible for both NDI Job Configurator and NDI Configurator
 PC Agent. Read `CODEX-HANDOFF.md`, `suite.json`, and the companion's handoff before
 changing their integration. Open `NDI-Configurator.code-workspace` for both roots.
