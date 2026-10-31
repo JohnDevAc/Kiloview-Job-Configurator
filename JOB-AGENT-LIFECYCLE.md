@@ -1,7 +1,7 @@
 # Job Configurator and PC Agent lifecycle
 
 Development implementation, 26 October 2026. Wire format is the master-owned
-`TOOLBOX-LIFECYCLE-CONTRACT.md` version 1. This is separate from schema-1 local PC
+[Toolbox lifecycle contract, version 1](TOOLBOX-LIFECYCLE-CONTRACT.md). This is separate from schema-1 local PC
 onboarding. No lifecycle request accepts a licence, selects a network, writes NDI
 settings or authorizes another product's removal.
 
